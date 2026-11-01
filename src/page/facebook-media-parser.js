@@ -25,21 +25,29 @@
   // `progressive_urls` entries are muxed MP4s labelled SD or HD; DASH and HLS
   // manifests (separate audio and video tracks) are ignored.
   function pickBestProgressive(entries) {
-    if (!Array.isArray(entries)) return null;
+    if (!Array.isArray(entries)) {
+      return null;
+    }
     let best = null;
     for (const entry of entries) {
       const url = entry?.progressive_url || entry?.url;
-      if (!isDirectVideoUrl(url)) continue;
+      if (!isDirectVideoUrl(url)) {
+        continue;
+      }
       const quality = String(entry?.metadata?.quality || "").toUpperCase();
       const rank = QUALITY_RANK[quality] || 0;
-      if (!best || rank > best.rank) best = { url, quality, rank };
+      if (!best || rank > best.rank) {
+        best = { url, quality, rank };
+      }
     }
     return best;
   }
 
   function legacyUrl(node) {
     for (const key of ["browser_native_hd_url", "playable_url_quality_hd", "browser_native_sd_url", "playable_url"]) {
-      if (isDirectVideoUrl(node[key])) return { url: node[key], quality: /hd/.test(key) ? "HD" : "SD" };
+      if (isDirectVideoUrl(node[key])) {
+        return { url: node[key], quality: /hd/.test(key) ? "HD" : "SD" };
+      }
     }
     return null;
   }
@@ -49,9 +57,13 @@
     let best = null;
     for (const key of Object.keys(node)) {
       const image = node[key];
-      if (!image || typeof image !== "object" || typeof image.uri !== "string" || !isDirectImageUrl(image.uri)) continue;
+      if (!image || typeof image !== "object" || typeof image.uri !== "string" || !isDirectImageUrl(image.uri)) {
+        continue;
+      }
       const area = (Number(image.width) || 0) * (Number(image.height) || 0);
-      if (!best || area > best.area) best = { url: image.uri, width: Number(image.width) || 0, height: Number(image.height) || 0, area };
+      if (!best || area > best.area) {
+        best = { url: image.uri, width: Number(image.width) || 0, height: Number(image.height) || 0, area };
+      }
     }
     return best;
   }
@@ -61,22 +73,33 @@
     const seen = new WeakSet();
 
     (function walk(node, video) {
-      if (!node || typeof node !== "object" || seen.has(node)) return;
+      if (!node || typeof node !== "object" || seen.has(node)) {
+        return;
+      }
       seen.add(node);
 
       if (node.__typename === "Photo" && /^\d+$/.test(String(node.id || ""))) {
         const best = largestImage(node);
         if (best) {
           found.set(`photo:${node.id}`, {
-            platform: "Facebook", kind: "photo", id: String(node.id), index: 1, owner: null,
-            width: best.width, height: best.height, url: best.url
+            platform: "Facebook",
+            kind: "photo",
+            id: String(node.id),
+            index: 1,
+            owner: null,
+            width: best.width,
+            height: best.height,
+            url: best.url
           });
         }
       }
 
       let current = video;
       if (node.__typename === "Video" && /^\d+$/.test(String(node.id || ""))) {
-        current = { id: String(node.id), durationMs: Math.round((Number(node.playable_duration_in_ms ?? node.length_in_second * 1000)) || 0) };
+        current = {
+          id: String(node.id),
+          durationMs: Math.round(Number(node.playable_duration_in_ms ?? node.length_in_second * 1000) || 0)
+        };
       }
       if (current && !found.has(`video:${current.id}`)) {
         const best = pickBestProgressive(node.progressive_urls) || legacyUrl(node);
@@ -94,11 +117,19 @@
         }
       }
 
-      for (const key of Object.keys(node)) walk(node[key], current);
+      for (const key of Object.keys(node)) {
+        walk(node[key], current);
+      }
     })(root, null);
 
     return [...found.values()];
   }
 
-  (global.PageMediaParsers ||= {}).Facebook = Object.freeze({ extractMedia, pickBestProgressive, isDirectVideoUrl, largestImage });
+  global.PageMediaParsers ??= {};
+  global.PageMediaParsers.Facebook = Object.freeze({
+    extractMedia,
+    pickBestProgressive,
+    isDirectVideoUrl,
+    largestImage
+  });
 })(globalThis);

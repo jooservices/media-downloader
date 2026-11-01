@@ -19,26 +19,46 @@ async function showBridgeStatus() {
 
 async function getActivePage() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id || !tab.url) throw new Error("No active browser page was found.");
+  if (!tab?.id || !tab.url) {
+    throw new Error("No active browser page was found.");
+  }
   return tab;
 }
 
 // A tab opened before the extension was installed has none of the content scripts yet,
 // so inject the same ordered list the manifest declares.
 async function ensureContentScript(tab) {
-  const files = chrome.runtime.getManifest().content_scripts.find(entry => entry.js.includes("src/content/index.js")).js;
+  const files = chrome.runtime
+    .getManifest()
+    .content_scripts.find(entry => entry.js.includes("src/content/index.js")).js;
   await chrome.scripting.executeScript({ target: { tabId: tab.id }, files });
 }
 
 function requireSupportedPage(tab, message) {
-  if (!platforms.platformForHost(new URL(tab.url).hostname)) throw new Error(message);
+  if (!platforms.platformForHost(new URL(tab.url).hostname)) {
+    throw new Error(message);
+  }
+}
+
+function describeVideoResult(result) {
+  if (result.videoDownloadsClicked) {
+    return `\nStarted ${result.videoDownloadsClicked} file download(s) from the page's data or menus.`;
+  }
+  if (result.videoArticlesSeen) {
+    return `\nChecked ${result.videoArticlesSeen} visible video player(s); none started because a supported download action was unavailable, already saved, or pending.`;
+  }
+  return "\nNo video player is currently loaded on this page.";
 }
 
 function showAutoState(state) {
-  if (!state) return;
+  if (!state) {
+    return;
+  }
   autoStartButton.disabled = Boolean(state.running);
   autoStopButton.disabled = !state.running;
-  if (state.message) setStatus(state.message);
+  if (state.message) {
+    setStatus(state.message);
+  }
 }
 
 async function loadLimit() {
@@ -69,13 +89,11 @@ saveButton.addEventListener("click", async () => {
 
     await ensureContentScript(tab);
     const result = await chrome.tabs.sendMessage(tab.id, { type: "COLLECT_VISIBLE_MEDIA" });
-    if (!result?.ok) throw new Error(result?.error || "Could not read media from this page.");
+    if (!result?.ok) {
+      throw new Error(result?.error || "Could not read media from this page.");
+    }
 
-    const videoText = result.videoDownloadsClicked
-      ? `\nStarted ${result.videoDownloadsClicked} file download(s) from the page's data or menus.`
-      : result.videoArticlesSeen
-        ? `\nChecked ${result.videoArticlesSeen} visible video player(s); none started because a supported download action was unavailable, already saved, or pending.`
-        : "\nNo video player is currently loaded on this page.";
+    const videoText = describeVideoResult(result);
 
     if (!result.items.length) {
       setStatus(`No new photos found. Scroll to load more and try again.${videoText}`);
@@ -87,9 +105,13 @@ saveButton.addEventListener("click", async () => {
       type: "DOWNLOAD_ITEMS",
       items: result.items
     });
-    if (!downloadResult?.ok) throw new Error(downloadResult?.error || "The download request failed.");
+    if (!downloadResult?.ok) {
+      throw new Error(downloadResult?.error || "The download request failed.");
+    }
 
-    setStatus(`Started ${downloadResult.started} request(s); ${downloadResult.pending || 0} pending; ${downloadResult.failed || 0} failed; skipped ${downloadResult.skipped} saved or unavailable items.${videoText}\nFiles go to Downloads/<platform>/<account>.`);
+    setStatus(
+      `Started ${downloadResult.started} request(s); ${downloadResult.pending || 0} pending; ${downloadResult.failed || 0} failed; skipped ${downloadResult.skipped} saved or unavailable items.${videoText}\nFiles go to Downloads/<platform>/<account>.`
+    );
   } catch (error) {
     setStatus(error?.message || String(error));
   } finally {
@@ -106,7 +128,9 @@ autoStartButton.addEventListener("click", async () => {
     await saveLimit();
     await ensureContentScript(tab);
     const result = await chrome.tabs.sendMessage(tab.id, { type: "AUTO_START" });
-    if (!result?.ok) throw new Error(result?.error || "Could not start automatic downloading.");
+    if (!result?.ok) {
+      throw new Error(result?.error || "Could not start automatic downloading.");
+    }
     showAutoState(result.state);
   } catch (error) {
     autoStartButton.disabled = false;
@@ -119,7 +143,9 @@ autoStopButton.addEventListener("click", async () => {
   try {
     const tab = await getActivePage();
     const result = await chrome.tabs.sendMessage(tab.id, { type: "AUTO_STOP" });
-    if (!result?.ok) throw new Error(result?.error || "Could not stop automatic downloading.");
+    if (!result?.ok) {
+      throw new Error(result?.error || "Could not stop automatic downloading.");
+    }
     showAutoState(result.state);
   } catch (error) {
     setStatus(error?.message || String(error));
@@ -133,7 +159,9 @@ chrome.runtime.onMessage.addListener(message => {
 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName === "local" && changes.nativeBridgeState) showBridgeStatus().catch(() => {});
+  if (areaName === "local" && changes.nativeBridgeState) {
+    showBridgeStatus().catch(() => {});
+  }
 });
 
 (async () => {
@@ -143,5 +171,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     const tab = await getActivePage();
     const state = await chrome.tabs.sendMessage(tab.id, { type: "AUTO_STATUS" });
     showAutoState(state?.state);
-  } catch { /* there is no active downloader on this tab */ }
+  } catch {
+    /* there is no active downloader on this tab */
+  }
 })();

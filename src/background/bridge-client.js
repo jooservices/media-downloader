@@ -3,7 +3,11 @@
 const CLI_BRIDGE_URL = "http://127.0.0.1:38541/message";
 const BRIDGE_LOST_STOP_MS = 45000;
 let bridgeLostSince = null;
-let nativeBridgeState = { state: "idle", message: "Start a CLI download to connect the local bridge.", updatedAt: null };
+let nativeBridgeState = {
+  state: "idle",
+  message: "Start a CLI download to connect the local bridge.",
+  updatedAt: null
+};
 
 function updateNativeBridgeState(state, message) {
   nativeBridgeState = { state, message, updatedAt: new Date().toISOString() };
@@ -12,6 +16,8 @@ function updateNativeBridgeState(state, message) {
 
 async function postBridgeMessage(message) {
   try {
+    // The bridge is the CLI on this machine (127.0.0.1); it is never reachable from the network.
+    // nosemgrep: typescript.react.security.react-insecure-request.react-insecure-request
     const response = await fetch(CLI_BRIDGE_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -20,15 +26,18 @@ async function postBridgeMessage(message) {
       credentials: "omit"
     });
     const result = await response.json().catch(() => ({}));
-    if (!response.ok || result?.ok === false) throw new Error(result?.error || `Local CLI bridge returned HTTP ${response.status}.`);
+    if (!response.ok || result?.ok === false) {
+      throw new Error(result?.error || `Local CLI bridge returned HTTP ${response.status}.`);
+    }
     updateNativeBridgeState("connected", "Connected to the local CLI bridge.");
     return result;
   } catch (error) {
     const messageText = error?.message || String(error);
     const isOffline = /failed to fetch|networkerror|refused|load failed/i.test(messageText);
-    updateNativeBridgeState(isOffline ? "idle" : "error", isOffline
-      ? "CLI bridge is offline. Start or resume a job from the CLI."
-      : `CLI bridge error: ${messageText}`);
+    updateNativeBridgeState(
+      isOffline ? "idle" : "error",
+      isOffline ? "CLI bridge is offline. Start or resume a job from the CLI." : `CLI bridge error: ${messageText}`
+    );
     throw error;
   }
 }
@@ -42,11 +51,17 @@ async function handleBridgeResponse(message) {
     updateNativeBridgeState("idle", "The CLI bridge has no active job.");
     return;
   }
-  if (message?.type !== "START_JOB" || !message.job || !Number.isInteger(message.tabId)) return;
+  if (message?.type !== "START_JOB" || !message.job || !Number.isInteger(message.tabId)) {
+    return;
+  }
   try {
     const tab = await chrome.tabs.get(message.tabId);
     if (!samePage(tab.url, message.job.url)) {
-      await postBridgeMessage({ type: "JOB_ERROR", jobId: message.job.jobId, error: "The tab URL changed before the download started." });
+      await postBridgeMessage({
+        type: "JOB_ERROR",
+        jobId: message.job.jobId,
+        error: "The tab URL changed before the download started."
+      });
       return;
     }
     const response = await chrome.tabs.sendMessage(message.tabId, {
@@ -54,24 +69,91 @@ async function handleBridgeResponse(message) {
       job: { ...message.job, repairTargets: message.job.repairBasenames || [] }
     });
     if (!response?.ok) {
-      await postBridgeMessage({ type: "JOB_ERROR", jobId: message.job.jobId, error: response?.error || "The page could not start the automatic scan." });
+      await postBridgeMessage({
+        type: "JOB_ERROR",
+        jobId: message.job.jobId,
+        error: response?.error || "The page could not start the automatic scan."
+      });
     } else if (response.state?.running) {
       await chrome.storage.local.set({ activeCliJob: { jobId: message.job.jobId, tabId: message.tabId } });
     }
   } catch (error) {
-    await postBridgeMessage({ type: "JOB_ERROR", jobId: message.job.jobId, error: error?.message || String(error) }).catch(() => {});
+    await postBridgeMessage({
+      type: "JOB_ERROR",
+      jobId: message.job.jobId,
+      error: error?.message || String(error)
+    }).catch(() => {});
   }
+}
+
+// The CLI was closed: let `resume` reconnect for a while, then stop the scan so an
+// abandoned tab cannot keep downloading unattended.
+function noteBridgeFailure(tabId, isProgress) {
+  bridgeLostSince ??= Date.now();
+  const goneTooLong = Date.now() - bridgeLostSince >= BRIDGE_LOST_STOP_MS;
+  if (isProgress && goneTooLong && Number.isInteger(tabId)) {
+    chrome.tabs.sendMessage(tabId, { type: "AUTO_STOP" }).catch(() => {});
+  }
+}
+
+const failureResponse = error => ({ ok: false, error: error?.message || String(error) });
+
+function handleCliPageReady(message, sender) {
+  if (!Number.isInteger(sender?.tab?.id)) {
+    return Promise.resolve({ ok: false, error: "The page tab could not be identified." });
+  }
+  return postBridgeMessage({
+    type: "PAGE_READY",
+    tabId: sender.tab.id,
+    pageUrl: message.pageUrl || sender.tab.url,
+    platform: message.platform,
+    account: message.account
+  })
+    .then(async result => {
+      if (result?.type) {
+        await handleBridgeResponse(result);
+      }
+      return { ok: true, waiting: result?.type !== "START_JOB" };
+    })
+    .catch(failureResponse);
+}
+
+function handleAutoProgress(message, sender) {
+  if (!message.state?.jobId) {
+    return null;
+  }
+  const finished = message.type === "AUTO_DONE";
+  if (finished) {
+    chrome.storage.local.remove("activeCliJob").catch(() => {});
+  }
+  return postBridgeMessage({
+    type: finished ? "JOB_DONE" : "JOB_PROGRESS",
+    jobId: message.state.jobId,
+    state: message.state
+  })
+    .then(() => {
+      bridgeLostSince = null;
+      return { ok: true };
+    })
+    .catch(error => {
+      noteBridgeFailure(sender?.tab?.id, !finished);
+      return failureResponse(error);
+    });
 }
 
 chrome.tabs.onRemoved.addListener(async tabId => {
   try {
     const { activeCliJob } = await chrome.storage.local.get({ activeCliJob: null });
-    if (activeCliJob?.tabId !== tabId) return;
+    if (activeCliJob?.tabId !== tabId) {
+      return;
+    }
     await chrome.storage.local.remove("activeCliJob");
     postBridgeMessage({
       type: "JOB_ERROR",
       jobId: activeCliJob.jobId,
       error: "The Edge profile tab was closed before the scan finished. Use the CLI resume command to continue."
     }).catch(() => {});
-  } catch { /* a later CLI status check will expose any unfinished job */ }
+  } catch {
+    /* a later CLI status check will expose any unfinished job */
+  }
 });

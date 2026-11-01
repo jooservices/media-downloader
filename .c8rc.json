@@ -1,0 +1,21 @@
+{
+  "all": true,
+  "src": ["lib", "src", "cli"],
+  "include": ["lib/**/*.js", "src/**/*.js", "cli/**/*.mjs"],
+  "exclude": [
+    "cli/edge.mjs",
+    "cli/mediasaver.mjs",
+    "tests/**",
+    "tools/**",
+    "build/**",
+    "coverage/**",
+    "node_modules/**"
+  ],
+  "reporter": ["text-summary", "lcov"],
+  "reports-dir": "build/coverage",
+  "check-coverage": true,
+  "lines": 60,
+  "branches": 70,
+  "functions": 70,
+  "statements": 60
+}

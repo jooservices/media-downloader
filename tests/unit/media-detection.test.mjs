@@ -1,13 +1,10 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
-
-const source = fs.readFileSync(new URL("../src/content/media-detection.js", import.meta.url), "utf8");
+import { runScript } from "../helpers/run-script.mjs";
 
 function loadDetection() {
   const context = {};
-  vm.runInNewContext(source, context);
+  runScript("src/content/media-detection.js", context);
   return context.PageMediaDetection;
 }
 
@@ -22,8 +19,12 @@ function visibleNode(properties = {}) {
 function fakeDocument(articles, videos = []) {
   return {
     querySelectorAll(selector) {
-      if (selector === 'article, [role="article"], [role="dialog"]') return articles;
-      if (selector === "video") return videos;
+      if (selector === 'article, [role="article"], [role="dialog"]') {
+        return articles;
+      }
+      if (selector === "video") {
+        return videos;
+      }
       return [];
     }
   };
@@ -34,7 +35,9 @@ test("recognizes an X video before its native video element appears", () => {
   const playButton = visibleNode();
   const article = visibleNode({
     querySelector(selector) {
-      if (selector === 'button[aria-label^="Play Video" i]') return playButton;
+      if (selector === 'button[aria-label^="Play Video" i]') {
+        return playButton;
+      }
       return null;
     },
     querySelectorAll: () => [],
@@ -57,8 +60,8 @@ test("deduplicates a player marker and its native video element", () => {
   const detection = loadDetection();
   const video = visibleNode({ closest: () => article });
   const article = visibleNode({
-    querySelector: selector => selector === "video" ? video : null,
-    querySelectorAll: selector => selector === "video" ? [video] : []
+    querySelector: selector => (selector === "video" ? video : null),
+    querySelectorAll: selector => (selector === "video" ? [video] : [])
   });
 
   const candidates = detection.collectVideoContainers(fakeDocument([article], [video]));

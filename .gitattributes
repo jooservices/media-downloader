@@ -1,0 +1,19 @@
+* text=auto eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+package-lock.json binary
+/tests export-ignore
+/docs export-ignore
+/.github export-ignore
+/tools export-ignore
+eslint.config.mjs export-ignore
+.prettierrc.json export-ignore
+.prettierignore export-ignore
+.c8rc.json export-ignore
+Makefile export-ignore

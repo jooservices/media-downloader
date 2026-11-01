@@ -1,0 +1,246 @@
+# Dedicated CI for jooservices/media-downloader — GitHub-hosted runners
+# Pull-request quality gate: full pipeline. Post-merge heads run ci-post-merge.yml.
+name: CI
+
+on:
+  pull_request:
+    branches: [master, develop]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Validate manifest
+        run: npm run validate
+
+      - name: Build extension package
+        run: npm run build
+
+      - name: Upload extension package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: extension-package
+          path: build/media-downloader-*.zip
+          if-no-files-found: error
+
+  lint:
+    name: Lint (${{ matrix.name }})
+    needs: [validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: ESLint
+            command: npm run lint:eslint
+          - name: Prettier
+            command: npm run lint:prettier
+          - name: Docs
+            command: npm run lint:docs
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run linter
+        env:
+          LINT_COMMAND: ${{ matrix.command }}
+        run: ${LINT_COMMAND}
+
+  security:
+    name: Security (${{ matrix.name }})
+    needs: [lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: Dependencies
+          - name: Secrets
+          - name: SAST
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        if: matrix.name == 'Dependencies'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        if: matrix.name == 'Dependencies'
+        run: npm ci --ignore-scripts
+
+      - name: npm audit
+        if: matrix.name == 'Dependencies'
+        run: npm run audit
+
+      - name: OSV Scanner
+        if: matrix.name == 'Dependencies'
+        uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+        with:
+          scan-args: |-
+            --recursive
+            .
+
+      - name: Dependency Review
+        if: matrix.name == 'Dependencies'
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+
+      - name: Gitleaks OSS CLI
+        if: matrix.name == 'Secrets'
+        run: |
+          docker run --rm \
+            --volume "${GITHUB_WORKSPACE}:/repo:ro" \
+            --workdir /repo \
+            ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:b109bc5f8f76a38196a3e413704fc5b9e3c32360bce4e4b603bd6f45b3721dbb \
+            detect --source . --redact --exit-code 1
+
+      - name: Semgrep (OSS)
+        if: matrix.name == 'SAST'
+        run: |
+          docker run --rm \
+            --volume "${GITHUB_WORKSPACE}:/src:ro" \
+            semgrep/semgrep@sha256:67319956da3dcb58baf5b322899c15458e3963e7018a86aeeb5cd224e69cb77a \
+            semgrep scan --config p/javascript --config p/nodejs --error
+
+  test:
+    name: Test (${{ matrix.name }})
+    needs: [lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: Unit
+            suite: unit
+          - name: Integration
+            suite: integration
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run test suite with coverage
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: npm run "test:coverage:${SUITE}"
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-${{ matrix.suite }}
+          path: build/coverage/${{ matrix.suite }}/lcov.info
+          if-no-files-found: error
+
+  coverage:
+    name: Coverage upload
+    needs: [test, security]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Enforce coverage thresholds and write the combined report
+        run: npm run test:coverage
+
+      - name: Upload to Codecov
+        if: github.event.pull_request.user.type != 'Bot'
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: build/coverage/lcov.info
+          fail_ci_if_error: true
+          verbose: true
+
+      - name: Resolve SonarQube host URL
+        if: github.event.pull_request.user.type != 'Bot'
+        id: sonar-config
+        env:
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: |
+          set -euo pipefail
+          host_url="${SONAR_HOST_URL:-https://sonarcloud.io}"
+          host_url="${host_url%/}"
+          case "${host_url}" in
+            http://*|https://*) ;;
+            *) host_url="https://${host_url}" ;;
+          esac
+          if [[ ! "${host_url}" =~ ^https?://[^[:space:]/]+ ]]; then
+            echo "SONAR_HOST_URL must be a valid HTTP(S) URL"
+            exit 1
+          fi
+          echo "host_url=${host_url}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload SonarQube analysis
+        if: github.event.pull_request.user.type != 'Bot'
+        uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ steps.sonar-config.outputs.host_url }}

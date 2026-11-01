@@ -19,12 +19,18 @@
 
   // Highest-bitrate progressive MP4 on the X video CDN. HLS playlists are ignored.
   function pickBestMp4(variants) {
-    if (!Array.isArray(variants)) return null;
+    if (!Array.isArray(variants)) {
+      return null;
+    }
     let best = null;
     for (const variant of variants) {
-      if (variant?.content_type !== "video/mp4" || !isDirectVideoUrl(variant.url)) continue;
+      if (variant?.content_type !== "video/mp4" || !isDirectVideoUrl(variant.url)) {
+        continue;
+      }
       const bitrate = Number(variant.bitrate) || 0;
-      if (!best || bitrate > best.bitrate) best = { url: variant.url, bitrate };
+      if (!best || bitrate > best.bitrate) {
+        best = { url: variant.url, bitrate };
+      }
     }
     return best;
   }
@@ -39,7 +45,9 @@
     const seen = new WeakSet();
 
     (function walk(node) {
-      if (!node || typeof node !== "object" || seen.has(node)) return;
+      if (!node || typeof node !== "object" || seen.has(node)) {
+        return;
+      }
       seen.add(node);
 
       const media = node.legacy?.extended_entities?.media;
@@ -48,10 +56,14 @@
         const screenName = screenNameOf(node);
         let index = 0;
         for (const entry of media) {
-          if (!entry?.video_info) continue;
+          if (!entry?.video_info) {
+            continue;
+          }
           index++;
           const best = pickBestMp4(entry.video_info.variants);
-          if (!best) continue;
+          if (!best) {
+            continue;
+          }
           found.set(`${tweetId}:${index}`, {
             platform: "Twitter",
             kind: "video",
@@ -67,12 +79,15 @@
         }
       }
 
-      for (const key of Object.keys(node)) walk(node[key]);
+      for (const key of Object.keys(node)) {
+        walk(node[key]);
+      }
     })(root);
 
     return [...found.values()];
   }
 
   global.XMediaParser = Object.freeze({ extractMedia, pickBestMp4, isDirectVideoUrl });
-  (global.PageMediaParsers ||= {}).Twitter = global.XMediaParser;
+  global.PageMediaParsers ??= {};
+  global.PageMediaParsers.Twitter = global.XMediaParser;
 })(globalThis);

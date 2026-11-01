@@ -2,6 +2,7 @@
 import { createRequire } from "node:module";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,7 +13,8 @@ const require = createRequire(import.meta.url);
 export const { normalizeProfileUrl } = require("../lib/urls.js");
 export const { cleanPart: cleanPathPart } = require("../lib/paths.js");
 export const EXTENSION_ROOT = path.resolve(HERE, "..");
-export const APP_DIR = path.join(process.env.LOCALAPPDATA || process.env.USERPROFILE, "PageMediaSaver");
+// %LOCALAPPDATA% on Windows; the home folder elsewhere, so `help` and the "Windows only" messages still work.
+export const APP_DIR = path.join(process.env.LOCALAPPDATA || process.env.USERPROFILE || os.homedir(), "PageMediaSaver");
 export const JOBS_DIR = path.join(APP_DIR, "jobs");
 
 // Job ids are random UUIDs made by this CLI. Anything else (a bridge message, a command-line
@@ -20,7 +22,9 @@ export const JOBS_DIR = path.join(APP_DIR, "jobs");
 const JOB_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const isJobId = value => typeof value === "string" && JOB_ID.test(value);
 export function jobFile(jobId) {
-  if (!isJobId(jobId)) throw new Error(`Invalid job id: ${String(jobId).slice(0, 40)}`);
+  if (!isJobId(jobId)) {
+    throw new Error(`Invalid job id: ${String(jobId).slice(0, 40)}`);
+  }
   return path.join(JOBS_DIR, `${jobId}.json`);
 }
 export const QUEUE_FILE = path.join(APP_DIR, "active-job.json");
@@ -42,13 +46,17 @@ export async function readJson(filePath) {
   try {
     return JSON.parse(await readFile(filePath, "utf8"));
   } catch (error) {
-    if (error?.code === "ENOENT") return null;
+    if (error?.code === "ENOENT") {
+      return null;
+    }
     throw error;
   }
 }
 
 export async function getActiveJob() {
   const queue = await readJson(QUEUE_FILE);
-  if (!queue?.jobId) return null;
+  if (!queue?.jobId) {
+    return null;
+  }
   return readJson(jobFile(queue.jobId));
 }

@@ -1,12 +1,57 @@
 {
-  "name": "page-media-saver",
-  "version": "1.5.2",
+  "name": "media-downloader",
+  "version": "0.5.0",
   "private": true,
-  "description": "Edge extension and CLI that save photos and videos from Instagram, Facebook and X pages.",
-  "scripts": {
-    "test": "node --test --test-timeout=20000 \"tests/*.test.mjs\""
+  "description": "Edge/Chromium extension (Manifest V3) and CLI that save full-size photos and videos from Instagram, Facebook and X pages.",
+  "license": "MIT",
+  "author": "JOOservices",
+  "homepage": "https://github.com/jooservices/media-downloader#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jooservices/media-downloader.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jooservices/media-downloader/issues"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
+  },
+  "scripts": {
+    "validate": "node tools/validate.mjs",
+    "lint": "npm run lint:eslint && npm run lint:prettier && npm run lint:docs",
+    "lint:eslint": "eslint . --max-warnings 0",
+    "lint:prettier": "prettier --check .",
+    "lint:docs": "node tools/check-doc-links.mjs",
+    "format": "prettier --write .",
+    "test": "node --test --test-reporter=spec --test-timeout=20000 \"tests/**/*.test.mjs\"",
+    "test:unit": "node --test --test-reporter=spec --test-timeout=20000 \"tests/unit/*.test.mjs\"",
+    "test:integration": "node --test --test-reporter=spec --test-timeout=20000 \"tests/integration/*.test.mjs\"",
+    "test:coverage": "c8 --reporter=text-summary --reporter=lcov npm test",
+    "test:coverage:unit": "c8 --check-coverage=false --reporter=text-summary --reporter=lcovonly --reports-dir=build/coverage/unit --temp-directory=build/coverage/tmp-unit npm run test:unit",
+    "test:coverage:integration": "c8 --check-coverage=false --reporter=text-summary --reporter=lcovonly --reports-dir=build/coverage/integration --temp-directory=build/coverage/tmp-integration npm run test:integration",
+    "build": "node tools/build.mjs",
+    "audit": "npm audit --audit-level=high",
+    "ci": "npm run validate && npm run lint && npm run test:coverage",
+    "prepare": "simple-git-hooks"
+  },
+  "simple-git-hooks": {
+    "commit-msg": "npx --no-install commitlint --config .github/commitlint.config.mjs --edit \"$1\"",
+    "pre-commit": "npm run lint",
+    "pre-push": "npm test"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^21.2.4",
+    "@eslint/js": "^10.0.1",
+    "c8": "^12.0.0",
+    "eslint": "^10.14.0",
+    "eslint-plugin-n": "^18.5.0",
+    "eslint-plugin-sonarjs": "^4.2.2",
+    "globals": "^17.14.0",
+    "prettier": "^3.9.10",
+    "simple-git-hooks": "^2.14.0"
+  },
+  "overrides": {
+    "minimatch": "^11.0.1",
+    "glob": "^14.0.2"
   }
 }

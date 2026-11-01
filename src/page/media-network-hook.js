@@ -1,13 +1,20 @@
 (function initMediaNetworkHook(global) {
   "use strict";
-  if (global.__pageMediaSaverMediaHook) return;
+  if (global.__pageMediaSaverMediaHook) {
+    return;
+  }
 
   const host = global.location.hostname.toLowerCase();
-  const platform = /(^|\.)(x|twitter)\.com$/.test(host) ? "Twitter"
-    : /(^|\.)instagram\.com$/.test(host) ? "Instagram"
-      : /(^|\.)facebook\.com$/.test(host) ? "Facebook" : null;
+  const HOST_PLATFORMS = [
+    [/(^|\.)(x|twitter)\.com$/, "Twitter"],
+    [/(^|\.)instagram\.com$/, "Instagram"],
+    [/(^|\.)facebook\.com$/, "Facebook"]
+  ];
+  const platform = HOST_PLATFORMS.find(([pattern]) => pattern.test(host))?.[1] ?? null;
   const parser = platform && global.PageMediaParsers?.[platform];
-  if (!parser) return;
+  if (!parser) {
+    return;
+  }
   global.__pageMediaSaverMediaHook = true;
 
   // Only the platform's own data endpoints are read; everything else is left alone.
@@ -28,8 +35,14 @@
       // Some Facebook endpoints answer with one JSON document per line.
       const documents = [];
       for (const line of body.split("\n")) {
-        if (!line.trim()) continue;
-        try { documents.push(JSON.parse(line)); } catch { /* skip non-JSON lines */ }
+        if (!line.trim()) {
+          continue;
+        }
+        try {
+          documents.push(JSON.parse(line));
+        } catch {
+          /* skip non-JSON lines */
+        }
       }
       return documents;
     }
@@ -39,15 +52,23 @@
     const fresh = [];
     for (const document of documents) {
       let found = [];
-      try { found = parser.extractMedia(document); } catch { /* an unexpected shape must not break the page */ }
+      try {
+        found = parser.extractMedia(document);
+      } catch {
+        /* an unexpected shape must not break the page */
+      }
       for (const entry of found) {
         const key = `${entry.platform}:${entry.kind}:${entry.id}:${entry.index}`;
-        if (announced.has(key)) continue;
+        if (announced.has(key)) {
+          continue;
+        }
         announced.add(key);
         fresh.push(entry);
       }
     }
-    if (fresh.length) global.postMessage({ channel: CHANNEL, media: fresh }, global.location.origin);
+    if (fresh.length) {
+      global.postMessage({ channel: CHANNEL, media: fresh }, global.location.origin);
+    }
   }
 
   const publishText = text => publishDocuments(parseJsonLoose(text));
@@ -57,8 +78,16 @@
     const response = await nativeFetch.call(this, input, init);
     try {
       const url = typeof input === "string" ? input : input?.url || String(input);
-      if (DATA_URL.test(url)) response.clone().text().then(publishText).catch(() => {});
-    } catch { /* never interfere with the page's own request */ }
+      if (DATA_URL.test(url)) {
+        response
+          .clone()
+          .text()
+          .then(publishText)
+          .catch(() => {});
+      }
+    } catch {
+      /* never interfere with the page's own request */
+    }
     return response;
   };
 
@@ -67,8 +96,12 @@
     if (DATA_URL.test(String(url))) {
       this.addEventListener("load", () => {
         try {
-          if (this.responseType === "" || this.responseType === "text") publishText(this.responseText);
-        } catch { /* ignore unreadable responses */ }
+          if (this.responseType === "" || this.responseType === "text") {
+            publishText(this.responseText);
+          }
+        } catch {
+          /* ignore unreadable responses */
+        }
       });
     }
     return nativeOpen.call(this, method, url, ...rest);
@@ -81,23 +114,48 @@
     const scanEmbedded = () => {
       const documents = [];
       for (const script of global.document.querySelectorAll('script[type="application/json"]')) {
-        if (scanned.has(script)) continue;
+        if (scanned.has(script)) {
+          continue;
+        }
         scanned.add(script);
-        if (!/video_versions|image_versions2|progressive_urls|viewer_image|playable_url|browser_native/.test(script.textContent)) continue;
-        try { documents.push(JSON.parse(script.textContent)); } catch { /* not a data block */ }
+        if (
+          !/video_versions|image_versions2|progressive_urls|viewer_image|playable_url|browser_native/.test(
+            script.textContent
+          )
+        ) {
+          continue;
+        }
+        try {
+          documents.push(JSON.parse(script.textContent));
+        } catch {
+          /* not a data block */
+        }
       }
-      if (documents.length) publishDocuments(documents);
+      if (documents.length) {
+        publishDocuments(documents);
+      }
     };
     let timer = null;
     const schedule = () => {
-      if (timer) return;
-      timer = global.setTimeout(() => { timer = null; scanEmbedded(); }, 300);
+      if (timer) {
+        return;
+      }
+      timer = global.setTimeout(() => {
+        timer = null;
+        scanEmbedded();
+      }, 300);
     };
     const start = () => {
       scanEmbedded();
-      new global.MutationObserver(schedule).observe(global.document.documentElement, { childList: true, subtree: true });
+      new global.MutationObserver(schedule).observe(global.document.documentElement, {
+        childList: true,
+        subtree: true
+      });
     };
-    if (global.document.readyState === "loading") global.document.addEventListener("DOMContentLoaded", start, { once: true });
-    else start();
+    if (global.document.readyState === "loading") {
+      global.document.addEventListener("DOMContentLoaded", start, { once: true });
+    } else {
+      start();
+    }
   }
 })(globalThis);

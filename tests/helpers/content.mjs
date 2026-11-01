@@ -1,3 +1,4 @@
+import { webcrypto } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
@@ -20,13 +21,20 @@ export function loadContent({ url = "https://x.com/NASA/", storage = {}, onSend 
     location,
     chrome: {
       runtime: {
-        sendMessage: async message => { sent.push(message); return onSend(message); },
+        sendMessage: async message => {
+          sent.push(message);
+          return onSend(message);
+        },
         onMessage: { addListener: listener => listeners.push(listener) }
       },
-      storage: { local: {
-        get: async defaults => ({ ...defaults, ...structuredClone(storage) }),
-        set: async values => { Object.assign(storage, structuredClone(values)); }
-      } }
+      storage: {
+        local: {
+          get: async defaults => ({ ...defaults, ...structuredClone(storage) }),
+          set: async values => {
+            Object.assign(storage, structuredClone(values));
+          }
+        }
+      }
     },
     document: {
       readyState: "complete",
@@ -40,6 +48,7 @@ export function loadContent({ url = "https://x.com/NASA/", storage = {}, onSend 
     setTimeout: fn => setImmediate(fn),
     clearTimeout() {},
     KeyboardEvent: class {},
+    crypto: webcrypto,
     Image: class {}
   };
   sandbox.window = sandbox;
@@ -64,10 +73,13 @@ export function loadContent({ url = "https://x.com/NASA/", storage = {}, onSend 
     storage,
     listeners,
     reload: runAll,
-    request: message => new Promise(resolve => {
-      const asynchronous = listeners[0](message, {}, resolve);
-      if (asynchronous !== true) resolve(undefined);
-    }),
+    request: message =>
+      new Promise(resolve => {
+        const asynchronous = listeners[0](message, {}, resolve);
+        if (asynchronous !== true) {
+          resolve(undefined);
+        }
+      }),
     settle: () => new Promise(resolve => setTimeout(resolve, 60))
   };
 }

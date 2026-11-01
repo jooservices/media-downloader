@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { loadBackground } from "./helpers/background.mjs";
+import { loadBackground } from "../helpers/background.mjs";
 
 for (const example of [
   {
@@ -31,7 +31,8 @@ for (const example of [
           account: example.account,
           key,
           filename: example.expected.split("/").at(-1),
-          sourceOrigin: example.platform === "Twitter" ? "https://x.com" : `https://www.${example.platform.toLowerCase()}.com`,
+          sourceOrigin:
+            example.platform === "Twitter" ? "https://x.com" : `https://www.${example.platform.toLowerCase()}.com`,
           expiresAt: Date.now() + 30000
         }
       }
@@ -74,13 +75,21 @@ test("rejects a native download that comes from another platform's host", async 
   const harness = loadBackground({
     storage: {
       nativeVideoTarget: {
-        platform: "Instagram", account: "a", key: "Instagram:a:video:1", filename: "video_1.mp4",
-        sourceOrigin: "", expiresAt: Date.now() + 30000
+        platform: "Instagram",
+        account: "a",
+        key: "Instagram:a:video:1",
+        filename: "video_1.mp4",
+        sourceOrigin: "",
+        expiresAt: Date.now() + 30000
       }
     }
   });
   const suggestion = await harness.determine({
-    id: 5, url: "https://video.twimg.com/v.mp4", referrer: "https://x.com/a/status/1", filename: "v.mp4", mime: "video/mp4"
+    id: 5,
+    url: "https://video.twimg.com/v.mp4",
+    referrer: "https://x.com/a/status/1",
+    filename: "v.mp4",
+    mime: "video/mp4"
   });
   assert.deepEqual(suggestion, []);
   assert.ok(harness.storage.nativeVideoTarget, "the armed target is kept for the real download");

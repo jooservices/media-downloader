@@ -12,37 +12,51 @@ const STORAGE_DEFAULTS = {
   nativeVideoAttempts: {}
 };
 
-async function enqueueDownloadTarget(url, target) {
-  return queueFilenameOperation(async () => {
+const FINISHED_STATES = ["complete", "interrupted"];
+const MAX_BATCH_ITEMS = 300;
+const SLOT_WAIT_MS = 60000;
+
+// Runs `update` on the stored url -> [file name targets] map, one operation at a time.
+const withDownloadTargets = update =>
+  queueFilenameOperation(async () => {
     const { downloadTargets = {} } = await chrome.storage.local.get({ downloadTargets: {} });
+    const result = update(downloadTargets);
+    await chrome.storage.local.set({ downloadTargets });
+    return result;
+  });
+
+function storeTargetQueue(downloadTargets, url, queue) {
+  if (queue.length) {
+    downloadTargets[url] = queue;
+  } else {
+    delete downloadTargets[url];
+  }
+}
+
+const targetFilename = target => (typeof target === "string" ? target : target?.filename);
+
+const enqueueDownloadTarget = (url, target) =>
+  withDownloadTargets(downloadTargets => {
     downloadTargets[url] = [...(downloadTargets[url] || []), target];
-    await chrome.storage.local.set({ downloadTargets });
   });
-}
 
-async function removeDownloadTarget(url, filename) {
-  return queueFilenameOperation(async () => {
-    const { downloadTargets = {} } = await chrome.storage.local.get({ downloadTargets: {} });
-    const queuedTargets = downloadTargets[url] || [];
-    const targetIndex = queuedTargets.map(target => typeof target === "string" ? target : target?.filename).lastIndexOf(filename);
-    if (targetIndex >= 0) queuedTargets.splice(targetIndex, 1);
-    if (queuedTargets.length) downloadTargets[url] = queuedTargets;
-    else delete downloadTargets[url];
-    await chrome.storage.local.set({ downloadTargets });
+const removeDownloadTarget = (url, filename) =>
+  withDownloadTargets(downloadTargets => {
+    const queue = downloadTargets[url] || [];
+    const index = queue.map(targetFilename).lastIndexOf(filename);
+    if (index >= 0) {
+      queue.splice(index, 1);
+    }
+    storeTargetQueue(downloadTargets, url, queue);
   });
-}
 
-async function takeDownloadTarget(url) {
-  return queueFilenameOperation(async () => {
-    const { downloadTargets = {} } = await chrome.storage.local.get({ downloadTargets: {} });
-    const queuedTargets = downloadTargets[url] || [];
-    const target = queuedTargets.shift();
-    if (queuedTargets.length) downloadTargets[url] = queuedTargets;
-    else delete downloadTargets[url];
-    await chrome.storage.local.set({ downloadTargets });
+const takeDownloadTarget = url =>
+  withDownloadTargets(downloadTargets => {
+    const queue = downloadTargets[url] || [];
+    const target = queue.shift();
+    storeTargetQueue(downloadTargets, url, queue);
     return target;
   });
-}
 
 async function readDownloadState() {
   const stored = await chrome.storage.local.get(STORAGE_DEFAULTS);
@@ -71,17 +85,24 @@ async function writeDownloadState(state) {
   });
 }
 
-async function reconcileDownloads() {
-  const state = await readDownloadState();
-  for (const [key, downloadId] of Object.entries(state.pending)) {
-    let download;
-    try {
-      [download] = await chrome.downloads.search({ id: downloadId });
-    } catch { /* keep entries that the browser cannot inspect yet */ }
-    if (!download || !["complete", "interrupted"].includes(download.state)) continue;
+// The browser's record of a download once it has ended; null while it is still running
+// or when the browser cannot inspect it yet (the entry is then kept).
+async function findFinishedDownload(id) {
+  try {
+    const [download] = await chrome.downloads.search({ id });
+    return download && FINISHED_STATES.includes(download.state) ? download : null;
+  } catch {
+    return null;
+  }
+}
 
+async function reconcilePending(state) {
+  for (const [key, downloadId] of Object.entries(state.pending)) {
+    const download = await findFinishedDownload(downloadId);
+    if (!download) {
+      continue;
+    }
     const item = state.pendingItems[key];
-    const attemptCount = Number(state.attempts[key] || 1);
     delete state.pending[key];
     delete state.pendingItems[key];
     if (download.state === "complete") {
@@ -90,17 +111,19 @@ async function reconcileDownloads() {
     } else if (item) {
       state.failed[key] = {
         item,
-        attempts: attemptCount,
+        attempts: Number(state.attempts[key] || 1),
         error: download.error || "The browser interrupted this download."
       };
     }
   }
+}
+
+async function reconcileNative(state) {
   for (const [downloadId, entry] of Object.entries(state.nativePending)) {
-    let download;
-    try {
-      [download] = await chrome.downloads.search({ id: Number(downloadId) });
-    } catch { /* keep entries that the browser cannot inspect yet */ }
-    if (!download || !["complete", "interrupted"].includes(download.state)) continue;
+    const download = await findFinishedDownload(Number(downloadId));
+    if (!download) {
+      continue;
+    }
     delete state.nativePending[downloadId];
     if (download.state === "complete") {
       await ledgerAdd(entry.key);
@@ -113,32 +136,54 @@ async function reconcileDownloads() {
       };
     }
   }
-  if (state.nativeTarget && state.nativeTarget.expiresAt < Date.now()) {
-    state.nativeFailures[state.nativeTarget.key] = {
-      platform: state.nativeTarget.platform,
-      account: state.nativeTarget.account,
+}
+
+// The armed menu target lives 30 seconds; one the site never answered is a failure.
+function expireNativeTarget(state) {
+  const target = state.nativeTarget;
+  if (target && target.expiresAt < Date.now()) {
+    state.nativeFailures[target.key] = {
+      platform: target.platform,
+      account: target.account,
       error: "The site did not start a browser download after its official video action."
     };
     state.nativeTarget = null;
   }
+}
+
+async function reconcileDownloads() {
+  const state = await readDownloadState();
+  await reconcilePending(state);
+  await reconcileNative(state);
+  expireNativeTarget(state);
   await writeDownloadState(state);
   return state;
 }
 
 function matchesFilter(item, platform, account) {
-  if (!item) return false;
+  if (!item) {
+    return false;
+  }
   return (!platform || item.platform === platform) && (!account || item.account === account);
 }
 
+function countPending(state, platform, account) {
+  const direct = Object.entries(state.pending).filter(([key]) =>
+    matchesFilter(state.pendingItems[key], platform, account)
+  ).length;
+  const native = Object.values(state.nativePending).filter(entry => matchesFilter(entry, platform, account)).length;
+  const armed = state.nativeTarget?.expiresAt >= Date.now() && matchesFilter(state.nativeTarget, platform, account);
+  return direct + native + (armed ? 1 : 0);
+}
+
 function statusFor(state, platform, account) {
-  const pending = Object.entries(state.pending).filter(([key]) => matchesFilter(state.pendingItems[key], platform, account)).length
-    + Object.values(state.nativePending).filter(entry => matchesFilter(entry, platform, account)).length
-    + (state.nativeTarget && state.nativeTarget.expiresAt >= Date.now() && matchesFilter(state.nativeTarget, platform, account) ? 1 : 0);
   const failedItems = Object.values(state.failed).filter(entry => matchesFilter(entry.item, platform, account));
-  const nativeFailedItems = Object.values(state.nativeFailures).filter(entry => matchesFilter(entry, platform, account));
+  const nativeFailedItems = Object.values(state.nativeFailures).filter(entry =>
+    matchesFilter(entry, platform, account)
+  );
   return {
     ok: true,
-    pending,
+    pending: countPending(state, platform, account),
     failed: failedItems.length + nativeFailedItems.length,
     retryable: failedItems.filter(entry => entry.attempts < MAX_ATTEMPTS).length
   };
@@ -151,12 +196,11 @@ async function getDownloadStatus(platform, account) {
 async function drainDownloads(platform, account, timeoutMs) {
   const timeout = Math.max(1000, Math.min(Number(timeoutMs) || 60000, 120000));
   const deadline = Date.now() + timeout;
-  let status;
-  do {
-    status = await getDownloadStatus(platform, account);
-    if (!status.pending || Date.now() >= deadline) return status;
+  let status = await getDownloadStatus(platform, account);
+  while (status.pending && Date.now() < deadline) {
     await pause(750);
-  } while (Date.now() < deadline);
+    status = await getDownloadStatus(platform, account);
+  }
   return status;
 }
 
@@ -165,105 +209,135 @@ async function retryFailedDownloads(platform, account) {
   const items = Object.values(state.failed)
     .filter(entry => entry.attempts < MAX_ATTEMPTS && matchesFilter(entry.item, platform, account))
     .map(entry => entry.item);
-  if (!items.length) return statusFor(state, platform, account);
+  if (!items.length) {
+    return statusFor(state, platform, account);
+  }
   const result = await downloadBatch(items);
   return { ...result, ...statusFor(await reconcileDownloads(), platform, account) };
 }
 
-async function downloadBatch(inputItems) {
-  if (!Array.isArray(inputItems)) return { ok: false, error: "No media list was provided." };
-  const items = inputItems.slice(0, 300);
-  let state = await reconcileDownloads();
-  let started = 0;
-  let skipped = 0;
-  let failed = 0;
-  const errors = [];
+// An item is downloadable when it names a known platform, a key, and an https file on that platform's CDN.
+function isDownloadable(item) {
+  if (!item || !platforms.PLATFORMS.includes(item.platform) || !item.url || !item.key) {
+    return false;
+  }
+  try {
+    const url = new URL(item.url);
+    return url.protocol === "https:" && platforms.isFileHost(item.platform, url.hostname);
+  } catch {
+    return false;
+  }
+}
 
-  for (const item of items) {
-    if (!item || !platforms.PLATFORMS.includes(item.platform) || !item.url || !item.key) {
-      skipped++;
-      continue;
-    }
-    let parsedUrl;
-    try {
-      parsedUrl = new URL(item.url);
-    } catch {
-      skipped++;
-      continue;
-    }
-    if (parsedUrl.protocol !== "https:" || !platforms.isFileHost(item.platform, parsedUrl.hostname)) {
-      skipped++;
-      continue;
-    }
-    if (await ledgerHas(item.key) || Object.hasOwn(state.pending, item.key)
-      || Object.values(state.nativePending).some(entry => entry?.key === item.key)) {
-      skipped++;
-      continue;
-    }
+async function isSaved(state, key) {
+  return (await ledgerHas(key)) || Object.hasOwn(state.pending, key);
+}
 
-    const previousAttempts = Number(state.attempts[item.key] || state.failed[item.key]?.attempts || 0);
-    if (previousAttempts >= MAX_ATTEMPTS) {
-      skipped++;
-      failed++;
-      continue;
-    }
+const isInNativeFlow = (state, key) => Object.values(state.nativePending).some(entry => entry?.key === key);
 
-    const slotDeadline = Date.now() + 60000;
-    while (Object.keys(state.pending).length >= MAX_ACTIVE_DOWNLOADS && Date.now() < slotDeadline) {
-      await pause(500);
-      state = await reconcileDownloads();
-      if (await ledgerHas(item.key) || Object.hasOwn(state.pending, item.key)) break;
-    }
-    if (await ledgerHas(item.key) || Object.hasOwn(state.pending, item.key)) {
-      skipped++;
-      continue;
-    }
-    if (Object.keys(state.pending).length >= MAX_ACTIVE_DOWNLOADS) {
-      failed++;
-      errors.push("Too many downloads are still pending; this item will be retried on the next scan.");
-      continue;
-    }
-
-    const account = cleanPart(item.account);
-    const filename = withResolution(
-      cleanPart(item.filename || `photo.${imageExtension(item.url)}`, `photo.${imageExtension(item.url)}`),
-      item.width,
-      item.height
-    );
-    const targetFilename = buildSavePath(item.platform, account, filename);
-    const attemptCount = previousAttempts + 1;
-    try {
-      // Keep the per-URL target for the filename listener; on a URL mismatch it
-      // can preserve the requested path supplied to downloads.download.
-      state.attempts[item.key] = attemptCount;
-      await writeDownloadState(state);
-      const conflictAction = item.overwrite === true ? "overwrite" : "uniquify";
-      await enqueueDownloadTarget(item.url, { filename: targetFilename, conflictAction });
-      const downloadId = await chrome.downloads.download({
-        url: item.url,
-        filename: targetFilename,
-        conflictAction,
-        saveAs: false
-      });
-      state.pending[item.key] = downloadId;
-      state.pendingItems[item.key] = item;
-      delete state.failed[item.key];
-      await writeDownloadState(state);
-      started++;
-    } catch (error) {
-      await removeDownloadTarget(item.url, targetFilename);
-      state.failed[item.key] = { item, attempts: attemptCount, error: error?.message || String(error) };
-      failed++;
-      errors.push(`${filename}: ${error?.message || String(error)}`);
-      await writeDownloadState(state);
+// At most MAX_ACTIVE_DOWNLOADS run at once; wait up to a minute for a free slot.
+async function waitForSlot(state, item) {
+  const deadline = Date.now() + SLOT_WAIT_MS;
+  let current = state;
+  while (Object.keys(current.pending).length >= MAX_ACTIVE_DOWNLOADS && Date.now() < deadline) {
+    await pause(500);
+    current = await reconcileDownloads();
+    if (await isSaved(current, item.key)) {
+      break;
     }
   }
+  return current;
+}
 
+function saveTarget(item) {
+  const fallback = `photo.${imageExtension(item.url)}`;
+  const filename = withResolution(cleanPart(item.filename || fallback, fallback), item.width, item.height);
+  return { filename, path: buildSavePath(item.platform, cleanPart(item.account), filename) };
+}
+
+// Keeps the per-URL target for the filename listener; on a URL mismatch it can preserve
+// the requested path supplied to downloads.download.
+async function startItemDownload(state, item, attemptCount) {
+  const target = saveTarget(item);
+  try {
+    state.attempts[item.key] = attemptCount;
+    await writeDownloadState(state);
+    const conflictAction = item.overwrite === true ? "overwrite" : "uniquify";
+    await enqueueDownloadTarget(item.url, { filename: target.path, conflictAction });
+    const downloadId = await chrome.downloads.download({
+      url: item.url,
+      filename: target.path,
+      conflictAction,
+      saveAs: false
+    });
+    state.pending[item.key] = downloadId;
+    state.pendingItems[item.key] = item;
+    delete state.failed[item.key];
+    await writeDownloadState(state);
+    return { state, started: 1 };
+  } catch (error) {
+    const reason = error?.message || String(error);
+    await removeDownloadTarget(item.url, target.path);
+    state.failed[item.key] = { item, attempts: attemptCount, error: reason };
+    await writeDownloadState(state);
+    return { state, failed: 1, error: `${target.filename}: ${reason}` };
+  }
+}
+
+// One item of a batch: { state, started?, skipped?, failed?, error? }.
+async function processBatchItem(initialState, item) {
+  if (!isDownloadable(item)) {
+    return { state: initialState, skipped: 1 };
+  }
+  if ((await isSaved(initialState, item.key)) || isInNativeFlow(initialState, item.key)) {
+    return { state: initialState, skipped: 1 };
+  }
+  const previousAttempts = Number(initialState.attempts[item.key] || initialState.failed[item.key]?.attempts || 0);
+  if (previousAttempts >= MAX_ATTEMPTS) {
+    return { state: initialState, skipped: 1, failed: 1 };
+  }
+  const state = await waitForSlot(initialState, item);
+  if (await isSaved(state, item.key)) {
+    return { state, skipped: 1 };
+  }
+  if (Object.keys(state.pending).length >= MAX_ACTIVE_DOWNLOADS) {
+    return {
+      state,
+      failed: 1,
+      error: "Too many downloads are still pending; this item will be retried on the next scan."
+    };
+  }
+  return startItemDownload(state, item, previousAttempts + 1);
+}
+
+async function downloadBatch(inputItems) {
+  if (!Array.isArray(inputItems)) {
+    return { ok: false, error: "No media list was provided." };
+  }
+  const total = { started: 0, skipped: 0, failed: 0 };
+  const errors = [];
+  let state = await reconcileDownloads();
+  for (const item of inputItems.slice(0, MAX_BATCH_ITEMS)) {
+    const result = await processBatchItem(state, item);
+    state = result.state;
+    total.started += result.started ?? 0;
+    total.skipped += result.skipped ?? 0;
+    total.failed += result.failed ?? 0;
+    if (result.error) {
+      errors.push(result.error);
+    }
+  }
   state = await reconcileDownloads();
-  return { ok: true, started, skipped, failed, pending: Object.keys(state.pending).length, errors: errors.slice(0, 10) };
+  return { ok: true, ...total, pending: Object.keys(state.pending).length, errors: errors.slice(0, 10) };
 }
 
 chrome.downloads.onChanged.addListener(async delta => {
-  if (!delta.state || !["complete", "interrupted"].includes(delta.state.current)) return;
-  try { await queueBatch(() => reconcileDownloads()); } catch { /* a later status check will reconcile */ }
+  if (!delta.state || !FINISHED_STATES.includes(delta.state.current)) {
+    return;
+  }
+  try {
+    await queueBatch(() => reconcileDownloads());
+  } catch {
+    /* a later status check will reconcile */
+  }
 });

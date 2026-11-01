@@ -1,15 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Page Media Saver",
-  "version": "1.5.2",
+  "version": "0.5.0",
   "description": "Save visible photos and use platform-provided video download controls on logged-in Instagram, Facebook, and X pages.",
   "minimum_chrome_version": "111",
-  "permissions": [
-    "activeTab",
-    "scripting",
-    "downloads",
-    "storage"
-  ],
+  "permissions": ["activeTab", "scripting", "downloads", "storage"],
   "host_permissions": [
     "https://*.instagram.com/*",
     "https://*.facebook.com/*",

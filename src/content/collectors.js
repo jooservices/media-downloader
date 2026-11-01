@@ -3,20 +3,35 @@
 // page, so only the largest rendition is ever saved.
 // Loaded as a content script before src/content/index.js; modules share the
 // PageMediaSaver namespace and are safe to load twice.
+globalThis.PageMediaSaver ??= {};
 (function initCollectors(ns) {
   const { clean } = ns.page;
   const collectPageMedia = (...args) => ns.videoSources.collectPageMedia(...args);
 
+  // A srcset entry's size: its width in pixels, or its pixel density scaled by the image's own width.
+  function srcsetScore(unit, value, densityBase) {
+    if (unit === "w") {
+      return value;
+    }
+    return unit === "x" ? value * densityBase : densityBase;
+  }
+
   function largestSrcset(srcset, img) {
-    if (!srcset) return null;
+    if (!srcset) {
+      return null;
+    }
     let best = null;
     for (const entry of srcset.split(",")) {
-      const match = entry.trim().match(/^(\S+)(?:\s+(\d+(?:\.\d+)?)(w|x))?$/);
-      if (!match) continue;
+      const match = entry.trim().match(/^(\S+)(?:\s+(\d+(?:\.\d+)?)([wx]))?$/);
+      if (!match) {
+        continue;
+      }
       const value = Number(match[2] || 1);
       const densityBase = Math.max(img?.naturalWidth || 0, img?.width || 0, 1);
-      const score = match[3] === "w" ? value : (match[3] === "x" ? value * densityBase : densityBase);
-      if (!best || score > best.score) best = { url: match[1], score };
+      const score = srcsetScore(match[3], value, densityBase);
+      if (!best || score > best.score) {
+        best = { url: match[1], score };
+      }
     }
     return best;
   }
@@ -24,15 +39,21 @@
   function imageUrl(img, platform) {
     const srcsets = [img.getAttribute("srcset")];
     const picture = img.closest("picture");
-    if (picture) srcsets.push(...[...picture.querySelectorAll("source")].map(source => source.getAttribute("srcset")));
+    if (picture) {
+      srcsets.push(...[...picture.querySelectorAll("source")].map(source => source.getAttribute("srcset")));
+    }
     let best = null;
     for (const srcset of srcsets) {
       const candidate = largestSrcset(srcset, img);
-      if (candidate && (!best || candidate.score > best.score)) best = candidate;
+      if (candidate && (!best || candidate.score > best.score)) {
+        best = candidate;
+      }
     }
     const current = img.currentSrc || img.src;
     const candidate = best?.url || current;
-    if (!candidate) return null;
+    if (!candidate) {
+      return null;
+    }
     try {
       const url = new URL(candidate, location.href);
       if (platform === "Twitter" && url.hostname === "pbs.twimg.com" && url.pathname.includes("/media/")) {
@@ -47,7 +68,9 @@
   const extensionFor = PageMediaLib.paths.imageExtension;
 
   function makeItem({ platform, account, id, index, url }) {
-    if (!url) return null;
+    if (!url) {
+      return null;
+    }
     const ext = extensionFor(url);
     const stableId = clean(id || `image-${index}`, `image-${index}`);
     return {
@@ -73,13 +96,21 @@
       const article = articles[a];
       const statusLink = article.querySelector('a[href*="/status/"]');
       const statusId = statusLink?.href.match(/\/status\/(\d+)/)?.[1] || `post-${a + 1}`;
-      if (globalThis.PageMediaDetection.isVideoPost(article)) continue; // Never save a video poster as if it were a photo.
+      if (globalThis.PageMediaDetection.isVideoPost(article)) {
+        continue;
+      } // Never save a video poster as if it were a photo.
 
       let photoIndex = 0;
-      for (const img of article.querySelectorAll('img[src*="pbs.twimg.com/media"], img[srcset*="pbs.twimg.com/media"]')) {
-        if (!isLarge(img)) continue;
+      for (const img of article.querySelectorAll(
+        'img[src*="pbs.twimg.com/media"], img[srcset*="pbs.twimg.com/media"]'
+      )) {
+        if (!isLarge(img)) {
+          continue;
+        }
         const url = imageUrl(img, "Twitter");
-        if (!url || seen.has(url)) continue;
+        if (!url || seen.has(url)) {
+          continue;
+        }
         seen.add(url);
         items.push(makeItem({ platform: "Twitter", account, id: statusId, index: ++photoIndex, url }));
       }
@@ -88,4 +119,4 @@
   }
 
   ns.collectors = { collectX };
-})(globalThis.PageMediaSaver ||= {});
+})(globalThis.PageMediaSaver);
