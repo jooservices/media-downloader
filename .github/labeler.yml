@@ -1,0 +1,45 @@
+"tests":
+  - changed-files:
+      - any-glob-to-any-file: "tests/**/*"
+
+"documentation":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**.md"
+          - "docs/**/*"
+
+"dependencies":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "package.json"
+          - "package-lock.json"
+
+"ci/cd":
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**/*"
+          - "Makefile"
+
+"configuration":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "eslint.config.mjs"
+          - ".prettierrc.json"
+          - ".c8rc.json"
+          - ".editorconfig"
+          - "sonar-project.properties"
+
+"extension":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "manifest.json"
+          - "lib/**/*"
+          - "src/**/*"
+
+"cli":
+  - changed-files:
+      - any-glob-to-any-file: "cli/**/*"
+
+"tooling":
+  - changed-files:
+      - any-glob-to-any-file: "tools/**/*"
