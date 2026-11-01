@@ -80,7 +80,9 @@ function createBridgeServer(config) {
       );
       respondJson(response, 200, await operation, { "Cache-Control": "no-store" });
     } catch (error) {
-      respondJson(response, 500, { ok: false, error: error?.message || String(error) });
+      // The detail stays in this process's log; the caller only learns that the message failed.
+      console.error(`Bridge message failed: ${error?.message || String(error)}`);
+      respondJson(response, 500, { ok: false, error: "The CLI could not handle this message." });
     }
   }
 
