@@ -1,0 +1,80 @@
+{
+  "manifest_version": 3,
+  "name": "Page Media Saver",
+  "version": "1.5.2",
+  "description": "Save visible photos and use platform-provided video download controls on logged-in Instagram, Facebook, and X pages.",
+  "minimum_chrome_version": "111",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "downloads",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://*.instagram.com/*",
+    "https://*.facebook.com/*",
+    "https://*.x.com/*",
+    "https://*.twitter.com/*",
+    "http://127.0.0.1/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.instagram.com/*",
+        "https://*.facebook.com/*",
+        "https://*.x.com/*",
+        "https://*.twitter.com/*"
+      ],
+      "js": [
+        "lib/platforms.js",
+        "src/page/x-media-parser.js",
+        "src/page/instagram-media-parser.js",
+        "src/page/facebook-media-parser.js",
+        "src/page/media-network-hook.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://*.instagram.com/*",
+        "https://*.facebook.com/*",
+        "https://*.x.com/*",
+        "https://*.twitter.com/*"
+      ],
+      "js": ["src/page/media-bridge.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://*.instagram.com/*",
+        "https://*.facebook.com/*",
+        "https://*.x.com/*",
+        "https://*.twitter.com/*"
+      ],
+      "js": [
+        "lib/platforms.js",
+        "lib/paths.js",
+        "lib/urls.js",
+        "lib/keys.js",
+        "lib/settings.js",
+        "src/content/media-detection.js",
+        "src/content/core.js",
+        "src/content/page-info.js",
+        "src/content/image-size.js",
+        "src/content/collectors.js",
+        "src/content/video-sources.js",
+        "src/content/scan-runner.js",
+        "src/content/index.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "src/background/index.js"
+  },
+  "action": {
+    "default_title": "Save visible media",
+    "default_popup": "src/popup/popup.html"
+  }
+}

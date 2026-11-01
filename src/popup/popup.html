@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Page Media Saver</title>
+    <style>
+      body { width: 300px; margin: 0; padding: 16px; color: #18212f; font: 14px/1.45 system-ui, sans-serif; }
+      h1 { margin: 0 0 8px; font-size: 17px; }
+      p { margin: 8px 0 12px; color: #4d5a6a; }
+      button { width: 100%; border: 0; border-radius: 8px; padding: 10px 12px; color: white; background: #1666d3; font: inherit; font-weight: 650; cursor: pointer; }
+      button:disabled { background: #8da9cb; cursor: wait; }
+      button.secondary { margin-top: 8px; color: #18212f; background: #e8edf5; }
+      #status { min-height: 38px; margin-top: 12px; white-space: pre-wrap; }
+      .note { font-size: 12px; }
+      .limit { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+      .limit input[type="number"] { width: 72px; border: 1px solid #b8c4d4; border-radius: 8px; padding: 6px 8px; font: inherit; }
+      .limit label { display: flex; align-items: center; gap: 4px; }
+    </style>
+  </head>
+  <body>
+    <h1>Page Media Saver</h1>
+    <p>Save Instagram/Facebook profile media or scan an X profile timeline. Video downloads use platform controls that appear on the loaded post.</p>
+    <button id="auto-start">Start automatic scan</button>
+    <button id="auto-stop" class="secondary" disabled>Stop automatic download</button>
+    <button id="save" class="secondary">Download currently loaded media</button>
+    <div class="limit">
+      <label for="limit-count">Stop after</label>
+      <input id="limit-count" type="number" min="1" step="1" inputmode="numeric">
+      <span>files</span>
+      <label class="note"><input id="limit-unlimited" type="checkbox"> Unlimited</label>
+    </div>
+    <div id="status" role="status" aria-live="polite">Automatic mode scrolls Instagram/Facebook grids and X profile timelines. Video downloads use a platform action when it is available for a loaded video post.</div>
+    <div id="bridge-status" class="note" role="status" aria-live="polite"></div>
+    <p class="note">Files go to Downloads/&lt;site&gt;/&lt;account&gt;/&lt;name&gt;_&lt;width&gt;x&lt;height&gt;.&lt;ext&gt;. The limit applies to scans started here; the CLI has its own option.</p>
+    <script src="../../lib/platforms.js"></script>
+    <script src="../../lib/settings.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

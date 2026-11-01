@@ -1,0 +1,12 @@
+{
+  "name": "page-media-saver",
+  "version": "1.5.2",
+  "private": true,
+  "description": "Edge extension and CLI that save photos and videos from Instagram, Facebook and X pages.",
+  "scripts": {
+    "test": "node --test --test-timeout=20000 \"tests/*.test.mjs\""
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

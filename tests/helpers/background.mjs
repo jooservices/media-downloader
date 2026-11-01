@@ -1,0 +1,129 @@
+import fs from "node:fs";
+import path from "node:path";
+import vm from "node:vm";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+// Runs src/background/index.js the way the browser does: its importScripts calls
+// load the other files into one shared global scope.
+// The part of IndexedDB the ledger uses: one object store with a key path, get/put/count,
+// and transactions that complete after their requests. Pass the same instance to two
+// loadBackground calls to simulate a service worker restart.
+export function createFakeIndexedDB() {
+  const databases = new Map();
+  const request = work => {
+    const req = {};
+    setImmediate(() => {
+      try { req.result = work(); req.onsuccess?.({ target: req }); } catch (error) { req.error = error; req.onerror?.({ target: req }); }
+    });
+    return req;
+  };
+  return {
+    databases,
+    open(name) {
+      const opening = {};
+      setImmediate(() => {
+        let db = databases.get(name);
+        const created = !db;
+        if (created) {
+          const stores = new Map();
+          db = {
+            stores,
+            createObjectStore(storeName, { keyPath }) { stores.set(storeName, { keyPath, rows: new Map() }); },
+            transaction(storeName) {
+              const store = stores.get(storeName);
+              const transaction = {
+                objectStore: () => ({
+                  get: key => request(() => store.rows.get(key)),
+                  put: value => request(() => { store.rows.set(value[store.keyPath], structuredClone(value)); }),
+                  count: () => request(() => store.rows.size)
+                })
+              };
+              setImmediate(() => setImmediate(() => transaction.oncomplete?.({ target: transaction })));
+              return transaction;
+            }
+          };
+          databases.set(name, db);
+        }
+        opening.result = db;
+        if (created) opening.onupgradeneeded?.({ target: opening });
+        opening.onsuccess?.({ target: opening });
+      });
+      return opening;
+    }
+  };
+}
+
+export function loadBackground({ storage: initialStorage = {}, fetchImpl = fetch, now = () => Date.now(), failStorageGet = false, indexedDB = createFakeIndexedDB() } = {}) {
+  const listeners = { message: [], changed: [], determining: [], tabRemoved: [] };
+  const storage = structuredClone(initialStorage);
+  const downloads = new Map();
+  const started = [];
+  const tabMessages = [];
+  const FakeDate = class extends Date { static now() { return now(); } };
+
+  const chrome = {
+    runtime: { id: "test-extension-id", onMessage: { addListener: listener => listeners.message.push(listener) } },
+    downloads: {
+      onChanged: { addListener: listener => listeners.changed.push(listener) },
+      onDeterminingFilename: { addListener: listener => listeners.determining.push(listener) },
+      search: async query => downloads.has(query.id) ? [downloads.get(query.id)] : [],
+      download: async options => { started.push(options); return started.length; }
+    },
+    storage: {
+      local: {
+        get: async defaults => {
+          if (failStorageGet) throw new Error("storage unavailable");
+          return { ...structuredClone(defaults || {}), ...structuredClone(storage) };
+        },
+        set: async values => Object.assign(storage, structuredClone(values)),
+        remove: async keys => { for (const key of Array.isArray(keys) ? keys : [keys]) delete storage[key]; }
+      }
+    },
+    tabs: {
+      onRemoved: { addListener: listener => listeners.tabRemoved.push(listener) },
+      sendMessage: async (id, message) => { tabMessages.push({ id, message }); }
+    }
+  };
+
+  const entryDir = path.join(ROOT, "src", "background");
+  const sandbox = { chrome, URL, Date: FakeDate, setTimeout, clearTimeout, fetch: fetchImpl, indexedDB };
+  const context = vm.createContext(sandbox);
+  sandbox.importScripts = (...files) => {
+    for (const file of files) {
+      const full = path.resolve(entryDir, file);
+      new vm.Script(fs.readFileSync(full, "utf8"), { filename: full }).runInContext(context);
+    }
+  };
+  const entry = path.join(entryDir, "index.js");
+  new vm.Script(fs.readFileSync(entry, "utf8"), { filename: entry }).runInContext(context);
+
+  const inContext = code => vm.runInContext(code, context);
+  const ledger = {
+    has: key => inContext(`ledgerHas(${JSON.stringify(key)})`),
+    add: key => inContext(`ledgerAdd(${JSON.stringify(key)})`),
+    count: () => inContext("ledgerCount()")
+  };
+
+  return {
+    listeners,
+    storage,
+    indexedDB,
+    ledger,
+    downloads,
+    started,
+    tabMessages,
+    send: (message, sender = {}) => new Promise(resolve => listeners.message[0](message, sender, resolve)),
+    determine: item => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Filename callback did not respond.")), 1000);
+      const asynchronous = listeners.determining[0](item, (...args) => {
+        clearTimeout(timer);
+        resolve(args);
+      });
+      if (asynchronous !== true) reject(new Error("The filename listener must answer asynchronously."));
+    })
+  };
+}
+
+export const plain = value => JSON.parse(JSON.stringify(value));
