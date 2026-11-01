@@ -49,5 +49,9 @@
     "globals": "^17.14.0",
     "prettier": "^3.9.10",
     "simple-git-hooks": "^2.14.0"
+  },
+  "overrides": {
+    "minimatch": "^11.0.1",
+    "glob": "^14.0.2"
   }
 }

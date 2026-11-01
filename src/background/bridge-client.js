@@ -16,6 +16,8 @@ function updateNativeBridgeState(state, message) {
 
 async function postBridgeMessage(message) {
   try {
+    // The bridge is the CLI on this machine (127.0.0.1); it is never reachable from the network.
+    // nosemgrep: typescript.react.security.react-insecure-request.react-insecure-request
     const response = await fetch(CLI_BRIDGE_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
