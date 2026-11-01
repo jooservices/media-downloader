@@ -3,10 +3,10 @@ import fs from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-const manifest = JSON.parse(fs.readFileSync(new URL("../manifest.json", import.meta.url), "utf8"));
+const manifest = JSON.parse(fs.readFileSync(new URL("../../manifest.json", import.meta.url), "utf8"));
 const context = vm.createContext({ URL });
 for (const name of ["platforms", "urls"]) {
-  const file = new URL(`../lib/${name}.js`, import.meta.url);
+  const file = new URL(`../../lib/${name}.js`, import.meta.url);
   new vm.Script(fs.readFileSync(file, "utf8"), { filename: file.pathname }).runInContext(context);
 }
 const urls = context.PageMediaLib.urls;
@@ -41,10 +41,7 @@ test("treats Instagram's /reels/<code> redirect as the same reel in the CLI and 
   const cli = urls.normalizeProfileUrl("https://www.instagram.com/reels/DezPoWNzXMt/");
   assert.equal(cli.mediaPage, true);
   assert.equal(cli.url, "https://www.instagram.com/reel/DezPoWNzXMt/");
-  assert.equal(
-    urls.comparableUrl("https://www.instagram.com/reels/DezPoWNzXMt/"),
-    urls.comparableUrl(cli.url)
-  );
+  assert.equal(urls.comparableUrl("https://www.instagram.com/reels/DezPoWNzXMt/"), urls.comparableUrl(cli.url));
   assert.throws(() => urls.normalizeProfileUrl("https://www.instagram.com/reels/"), /profile URL|direct/);
 });
 
@@ -54,7 +51,10 @@ test("accepts Facebook reels and videos profile tabs as account grids", () => {
   assert.equal(reels.account, "yunie.nguyen.1911");
   assert.equal(reels.mediaPage, false);
   assert.equal(reels.url, "https://www.facebook.com/yunie.nguyen.1911/reels/");
-  assert.equal(urls.normalizeProfileUrl("https://www.facebook.com/sample/videos").url, "https://www.facebook.com/sample/videos/");
+  assert.equal(
+    urls.normalizeProfileUrl("https://www.facebook.com/sample/videos").url,
+    "https://www.facebook.com/sample/videos/"
+  );
   assert.throws(() => urls.normalizeProfileUrl("https://www.facebook.com/watch/videos"), /profile URL|direct/);
 });
 
