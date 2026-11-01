@@ -4,7 +4,7 @@
 
 | Version line                    | Status                                      |
 | ------------------------------- | ------------------------------------------- |
-| `1.5.x` (this repository)       | Current supported — receives security fixes |
+| `0.5.x` (this repository)       | Current supported — receives security fixes |
 | Older, pre-repository snapshots | Not supported                               |
 
 ## Reporting a vulnerability
