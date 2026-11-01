@@ -18,13 +18,19 @@
   // The entry with the largest picture; the first one listed wins a tie. Used for
   // video files (several encodes of one size) and for photo candidates alike.
   function pickLargest(entries, accepts) {
-    if (!Array.isArray(entries)) return null;
+    if (!Array.isArray(entries)) {
+      return null;
+    }
     let best = null;
     for (const entry of entries) {
-      if (!accepts(entry?.url)) continue;
+      if (!accepts(entry?.url)) {
+        continue;
+      }
       const width = Number(entry.width) || 0;
       const height = Number(entry.height) || 0;
-      if (!best || width * height > best.area) best = { url: entry.url, width, height, area: width * height };
+      if (!best || width * height > best.area) {
+        best = { url: entry.url, width, height, area: width * height };
+      }
     }
     return best;
   }
@@ -32,8 +38,11 @@
   const pickBestImage = candidates => pickLargest(candidates, isDirectImageUrl);
 
   function isPostNode(node) {
-    return typeof node.code === "string" && SHORTCODE.test(node.code)
-      && Boolean(node.video_versions || node.image_versions2 || node.carousel_media || node.taken_at || node.media_type);
+    return (
+      typeof node.code === "string" &&
+      SHORTCODE.test(node.code) &&
+      Boolean(node.video_versions || node.image_versions2 || node.carousel_media || node.taken_at || node.media_type)
+    );
   }
 
   // Videos and full-size photos of every post in a response. A video's own
@@ -47,15 +56,60 @@
 
     const addPhoto = (current, node, position) => {
       const best = pickBestImage(node?.image_versions2?.candidates);
-      if (!best) return;
+      if (!best) {
+        return;
+      }
       found.set(`photo:${current.code}:${position}`, {
-        platform: "Instagram", kind: "photo", id: current.code, index: position, owner: current.owner,
-        width: best.width, height: best.height, url: best.url
+        platform: "Instagram",
+        kind: "photo",
+        id: current.code,
+        index: position,
+        owner: current.owner,
+        width: best.width,
+        height: best.height,
+        url: best.url
+      });
+    };
+
+    const addVideo = (current, node) => {
+      const best =
+        Array.isArray(node.video_versions) && node.video_versions.length ? pickBestVersion(node.video_versions) : null;
+      if (!best) {
+        return;
+      }
+      current.index++;
+      found.set(`video:${current.code}:${current.index}`, {
+        platform: "Instagram",
+        kind: "video",
+        id: current.code,
+        index: current.index,
+        owner: current.owner,
+        durationMs: Math.round((Number(node.video_duration) || 0) * 1000),
+        width: best.width,
+        height: best.height,
+        url: best.url
+      });
+    };
+
+    const addPostPhotos = (current, node) => {
+      if (!Array.isArray(node.carousel_media)) {
+        addPhoto(current, node, 1);
+        return;
+      }
+      node.carousel_media.forEach((child, i) => {
+        if (child && typeof child === "object") {
+          carouselItems.add(child);
+        }
+        if (!Array.isArray(child?.video_versions)) {
+          addPhoto(current, child, i + 1);
+        }
       });
     };
 
     (function walk(node, post) {
-      if (!node || typeof node !== "object" || seen.has(node)) return;
+      if (!node || typeof node !== "object" || seen.has(node)) {
+        return;
+      }
       seen.add(node);
 
       let current = post;
@@ -67,39 +121,21 @@
           index: 0
         };
       }
-      if (current && Array.isArray(node.video_versions) && node.video_versions.length) {
-        const best = pickBestVersion(node.video_versions);
-        if (best) {
-          current.index++;
-          found.set(`video:${current.code}:${current.index}`, {
-            platform: "Instagram",
-            kind: "video",
-            id: current.code,
-            index: current.index,
-            owner: current.owner,
-            durationMs: Math.round((Number(node.video_duration) || 0) * 1000),
-            width: best.width,
-            height: best.height,
-            url: best.url
-          });
-        }
+      if (current) {
+        addVideo(current, node);
       }
       if (isPost && !Array.isArray(node.video_versions)) {
-        if (Array.isArray(node.carousel_media)) {
-          node.carousel_media.forEach((child, i) => {
-            if (child && typeof child === "object") carouselItems.add(child);
-            if (!Array.isArray(child?.video_versions)) addPhoto(current, child, i + 1);
-          });
-        } else {
-          addPhoto(current, node, 1);
-        }
+        addPostPhotos(current, node);
       }
 
-      for (const key of Object.keys(node)) walk(node[key], current);
+      for (const key of Object.keys(node)) {
+        walk(node[key], current);
+      }
     })(root, null);
 
     return [...found.values()];
   }
 
-  (global.PageMediaParsers ||= {}).Instagram = Object.freeze({ extractMedia, pickBestVersion, pickBestImage, isDirectVideoUrl });
+  global.PageMediaParsers ??= {};
+  global.PageMediaParsers.Instagram = Object.freeze({ extractMedia, pickBestVersion, pickBestImage, isDirectVideoUrl });
 })(globalThis);

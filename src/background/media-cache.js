@@ -8,44 +8,76 @@ let mediaCacheQueue = Promise.resolve();
 
 const MEDIA_KINDS = ["photo", "video"];
 
-function cacheMedia(media) {
-  const result = mediaCacheQueue.then(async () => {
-    if (!Array.isArray(media)) return { ok: false, error: "No media was provided." };
-    const { mediaCache = {} } = await chrome.storage.local.get({ mediaCache: {} });
-    let added = 0;
-    for (const entry of media.slice(0, 100)) {
-      const platform = entry?.platform;
-      const kind = entry?.kind || "video";
-      let host = "";
-      try {
-        const parsed = new URL(entry?.url);
-        host = parsed.protocol === "https:" ? parsed.hostname.toLowerCase() : "";
-      } catch { /* rejected below */ }
-      const hostOk = kind === "photo" ? platforms.isFileHost(platform, host) : platforms.isVideoHost(platform, host);
-      if (!platforms.PLATFORMS.includes(platform) || !MEDIA_KINDS.includes(kind) || !hostOk
-        || !/^[\w-]{3,40}$/.test(String(entry?.id || ""))) continue;
-      const index = Number(entry.index) || 1;
-      const cacheKey = `${platform}:${kind}:${entry.id}:${index}`;
-      if (!Object.hasOwn(mediaCache, cacheKey)) added++;
-      delete mediaCache[cacheKey];
-      mediaCache[cacheKey] = {
-        platform,
-        kind,
-        id: String(entry.id),
-        index,
-        owner: entry.owner ? cleanPart(entry.owner) : null,
-        durationMs: Number(entry.durationMs) || 0,
-        width: Number(entry.width) || 0,
-        height: Number(entry.height) || 0,
-        url: entry.url
-      };
+const httpsHostname = value => {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.hostname.toLowerCase() : "";
+  } catch {
+    return "";
+  }
+};
+
+// A reported entry is kept only when its platform, kind, id and file host all check out.
+function acceptedEntry(entry) {
+  const platform = entry?.platform;
+  const kind = entry?.kind || "video";
+  const validShape =
+    platforms.PLATFORMS.includes(platform) &&
+    MEDIA_KINDS.includes(kind) &&
+    /^[\w-]{3,40}$/.test(String(entry?.id || ""));
+  if (!validShape) {
+    return null;
+  }
+  const host = httpsHostname(entry.url);
+  const hostOk = kind === "photo" ? platforms.isFileHost(platform, host) : platforms.isVideoHost(platform, host);
+  if (!hostOk) {
+    return null;
+  }
+  return {
+    platform,
+    kind,
+    id: String(entry.id),
+    index: Number(entry.index) || 1,
+    owner: entry.owner ? cleanPart(entry.owner) : null,
+    durationMs: Number(entry.durationMs) || 0,
+    width: Number(entry.width) || 0,
+    height: Number(entry.height) || 0,
+    url: entry.url
+  };
+}
+
+async function storeMedia(media) {
+  if (!Array.isArray(media)) {
+    return { ok: false, error: "No media was provided." };
+  }
+  const { mediaCache = {} } = await chrome.storage.local.get({ mediaCache: {} });
+  let added = 0;
+  for (const reported of media.slice(0, 100)) {
+    const entry = acceptedEntry(reported);
+    if (!entry) {
+      continue;
     }
-    const keys = Object.keys(mediaCache);
-    for (const key of keys.slice(0, Math.max(0, keys.length - MEDIA_CACHE_LIMIT))) delete mediaCache[key];
-    await chrome.storage.local.set({ mediaCache });
-    return { ok: true, added, cached: Object.keys(mediaCache).length };
-  });
-  mediaCacheQueue = result.then(() => undefined, () => undefined);
+    const cacheKey = `${entry.platform}:${entry.kind}:${entry.id}:${entry.index}`;
+    if (!Object.hasOwn(mediaCache, cacheKey)) {
+      added++;
+    }
+    delete mediaCache[cacheKey]; // re-added at the end, so the oldest entries are the ones dropped
+    mediaCache[cacheKey] = entry;
+  }
+  const keys = Object.keys(mediaCache);
+  for (const key of keys.slice(0, Math.max(0, keys.length - MEDIA_CACHE_LIMIT))) {
+    delete mediaCache[key];
+  }
+  await chrome.storage.local.set({ mediaCache });
+  return { ok: true, added, cached: Object.keys(mediaCache).length };
+}
+
+function cacheMedia(media) {
+  const result = mediaCacheQueue.then(() => storeMedia(media));
+  mediaCacheQueue = result.then(
+    () => undefined,
+    () => undefined
+  );
   return result;
 }
 
@@ -81,15 +113,20 @@ function cachedMediaItem(entry, account) {
 // cached owner matches `account` are saved, so unrelated feed media never lands
 // in the wrong folder.
 async function downloadCachedMedia({ platform, account, ids, limit }) {
-  if (!platforms.PLATFORMS.includes(platform)) return { ok: false, error: "Unsupported platform for cached media." };
+  if (!platforms.PLATFORMS.includes(platform)) {
+    return { ok: false, error: "Unsupported platform for cached media." };
+  }
   await mediaCacheQueue;
   const { mediaCache = {} } = await chrome.storage.local.get({ mediaCache: {} });
   const wantedIds = Array.isArray(ids) ? new Set(ids.map(String)) : null;
   const wantedAccount = account ? cleanPart(account).toLowerCase() : null;
-  const entries = Object.values(mediaCache)
-    .filter(entry => entry.platform === platform && (wantedIds
-      ? wantedIds.has(entry.id)
-      : Boolean(entry.owner) && (!wantedAccount || entry.owner.toLowerCase() === wantedAccount)));
+  const entries = Object.values(mediaCache).filter(
+    entry =>
+      entry.platform === platform &&
+      (wantedIds
+        ? wantedIds.has(entry.id)
+        : Boolean(entry.owner) && (!wantedAccount || entry.owner.toLowerCase() === wantedAccount))
+  );
   const coveredIds = [...new Set(entries.map(entry => entry.id))];
   const items = entries.map(entry => cachedMediaItem(entry, account));
   // Items already saved or pending are skipped by downloadBatch, so only they may
@@ -98,11 +135,17 @@ async function downloadCachedMedia({ platform, account, ids, limit }) {
     const { pendingDownloads = {} } = await chrome.storage.local.get({ pendingDownloads: {} });
     const fresh = [];
     for (const item of items) {
-      if (fresh.length >= limit) break;
-      if (!Object.hasOwn(pendingDownloads, item.key) && !(await ledgerHas(item.key))) fresh.push(item);
+      if (fresh.length >= limit) {
+        break;
+      }
+      if (!Object.hasOwn(pendingDownloads, item.key) && !(await ledgerHas(item.key))) {
+        fresh.push(item);
+      }
     }
     items.splice(0, items.length, ...fresh);
   }
-  if (!items.length) return { ok: true, started: 0, skipped: 0, failed: 0, pending: 0, errors: [], cached: 0, coveredIds };
+  if (!items.length) {
+    return { ok: true, started: 0, skipped: 0, failed: 0, pending: 0, errors: [], cached: 0, coveredIds };
+  }
   return { ...(await downloadBatch(items)), cached: items.length, coveredIds };
 }

@@ -12,12 +12,18 @@ let filenameQueue = Promise.resolve();
 
 function queueBatch(operation) {
   const result = batchQueue.then(operation, operation);
-  batchQueue = result.then(() => undefined, () => undefined);
+  batchQueue = result.then(
+    () => undefined,
+    () => undefined
+  );
   return result;
 }
 
 function queueFilenameOperation(operation) {
   const result = filenameQueue.then(operation, operation);
-  filenameQueue = result.then(() => undefined, () => undefined);
+  filenameQueue = result.then(
+    () => undefined,
+    () => undefined
+  );
   return result;
 }
