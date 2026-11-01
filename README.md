@@ -1,13 +1,53 @@
-# Page Media Saver
+# jooservices/media-downloader
+
+[![CI](https://github.com/jooservices/media-downloader/actions/workflows/ci-post-merge.yml/badge.svg?branch=develop)](https://github.com/jooservices/media-downloader/actions/workflows/ci-post-merge.yml)
+[![CodeQL](https://github.com/jooservices/media-downloader/actions/workflows/codeql.yml/badge.svg?branch=develop)](https://github.com/jooservices/media-downloader/actions/workflows/codeql.yml)
+[![Coverage (develop)](https://codecov.io/gh/jooservices/media-downloader/branch/develop/graph/badge.svg)](https://codecov.io/gh/jooservices/media-downloader/branch/develop)
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=jooservices_media-downloader&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=jooservices_media-downloader)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/jooservices/media-downloader/badge)](https://securityscorecards.dev/viewer/?uri=github.com/jooservices/media-downloader)
+[![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933.svg?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![Manifest V3](https://img.shields.io/badge/Chrome%20Extension-Manifest%20V3-4285F4.svg?logo=googlechrome&logoColor=white)](https://developer.chrome.com/docs/extensions/mv3/intro/)
+[![GitHub Release](https://img.shields.io/github/v/release/jooservices/media-downloader?display_name=tag)](https://github.com/jooservices/media-downloader/releases)
+[![Code style: Prettier](https://img.shields.io/badge/code%20style-prettier-ff69b4.svg)](https://prettier.io/)
+[![Linted with ESLint](https://img.shields.io/badge/linted%20with-ESLint-4B32C3.svg?logo=eslint&logoColor=white)](https://eslint.org/)
+[![Conventional Commits](https://img.shields.io/badge/Conventional%20Commits-1.0.0-FE5196.svg?logo=conventionalcommits&logoColor=white)](https://www.conventionalcommits.org/)
+[![Dependabot](https://img.shields.io/badge/Dependabot-enabled-025E8C.svg?logo=dependabot&logoColor=white)](.github/dependabot.yml)
+[![Last commit](https://img.shields.io/github/last-commit/jooservices/media-downloader/develop)](https://github.com/jooservices/media-downloader/commits/develop)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+Page Media Saver: a Manifest V3 Edge/Chromium extension and a local Windows CLI that save the full-size photos and videos of Instagram, Facebook and X pages you are signed in to, without sending anything to a server.
+
+## Features
+
+- Photos and videos from profile grids, timelines, posts and reels on X, Instagram and Facebook.
+- Largest rendition only (never a thumbnail), named with its real pixel size.
+- No duplicates: a local ledger remembers what was saved, whichever account folder it was found under.
+- A CLI with `--limit N` (default 10) and `--unlimited`, resumable jobs and a loopback-only bridge to the extension.
+
+## Requirements
+
+- Microsoft Edge or another Chromium browser (Manifest V3)
+- Node.js `>= 22` for the CLI and for development
+- Windows for the CLI's Edge integration; the tests and the other tools run anywhere
+
+## Development
+
+```bash
+npm ci
+npm run ci        # validate + lint + tests with coverage
+npm run build     # build/media-downloader-<version>.zip
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the git flow, commit convention and quality gates, and [WORKFLOWS.md](WORKFLOWS.md) for the CI/CD pipeline.
 
 A Manifest V3 Edge extension and local CLI for saving photos exposed by the page while signed in, plus videos when the platform offers its own download action. It uses page DOM and Edge's download manager; it does not use AI or send collected media to a server.
 
 ## Install in Microsoft Edge
 
-1. Extract `social-media-downloader.zip` to a permanent folder.
+1. Download `media-downloader-<version>.zip` from the [latest release](https://github.com/jooservices/media-downloader/releases/latest) (or run `npm run build`) and extract it to a permanent folder.
 2. Open `edge://extensions`.
 3. Turn on **Developer mode**.
-4. Select **Load unpacked** and choose the extracted `social-media-downloader` folder. Allow the extension to access Instagram, Facebook, and X when Edge asks.
+4. Select **Load unpacked** and choose the extracted folder. Allow the extension to access Instagram, Facebook, and X when Edge asks.
 5. In PowerShell, from the extracted folder, run `node .\cli\mediasaver.mjs install`. This records the loaded extension ID and signed-in Edge profile for the current Windows user; it does not need administrator access.
 6. Run `node .\cli\mediasaver.mjs download <profile-or-post-URL>`. The CLI opens the URL in the existing Edge profile and runs a local bridge on `127.0.0.1:38541`. The extension accepts bridge requests only from its configured extension origin. It scrolls Instagram/Facebook grids and X profile timelines, including X's `/media` tab; a direct Instagram post/reel, Facebook video/reel, or X status URL is scanned once. It saves visible photos and eligible video downloads, skips duplicates, limits concurrent downloads, retries interrupted image downloads up to three times, and waits for native video downloads to settle. You can switch to another Edge tab while the job runs. Keep the CLI process open until the job completes. Use `node .\cli\mediasaver.mjs status` to check progress and `node .\cli\mediasaver.mjs resume` to reconnect to a queued or interrupted job.
 
@@ -51,7 +91,7 @@ cli/        mediasaver.mjs (entry) · args · jobs · bridge-server · edge · r
 tests/      node --test; fixtures/ holds real captured site responses
 ```
 
-Run the tests with `npm test`, or `node --test "tests/*.test.mjs"` where npm is not installed.
+Run the tests with `npm test`; see [CONTRIBUTING.md](CONTRIBUTING.md) for the full quality gates.
 
 Use **Stop automatic download** in the extension popup to pause a Facebook or Instagram run. The extension remembers successfully downloaded items so the same page can be scanned again without intentionally duplicating them. Interrupted downloads are retried up to three times and are reported separately from pending downloads. CLI jobs and their status are stored under `%LOCALAPPDATA%\PageMediaSaver` so they survive closing the CLI window.
 

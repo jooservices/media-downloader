@@ -15,26 +15,38 @@
   ];
 
   function isVisible(node) {
-    return Boolean(node && node.isConnected !== false
-      && (typeof node.getClientRects !== "function" || node.getClientRects().length > 0));
+    return Boolean(
+      node &&
+      node.isConnected !== false &&
+      (typeof node.getClientRects !== "function" || node.getClientRects().length > 0)
+    );
   }
 
   function videoContainer(node) {
     const closest = node?.closest?.('article, [role="article"], [role="dialog"]');
-    if (closest) return closest;
+    if (closest) {
+      return closest;
+    }
 
     let current = node;
     for (let depth = 0; current && depth < 16; depth++, current = current.parentElement) {
-      if (current.matches?.('article, [role="article"], [role="dialog"]')) return current;
+      if (current.matches?.('article, [role="article"], [role="dialog"]')) {
+        return current;
+      }
     }
     return null;
   }
 
   function isVideoPost(container) {
-    if (!container?.querySelector) return false;
+    if (!container?.querySelector) {
+      return false;
+    }
     return VIDEO_MARKERS.some(selector => {
-      try { return Boolean(container.querySelector(selector)); }
-      catch { return false; }
+      try {
+        return Boolean(container.querySelector(selector));
+      } catch {
+        return false;
+      }
     });
   }
 
@@ -43,14 +55,18 @@
     const articleLike = [...doc.querySelectorAll('article, [role="article"], [role="dialog"]')];
 
     for (const container of articleLike) {
-      if (!isVisible(container) || !isVideoPost(container)) continue;
-      const video = [...container.querySelectorAll("video")].find(isVisible)
-        || container.querySelector("video") || null;
+      if (!isVisible(container) || !isVideoPost(container)) {
+        continue;
+      }
+      const video =
+        [...container.querySelectorAll("video")].find(isVisible) || container.querySelector("video") || null;
       found.set(container, { container, video });
     }
 
     for (const video of doc.querySelectorAll("video")) {
-      if (!isVisible(video)) continue;
+      if (!isVisible(video)) {
+        continue;
+      }
       const container = videoContainer(video);
       if (container && isVisible(container) && !found.has(container)) {
         found.set(container, { container, video });

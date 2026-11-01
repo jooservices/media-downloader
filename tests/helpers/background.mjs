@@ -15,7 +15,13 @@ export function createFakeIndexedDB() {
   const request = work => {
     const req = {};
     setImmediate(() => {
-      try { req.result = work(); req.onsuccess?.({ target: req }); } catch (error) { req.error = error; req.onerror?.({ target: req }); }
+      try {
+        req.result = work();
+        req.onsuccess?.({ target: req });
+      } catch (error) {
+        req.error = error;
+        req.onerror?.({ target: req });
+      }
     });
     return req;
   };
@@ -30,13 +36,18 @@ export function createFakeIndexedDB() {
           const stores = new Map();
           db = {
             stores,
-            createObjectStore(storeName, { keyPath }) { stores.set(storeName, { keyPath, rows: new Map() }); },
+            createObjectStore(storeName, { keyPath }) {
+              stores.set(storeName, { keyPath, rows: new Map() });
+            },
             transaction(storeName) {
               const store = stores.get(storeName);
               const transaction = {
                 objectStore: () => ({
                   get: key => request(() => store.rows.get(key)),
-                  put: value => request(() => { store.rows.set(value[store.keyPath], structuredClone(value)); }),
+                  put: value =>
+                    request(() => {
+                      store.rows.set(value[store.keyPath], structuredClone(value));
+                    }),
                   count: () => request(() => store.rows.size)
                 })
               };
@@ -47,7 +58,9 @@ export function createFakeIndexedDB() {
           databases.set(name, db);
         }
         opening.result = db;
-        if (created) opening.onupgradeneeded?.({ target: opening });
+        if (created) {
+          opening.onupgradeneeded?.({ target: opening });
+        }
         opening.onsuccess?.({ target: opening });
       });
       return opening;
@@ -55,35 +68,56 @@ export function createFakeIndexedDB() {
   };
 }
 
-export function loadBackground({ storage: initialStorage = {}, fetchImpl = fetch, now = () => Date.now(), failStorageGet = false, indexedDB = createFakeIndexedDB() } = {}) {
+export function loadBackground({
+  storage: initialStorage = {},
+  fetchImpl = fetch,
+  now = () => Date.now(),
+  failStorageGet = false,
+  indexedDB = createFakeIndexedDB()
+} = {}) {
   const listeners = { message: [], changed: [], determining: [], tabRemoved: [] };
   const storage = structuredClone(initialStorage);
   const downloads = new Map();
   const started = [];
   const tabMessages = [];
-  const FakeDate = class extends Date { static now() { return now(); } };
+  const FakeDate = class extends Date {
+    static now() {
+      return now();
+    }
+  };
 
   const chrome = {
     runtime: { id: "test-extension-id", onMessage: { addListener: listener => listeners.message.push(listener) } },
     downloads: {
       onChanged: { addListener: listener => listeners.changed.push(listener) },
       onDeterminingFilename: { addListener: listener => listeners.determining.push(listener) },
-      search: async query => downloads.has(query.id) ? [downloads.get(query.id)] : [],
-      download: async options => { started.push(options); return started.length; }
+      search: async query => (downloads.has(query.id) ? [downloads.get(query.id)] : []),
+      download: async options => {
+        started.push(options);
+        return started.length;
+      }
     },
     storage: {
       local: {
         get: async defaults => {
-          if (failStorageGet) throw new Error("storage unavailable");
+          if (failStorageGet) {
+            throw new Error("storage unavailable");
+          }
           return { ...structuredClone(defaults || {}), ...structuredClone(storage) };
         },
         set: async values => Object.assign(storage, structuredClone(values)),
-        remove: async keys => { for (const key of Array.isArray(keys) ? keys : [keys]) delete storage[key]; }
+        remove: async keys => {
+          for (const key of Array.isArray(keys) ? keys : [keys]) {
+            delete storage[key];
+          }
+        }
       }
     },
     tabs: {
       onRemoved: { addListener: listener => listeners.tabRemoved.push(listener) },
-      sendMessage: async (id, message) => { tabMessages.push({ id, message }); }
+      sendMessage: async (id, message) => {
+        tabMessages.push({ id, message });
+      }
     }
   };
 
@@ -115,14 +149,17 @@ export function loadBackground({ storage: initialStorage = {}, fetchImpl = fetch
     started,
     tabMessages,
     send: (message, sender = {}) => new Promise(resolve => listeners.message[0](message, sender, resolve)),
-    determine: item => new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("Filename callback did not respond.")), 1000);
-      const asynchronous = listeners.determining[0](item, (...args) => {
-        clearTimeout(timer);
-        resolve(args);
-      });
-      if (asynchronous !== true) reject(new Error("The filename listener must answer asynchronously."));
-    })
+    determine: item =>
+      new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("Filename callback did not respond.")), 1000);
+        const asynchronous = listeners.determining[0](item, (...args) => {
+          clearTimeout(timer);
+          resolve(args);
+        });
+        if (asynchronous !== true) {
+          reject(new Error("The filename listener must answer asynchronously."));
+        }
+      })
   };
 }
 

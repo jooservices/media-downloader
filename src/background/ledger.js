@@ -21,7 +21,9 @@ function transactionDone(transaction) {
 }
 
 async function openLedger() {
-  if (ledgerDb) return ledgerDb;
+  if (ledgerDb) {
+    return ledgerDb;
+  }
   const opening = indexedDB.open(LEDGER_DB_NAME, 1);
   opening.onupgradeneeded = () => opening.result.createObjectStore(LEDGER_STORE, { keyPath: "key" });
   ledgerDb = await requestResult(opening);
@@ -32,12 +34,19 @@ async function openLedger() {
 // Keys written by earlier versions lived in chrome.storage.local; move them once,
 // in the new key form, so nothing already saved is downloaded again.
 async function importLegacyLedger(db) {
-  const { downloadedKeys = [], ledgerImported = false } = await chrome.storage.local.get({ downloadedKeys: [], ledgerImported: false });
-  if (ledgerImported) return;
+  const { downloadedKeys = [], ledgerImported = false } = await chrome.storage.local.get({
+    downloadedKeys: [],
+    ledgerImported: false
+  });
+  if (ledgerImported) {
+    return;
+  }
   if (downloadedKeys.length) {
     const transaction = db.transaction(LEDGER_STORE, "readwrite");
     const store = transaction.objectStore(LEDGER_STORE);
-    for (const key of downloadedKeys) store.put({ key: PageMediaLib.keys.toCanonicalKey(key), at: 0 });
+    for (const key of downloadedKeys) {
+      store.put({ key: PageMediaLib.keys.toCanonicalKey(key), at: 0 });
+    }
     await transactionDone(transaction);
   }
   await chrome.storage.local.set({ ledgerImported: true });
@@ -50,7 +59,9 @@ async function ledgerHas(key) {
   const db = await openLedger();
   const store = db.transaction(LEDGER_STORE, "readonly").objectStore(LEDGER_STORE);
   for (const candidate of new Set([key, PageMediaLib.keys.toCanonicalKey(key)])) {
-    if (await requestResult(store.get(candidate))) return true;
+    if (await requestResult(store.get(candidate))) {
+      return true;
+    }
   }
   return false;
 }

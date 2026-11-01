@@ -1,0 +1,11 @@
+title = "gitleaks"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Allowlisted files"
+paths = [
+  '''(.*?)(png|jpg|gif|svg)$''',
+  '''^package-lock\.json$''',
+]

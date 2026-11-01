@@ -1,7 +1,10 @@
 // Content script entry: answers messages from the popup and background, and tells
 // the CLI bridge when a profile or post page is ready.
+globalThis.PageMediaSaver ??= {};
 (function initContent(ns) {
-  if (globalThis.__pageMediaSaverInstalled) return;
+  if (globalThis.__pageMediaSaverInstalled) {
+    return;
+  }
   globalThis.__pageMediaSaverInstalled = true;
 
   const { scan } = ns;
@@ -22,7 +25,8 @@
     if (message?.type === "AUTO_START") {
       // A scan started from the popup follows the limit saved there.
       const { STORAGE_KEY, DEFAULTS, effectiveScanLimit } = PageMediaLib.settings;
-      chrome.storage.local.get({ [STORAGE_KEY]: DEFAULTS })
+      chrome.storage.local
+        .get({ [STORAGE_KEY]: DEFAULTS })
         .then(stored => sendResponse(scan.startAutoScan(null, [], effectiveScanLimit(stored[STORAGE_KEY]))))
         .catch(error => sendResponse({ ok: false, error: error?.message || String(error) }));
       return true;
@@ -36,22 +40,32 @@
       sendResponse(scan.startAutoScan(message.job.jobId, message.job.repairTargets || [], message.job.limit));
       return false;
     }
-    if (message?.type !== "COLLECT_VISIBLE_MEDIA") return false;
-    scan.collect().then(sendResponse).catch(error => sendResponse({ ok: false, error: error?.message || String(error) }));
+    if (message?.type !== "COLLECT_VISIBLE_MEDIA") {
+      return false;
+    }
+    scan
+      .collect()
+      .then(sendResponse)
+      .catch(error => sendResponse({ ok: false, error: error?.message || String(error) }));
     return true;
   });
 
   const initialPlatform = platformForPage();
   if (isProfileGrid(initialPlatform) || isMediaPostPage(initialPlatform)) {
-    const announceCliPage = () => chrome.runtime.sendMessage({
-      type: "CLI_PAGE_READY",
-      pageUrl: location.href,
-      platform: initialPlatform,
-      account: getAccount(initialPlatform)
-    }).catch(() => {});
+    const announceCliPage = () =>
+      chrome.runtime
+        .sendMessage({
+          type: "CLI_PAGE_READY",
+          pageUrl: location.href,
+          platform: initialPlatform,
+          account: getAccount(initialPlatform)
+        })
+        .catch(() => {});
     announceCliPage();
     window.setInterval(() => {
-      if (scan.state.running && scan.state.jobId) announceCliPage();
+      if (scan.state.running && scan.state.jobId) {
+        announceCliPage();
+      }
     }, 15000);
   }
-})(globalThis.PageMediaSaver ||= {});
+})(globalThis.PageMediaSaver);
