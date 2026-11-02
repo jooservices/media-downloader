@@ -227,6 +227,16 @@ test("the queue ticks on an alarm and recovers interrupted jobs when the browser
   assert.equal((await only(env)).status, "incomplete");
 });
 
+test("a fresh install opens the dashboard; an update does not", async () => {
+  const env = start();
+  env.listeners.installed[0]({ reason: "update" });
+  await settle();
+  assert.equal(env.optionsOpened.count, 0);
+  env.listeners.installed[0]({ reason: "install" });
+  await settle();
+  assert.equal(env.optionsOpened.count, 1);
+});
+
 test("clearing finished removes only completed jobs", async () => {
   const env = start({
     storage: {

@@ -49,6 +49,13 @@ chrome.runtime.onStartup.addListener(() => {
     .catch(() => undefined);
 });
 
+// The first thing a new user sees is the dashboard, where they sign in and add profiles.
+chrome.runtime.onInstalled.addListener(details => {
+  if (details.reason === "install") {
+    chrome.runtime.openOptionsPage().catch(() => undefined);
+  }
+});
+
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.url) {
     queueEngine.tabNavigated(tabId, changeInfo.url).catch(() => undefined);

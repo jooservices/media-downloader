@@ -108,7 +108,10 @@ export default [
   },
   {
     files: ["src/popup/**/*.js"],
-    languageOptions: { sourceType: "script", globals: { ...globals.browser, ...extensionGlobals } }
+    languageOptions: {
+      sourceType: "script",
+      globals: { ...globals.browser, ...extensionGlobals, PageMediaOptions: "readonly", PageMediaStrings: "readonly" }
+    }
   },
   {
     // The dashboard's helpers are classic scripts that also load in Node for their tests.

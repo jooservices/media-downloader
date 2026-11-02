@@ -87,9 +87,11 @@ export function loadBackground({
     tabRemoved: [],
     tabUpdated: [],
     alarm: [],
-    startup: []
+    startup: [],
+    installed: []
   };
   const alarms = [];
+  const optionsOpened = { count: 0 };
   const tabsCreated = [];
   let nextTabId = 100;
   const storage = structuredClone(initialStorage);
@@ -107,7 +109,11 @@ export function loadBackground({
     runtime: {
       id: "test-extension-id",
       onMessage: { addListener: listener => listeners.message.push(listener) },
-      onStartup: { addListener: listener => listeners.startup.push(listener) }
+      onStartup: { addListener: listener => listeners.startup.push(listener) },
+      onInstalled: { addListener: listener => listeners.installed.push(listener) },
+      openOptionsPage: async () => {
+        optionsOpened.count++;
+      }
     },
     alarms: {
       create: (name, info) => alarms.push({ name, info }),
@@ -196,6 +202,7 @@ export function loadBackground({
     tabRemoves,
     tabsCreated,
     alarms,
+    optionsOpened,
     inContext,
     send: (message, sender = {}) => new Promise(resolve => listeners.message[0](message, sender, resolve)),
     determine: item =>
