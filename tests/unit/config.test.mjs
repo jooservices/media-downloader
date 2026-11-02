@@ -24,6 +24,15 @@ test("rejects a worker count that is not a whole number from 1 to the maximum", 
   assert.throws(() => parseConfig({ workers: { tiktok: 1 } }), /unknown site/);
 });
 
+test("limit is a whole number of at least 1, or null for no limit", () => {
+  assert.equal(parseConfig({}).limit, null);
+  assert.equal(parseConfig({ limit: 50 }).limit, 50);
+  assert.equal(parseConfig({ limit: null }).limit, null);
+  for (const value of [0, -3, 1.5, "10"]) {
+    assert.throws(() => parseConfig({ limit: value }), /limit must be/, String(value));
+  }
+});
+
 test("the pause between accounts needs min <= max within an hour", () => {
   assert.deepEqual(plain(parseConfig({ delaySeconds: { min: 5 } }).delaySeconds), { min: 5, max: 60 });
   assert.deepEqual(plain(parseConfig({ delaySeconds: { min: 0, max: 0 } }).delaySeconds), { min: 0, max: 0 });

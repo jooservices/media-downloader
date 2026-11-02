@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
@@ -114,7 +114,7 @@ test("a sign-in page ends the job without retries and closes the tab", async () 
   assert.equal(result.close, true);
   const saved = (await store.listJobs()).find(item => item.jobId === job.jobId);
   assert.equal(saved.status, "error");
-  assert.equal(saved.noRetry, true);
+  assert.equal(saved.needsLogin, true);
   assert.match(saved.message, /asked to sign in/);
 });
 

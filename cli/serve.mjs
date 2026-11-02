@@ -133,7 +133,8 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null 
   log(`Serving. Add URLs to ${inbox} or run “add <url>”; stop with Ctrl+C.`);
 
   const pass = async () => {
-    const { created } = await addUrls(await readUrlFile(inbox), { limit });
+    const settings = await loadConfig().catch(() => null);
+    const { created } = await addUrls(await readUrlFile(inbox), { limit: settings?.limit ?? limit });
     if (created.length) {
       log(`Queued ${created.length} new URL(s) from the inbox.`);
     }

@@ -152,8 +152,8 @@ async function judgeTaggedTab(message) {
   if (isSignInPage(message.pageUrl)) {
     await updateJob(tagged.jobId, job => {
       job.status = "error";
-      job.noRetry = true;
-      job.message = `${job.platform} asked to sign in. Sign in with Edge's profile, then queue this profile again.`;
+      job.needsLogin = true;
+      job.message = `${job.platform} asked to sign in. Sign in with Edge's profile; the queue continues by itself.`;
     });
     return CLOSE_TAB;
   }
