@@ -88,6 +88,11 @@ globalThis.PageMediaSaver ??= {};
     return width >= 160 && height >= 160;
   }
 
+  function isOtherAccountsPost(statusLink, account) {
+    const owner = statusLink ? new URL(statusLink.href).pathname.split("/").filter(Boolean)[0] : null;
+    return Boolean(owner) && owner.toLowerCase() !== String(account).toLowerCase();
+  }
+
   async function collectX(account) {
     const items = [];
     const seen = new Set();
@@ -96,9 +101,9 @@ globalThis.PageMediaSaver ??= {};
       const article = articles[a];
       const statusLink = article.querySelector('a[href*="/status/"]');
       const statusId = statusLink?.href.match(/\/status\/(\d+)/)?.[1] || `post-${a + 1}`;
-      if (globalThis.PageMediaDetection.isVideoPost(article)) {
+      if (isOtherAccountsPost(statusLink, account) || globalThis.PageMediaDetection.isVideoPost(article)) {
         continue;
-      } // Never save a video poster as if it were a photo.
+      } // A repost or ad belongs to someone else; a video poster is never saved as a photo.
 
       let photoIndex = 0;
       for (const img of article.querySelectorAll(

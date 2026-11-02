@@ -2,7 +2,8 @@
   "use strict";
 
   const { platforms } = global.PageMediaLib;
-  const SHORTCODE = /^[A-Za-z0-9_-]{6,16}$/;
+  // Most posts use an 11-character shortcode, but some accounts' posts are addressed by a 39-character one.
+  const SHORTCODE = /^[A-Za-z0-9_-]{6,40}$/;
 
   const isFileUrl = (value, isHost) => {
     try {

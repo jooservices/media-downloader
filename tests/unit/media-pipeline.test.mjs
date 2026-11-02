@@ -135,6 +135,13 @@ const igPost = (code, extra = {}) => ({
   ...extra
 });
 
+test("Instagram: accepts the 39-character post codes some accounts use", () => {
+  const code = "DemseyJqVuLHSwxcpAExWqOflSs3WcOYb-Sjyo0";
+  const [video] = instagram.extractMedia({ data: { xdt: { items: [igPost(code)] } } });
+  assert.equal(video.id, code);
+  assert.equal(instagram.extractMedia({ data: { xdt: { items: [igPost(`${code}${code}`)] } } }).length, 0);
+});
+
 test("Instagram: keeps the largest listed version and the post owner", () => {
   const [video, ...rest] = instagram.extractMedia({ data: { xdt: { items: [igPost("DezPoWNzXMt")] } } });
   assert.equal(rest.length, 0);
@@ -293,6 +300,14 @@ test("hook publishes videos from a platform data response once and ignores other
   assert.equal(posted[0].message.media[0].id, "Dhook0001");
 });
 
+test("hook reads Instagram's profile posts from the slashless /api/graphql endpoint", async () => {
+  const body = JSON.stringify({ data: { items: [igPost("Dgql00001")] } });
+  const { page, posted } = loadHook("www.instagram.com", async () => ({ clone: () => ({ text: async () => body }) }));
+  await page.fetch("https://www.instagram.com/api/graphql");
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(posted[0]?.message.media[0].id, "Dgql00001");
+});
+
 test("hook reads line-delimited Facebook responses", async () => {
   const lines = [JSON.stringify({ label: "x" }), JSON.stringify({ data: { media: fbVideo("555") } })].join("\n");
   const { page, posted } = loadHook("www.facebook.com", async () => ({ clone: () => ({ text: async () => lines }) }));
@@ -346,6 +361,26 @@ test("does not download a cached video twice and filters by account", async () =
   assert.equal(started.length, 1);
   assert.equal(again.started, 0);
   assert.equal(again.skipped, 1);
+});
+
+test("page ids never pull in another account's media on the same page", async () => {
+  const { send, started } = loadBackground();
+  await send({
+    type: "MEDIA_FOUND",
+    media: [
+      { platform: "Twitter", id: "5001", index: 1, owner: "Target", url: "https://video.twimg.com/v/5001.mp4" },
+      { platform: "Twitter", id: "5002", index: 1, owner: "promoted", url: "https://video.twimg.com/v/5002.mp4" }
+    ]
+  });
+  const result = await send({
+    type: "DOWNLOAD_CACHED_MEDIA",
+    platform: "Twitter",
+    account: "target",
+    ids: ["5001", "5002"]
+  });
+  assert.equal(result.started, 1);
+  assert.equal(started.length, 1);
+  assert.equal(started[0].filename, "Twitter/Target/video_5001.mp4");
 });
 
 test("Instagram and Facebook videos are chosen by the page's ids and never cross platforms", async () => {

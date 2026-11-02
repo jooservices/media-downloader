@@ -20,7 +20,7 @@
   // Only the platform's own data endpoints are read; everything else is left alone.
   const DATA_URL = {
     Twitter: /\/i\/api\/graphql\//,
-    Instagram: /\/graphql\/|\/api\/v1\//,
+    Instagram: /\/graphql(?:[/?]|$)|\/api\/v1\//,
     Facebook: /\/api\/graphql\/|\/ajax\/bulk-route-definitions|\/video\/video_data/
   }[platform];
 
