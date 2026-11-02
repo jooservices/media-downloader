@@ -8,6 +8,7 @@ import {
   TERMINAL_STATES,
   sleep,
   normalizeProfileUrl,
+  cliTabMarker,
   writeJsonAtomic,
   readJson,
   getActiveJob,
@@ -39,7 +40,9 @@ export async function openJobInEdge(job) {
   if (!edgeProfile?.profileDirectory) {
     throw new Error(INSTALL_HINT);
   }
-  const edgeProcess = spawn(edge, [`--profile-directory=${edgeProfile.profileDirectory}`, job.url], {
+  // The marker lets the extension recognise this tab as the CLI's and close it when it is done with it.
+  const pageUrl = `${job.url}${cliTabMarker(job.jobId)}`;
+  const edgeProcess = spawn(edge, [`--profile-directory=${edgeProfile.profileDirectory}`, pageUrl], {
     detached: true,
     stdio: "ignore",
     windowsHide: true

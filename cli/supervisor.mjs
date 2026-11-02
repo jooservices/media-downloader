@@ -15,7 +15,7 @@ const madeProgress = job => NO_PROGRESS.some(key => Number(job[key] || 0) > 0);
 // An error (the page never answered, the tab was closed) is worth another try; so is a scan that
 // ended incomplete after saving something. An incomplete scan that saved nothing has nothing to gain.
 export function shouldRetry(job, maxAttempts) {
-  if (Number(job.attempts || 0) >= maxAttempts) {
+  if (job.noRetry || Number(job.attempts || 0) >= maxAttempts) {
     return false;
   }
   return job.status === "error" || (job.status === "incomplete" && madeProgress(job));

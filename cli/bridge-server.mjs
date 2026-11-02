@@ -10,7 +10,9 @@ import {
   readJson,
   listJobs,
   updateJob,
-  isJobId
+  isJobId,
+  isSignInPage,
+  jobFile
 } from "./store.mjs";
 
 const MAX_BODY_BYTES = 1_000_000;
@@ -132,11 +134,39 @@ function pageMatchesJob(message, job) {
   return sameUrl && message.platform === job.platform && sameAccount;
 }
 
+const CLOSE_TAB = { ok: true, type: "NO_JOB", close: true };
+
+// A tab the CLI opened names its job in the URL. Say whether that tab is still useful; when it is
+// not (its job is gone or finished, the site wants a sign-in, it landed on the wrong page, or another
+// tab already runs the job) the extension closes it so tabs never pile up.
+async function judgeTaggedTab(message) {
+  const tagged = isJobId(message.cliJobId) ? await readJson(jobFile(message.cliJobId)) : null;
+  if (!tagged || TERMINAL_STATES.has(tagged.status)) {
+    return CLOSE_TAB;
+  }
+  if (isSignInPage(message.pageUrl)) {
+    await updateJob(tagged.jobId, job => {
+      job.status = "error";
+      job.noRetry = true;
+      job.message = `${job.platform} asked to sign in. Sign in with Edge's profile, then queue this profile again.`;
+    });
+    return CLOSE_TAB;
+  }
+  const duplicate = tagged.status === "running" && tagged.tabId && tagged.tabId !== message.tabId;
+  return duplicate || !pageMatchesJob(message, tagged) ? CLOSE_TAB : null;
+}
+
 // Several jobs can be waiting at once (one per worker), so the page is matched against all of them.
 // The oldest waiting job for this page starts; a page that reloads while its job runs just reconnects.
 async function handlePageReady(message, claimedJobs) {
   if (!Number.isInteger(message.tabId)) {
     return { ok: false, error: "The Edge tab could not be identified." };
+  }
+  if (message.cliJobId) {
+    const verdict = await judgeTaggedTab(message);
+    if (verdict) {
+      return verdict;
+    }
   }
   const matching = (await listJobs())
     .filter(job => !TERMINAL_STATES.has(job.status) && pageMatchesJob(message, job))
@@ -151,6 +181,7 @@ async function handlePageReady(message, claimedJobs) {
       job.account = String(message.account || job.account);
     }
     job.status = "running";
+    job.tabId = message.tabId;
     job.message = job.mediaPage
       ? "Edge acknowledged the media post; checking its platform download control."
       : "Edge acknowledged the profile page; scanning and downloading.";

@@ -51,14 +51,18 @@ globalThis.PageMediaSaver ??= {};
   });
 
   const initialPlatform = platformForPage();
-  if (isProfileGrid(initialPlatform) || isMediaPostPage(initialPlatform)) {
+  // A tab the CLI opened carries its job id in the URL fragment. It announces itself even when it
+  // is not a profile page (a sign-in wall, a redirect), so the extension can close it.
+  const cliJobId = PageMediaLib.urls.cliJobIdFromHash(location.hash);
+  if (cliJobId || isProfileGrid(initialPlatform) || isMediaPostPage(initialPlatform)) {
     const announceCliPage = () =>
       chrome.runtime
         .sendMessage({
           type: "CLI_PAGE_READY",
           pageUrl: location.href,
           platform: initialPlatform,
-          account: getAccount(initialPlatform)
+          account: getAccount(initialPlatform),
+          cliJobId
         })
         .catch(() => {});
     announceCliPage();

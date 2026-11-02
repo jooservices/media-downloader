@@ -56,6 +56,60 @@ test("a page with no waiting job gets NO_JOB, and a reloaded page reconnects to 
   assert.equal((await handleBridgeMessage(page(job, 31), claimed)).type, "JOB_CONNECTED");
 });
 
+const tagged = (job, tabId, pageUrl = job.url) => ({ ...page(job, tabId), pageUrl, cliJobId: job.jobId });
+
+test("a tab whose job is finished or gone is told to close", async () => {
+  const done = await createJob("https://x.com/finished");
+  await handleBridgeMessage({ type: "JOB_DONE", jobId: done.jobId, state: { status: "complete" } }, new Set());
+  assert.equal((await handleBridgeMessage(tagged(done, 1), new Set())).close, true);
+
+  const gone = {
+    jobId: "00000000-0000-4000-8000-000000000001",
+    platform: "Twitter",
+    account: "x",
+    url: "https://x.com/x/"
+  };
+  assert.equal((await handleBridgeMessage(tagged(gone, 2), new Set())).close, true);
+});
+
+test("a tab for a waiting job on the right page is not closed and starts the job", async () => {
+  const job = await createJob("https://x.com/ivy");
+  const result = await handleBridgeMessage(tagged(job, 3), new Set());
+  assert.equal(result.type, "START_JOB");
+  assert.equal(result.close, undefined);
+  assert.equal((await store.listJobs()).find(item => item.jobId === job.jobId).tabId, 3);
+});
+
+test("a second tab for a running job is closed, the first can reload and keeps going", async () => {
+  const job = await createJob("https://x.com/june");
+  const claimed = new Set();
+  await handleBridgeMessage(tagged(job, 10), claimed);
+  assert.equal((await handleBridgeMessage(tagged(job, 11), claimed)).close, true, "a duplicate tab");
+  const reload = await handleBridgeMessage(tagged(job, 10), claimed);
+  assert.equal(reload.type, "JOB_CONNECTED");
+  assert.equal(reload.close, undefined);
+});
+
+test("a sign-in page ends the job without retries and closes the tab", async () => {
+  const job = await createJob("https://www.instagram.com/kim/");
+  const result = await handleBridgeMessage(
+    tagged(job, 20, "https://www.instagram.com/accounts/login/?next=%2Fkim%2F"),
+    new Set()
+  );
+  assert.equal(result.close, true);
+  const saved = (await store.listJobs()).find(item => item.jobId === job.jobId);
+  assert.equal(saved.status, "error");
+  assert.equal(saved.noRetry, true);
+  assert.match(saved.message, /asked to sign in/);
+});
+
+test("a tab that landed on a different page than its job is closed and the job stays waiting", async () => {
+  const job = await createJob("https://x.com/lee");
+  const result = await handleBridgeMessage(tagged(job, 30, "https://x.com/somebody_else/"), new Set());
+  assert.equal(result.close, true);
+  assert.equal((await store.listJobs()).find(item => item.jobId === job.jobId).status, "queued");
+});
+
 test("progress and completion of one job never touch another", async () => {
   const one = await createJob("https://x.com/frank");
   const two = await createJob("https://x.com/gina");

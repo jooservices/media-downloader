@@ -134,9 +134,14 @@ function handleCliPageReady(message, sender) {
     tabId: sender.tab.id,
     pageUrl: message.pageUrl || sender.tab.url,
     platform: message.platform,
-    account: message.account
+    account: message.account,
+    cliJobId: message.cliJobId || null
   })
     .then(async result => {
+      if (result?.close) {
+        closeFinishedTab(sender.tab.id);
+        return { ok: true, waiting: false };
+      }
       if (result?.type) {
         await handleBridgeResponse(result);
       }
