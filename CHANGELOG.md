@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file. Format follows 
 
 ## [Unreleased]
 
+### Added
+
+- `serve` and `add` CLI commands: a queue that runs unattended. Profiles can be added at any time with `add <url>` or by listing them in an inbox file; `serve` works through them, retries transient failures and recovers jobs left by a crashed run
+- Several jobs at once: `workers` in `config.json` sets how many pages each site (X, Instagram, Facebook) may scan in parallel (default 1), with a random `delaySeconds` pause between accounts on the same site
+- `downloadDir` in `config.json` (also `move` command): finished files are moved from the browser's Downloads folder to a folder of your choice, including a network share. Files are copied and verified before the original is removed, never overwritten, and files still being written are left alone
+- The extension tracks one CLI job per tab, so several tabs can run jobs at the same time
+- The extension closes the tab a CLI job used once the job ends
+
+### Fixed
+
+- X: promoted, suggested and reposted posts no longer land in the scanned account's folder (cached media, page photos and menu videos)
+- Instagram: the page hook now reads `POST /api/graphql` responses (it only matched URLs ending in `/graphql/`), and posts addressed by 39-character codes are accepted
+- Job files: a rename blocked for a moment by antivirus or an indexer (`EPERM`/`EBUSY`) is retried instead of failing the update, and concurrent updates to one job file are applied in order
+
+### Changed
+
+- `.nvmrc` moves to Node 26 (current LTS); `engines` stays `>=22`
+- `status` lists every saved job with a count per state
+
 ## [0.5.0] - 2026-11-01
 
 First release from this repository.

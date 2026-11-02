@@ -61,6 +61,45 @@ Instagram and Facebook expose video download controls only for eligible content 
 
 The extension popup reports the local CLI bridge status, and the CLI reports a clear error if Edge does not acknowledge a job within 90 seconds. The local bridge binds to loopback only and checks both the request host and extension origin. Remove the bridge configuration with `node .\cli\mediasaver.mjs uninstall`.
 
+## Running a queue
+
+`download` handles one URL and then exits. To work through many profiles unattended, use the queue:
+
+```powershell
+node .\cli\mediasaver.mjs serve                 # keep running; stop with Ctrl+C
+node .\cli\mediasaver.mjs add <url> [<url>...]  # from another window, at any time
+```
+
+`serve` also reads an inbox file once a few seconds, one profile URL per line (default `%LOCALAPPDATA%\PageMediaSaver\inbox.txt`, or `serve --inbox <file>`). Pasting a link with tracking parameters (`?e=…&g=5`) is fine. A profile that has already run, even one that failed, is not queued again; use `add <url> --again` to run it anew.
+
+Each job is retried a few times when Edge does not answer or the page is closed (`maxAttempts`). Jobs left running by a crashed or stopped `serve` are recovered when it starts again. While `serve` is running, `download <url>` hands its URL to the queue instead of competing for the bridge. `status` shows every job and its state. Logs are written to `%LOCALAPPDATA%\PageMediaSaver\logs\`.
+
+`serve` keeps going only while the computer is awake, Edge is available and you are still signed in to the sites.
+
+## Configuration
+
+`serve` creates `%LOCALAPPDATA%\PageMediaSaver\config.json` with the defaults the first time it runs. It is read again every pass, so changes apply without a restart; a file with a mistake is reported and the previous settings stay in use.
+
+```json
+{
+  "workers": { "x": 1, "instagram": 1, "facebook": 1 },
+  "delaySeconds": { "min": 15, "max": 60 },
+  "maxAttempts": 3,
+  "downloadDir": "D:\\Media"
+}
+```
+
+| Setting        | Meaning                                                                                                                                                                                                        |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `workers`      | How many pages each site may scan at once (1 to 8, default 1). X, Instagram and Facebook run side by side regardless; this only sets the number **per site**.                                                  |
+| `delaySeconds` | A random pause (between `min` and `max`) before the next account on the same site is opened.                                                                                                                   |
+| `maxAttempts`  | How many times a job that failed for a transient reason is tried (1 to 20).                                                                                                                                    |
+| `downloadDir`  | Where finished files go, as `<downloadDir>\<Site>\<account>\`. A full path, local or a network share. Leave it out to keep files in the browser's Downloads folder. Cannot be a drive root or a system folder. |
+
+**Download location.** A browser extension can only save inside the browser's own Downloads folder, so the CLI moves finished files afterwards (in the background while `serve` runs, or once with `node .\cli\mediasaver.mjs move`). A file is copied, checked against the original's size and only then removed. An existing file is never overwritten: an identical one is treated as a duplicate and a different one gets a `(1)` suffix. Files still being written, and anything outside the `Instagram`, `Facebook` and `Twitter` folders, are not touched. If a site folder in Downloads is a link to another location, it is left as it is. `downloadDir` must not be, contain or sit inside the Downloads folder.
+
+**More than one worker.** Sites decide for themselves what counts as unusual use, and running several scans against the same site from one account is a faster way to be rate-limited, asked to confirm your identity or blocked. The default of one worker per site, with a pause between accounts, is the cautious choice; raising it is your decision and your risk. Pages in background tabs are also slowed down by the browser, so extra workers do not scale linearly. Videos saved through a site's own download menu (the fallback for videos that never reach the page's data) use a single armed slot in the extension, so keep `workers` at 1 for a site if you rely on that path.
+
 ## Largest size only
 
 Only the largest rendition is ever saved; a thumbnail is never a fallback.
