@@ -1,0 +1,109 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Page Media Saver</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1 data-i18n="title">Page Media Saver</h1>
+        <p class="lead" data-i18n="subtitle"></p>
+      </header>
+
+      <section id="sign-in" class="card warning" hidden aria-labelledby="sign-in-heading">
+        <h2 id="sign-in-heading" data-i18n="signInHeading"></h2>
+        <ul id="sign-in-list"></ul>
+        <button id="signed-in" type="button" class="secondary" data-i18n="signedIn"></button>
+      </section>
+
+      <section class="card" aria-labelledby="add-heading">
+        <h2 id="add-heading" data-i18n="addHeading"></h2>
+        <textarea
+          id="links"
+          rows="4"
+          spellcheck="false"
+          aria-labelledby="add-heading"
+          data-i18n-placeholder="addPlaceholder"
+        ></textarea>
+        <div class="row">
+          <button id="add" type="button" data-i18n="addButton"></button>
+          <span id="add-result" role="status" aria-live="polite"></span>
+        </div>
+        <ul id="sites" class="chips" aria-label="Sign-in status"></ul>
+      </section>
+
+      <section class="card" aria-labelledby="queue-heading">
+        <div class="row between">
+          <h2 id="queue-heading" data-i18n="queueHeading"></h2>
+          <div class="row">
+            <button id="pause" type="button" class="secondary"></button>
+            <button id="clear" type="button" class="secondary" data-i18n="clearFinished"></button>
+          </div>
+        </div>
+        <p id="summary" class="muted" role="status" aria-live="polite"></p>
+        <p id="paused-note" class="notice" hidden data-i18n="paused"></p>
+        <ul id="jobs" class="jobs"></ul>
+        <p id="empty" class="muted" data-i18n="empty"></p>
+      </section>
+
+      <section class="card" aria-labelledby="settings-heading">
+        <h2 id="settings-heading" data-i18n="settingsHeading"></h2>
+        <form id="settings" novalidate>
+          <fieldset>
+            <legend data-i18n="workersLabel"></legend>
+            <div class="grid">
+              <label>X <input id="workers-x" type="number" min="1" max="8" inputmode="numeric" /></label>
+              <label
+                >Instagram <input id="workers-instagram" type="number" min="1" max="8" inputmode="numeric"
+              /></label>
+              <label>Facebook <input id="workers-facebook" type="number" min="1" max="8" inputmode="numeric" /></label>
+            </div>
+            <p class="hint" data-i18n="workersHint"></p>
+          </fieldset>
+          <fieldset>
+            <legend data-i18n="delayLabel"></legend>
+            <div class="grid">
+              <label
+                ><span data-i18n="delayFrom"></span>
+                <input id="delay-min" type="number" min="0" max="3600" inputmode="numeric"
+              /></label>
+              <label
+                ><span data-i18n="delayTo"></span>
+                <input id="delay-max" type="number" min="0" max="3600" inputmode="numeric"
+              /></label>
+            </div>
+          </fieldset>
+          <fieldset>
+            <legend data-i18n="limitLabel"></legend>
+            <div class="grid">
+              <label><input id="limit" type="number" min="1" inputmode="numeric" /></label>
+              <label class="inline"
+                ><input id="unlimited" type="checkbox" /> <span data-i18n="limitUnlimited"></span
+              ></label>
+            </div>
+          </fieldset>
+          <label class="block"
+            ><span data-i18n="retriesLabel"></span>
+            <input id="attempts" type="number" min="1" max="20" inputmode="numeric"
+          /></label>
+          <div class="row">
+            <button id="save" type="submit" data-i18n="save"></button>
+            <span id="settings-result" role="status" aria-live="polite"></span>
+          </div>
+        </form>
+      </section>
+
+      <section class="card" aria-labelledby="downloads-heading">
+        <h2 id="downloads-heading" data-i18n="downloadsHeading"></h2>
+        <p data-i18n="downloadsText"></p>
+      </section>
+    </main>
+
+    <script src="options-strings.js"></script>
+    <script src="options-model.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>

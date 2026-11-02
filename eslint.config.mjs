@@ -111,6 +111,20 @@ export default [
     languageOptions: { sourceType: "script", globals: { ...globals.browser, ...extensionGlobals } }
   },
   {
+    // The dashboard's helpers are classic scripts that also load in Node for their tests.
+    files: ["src/options/**/*.js"],
+    languageOptions: {
+      sourceType: "script",
+      globals: {
+        ...globals.browser,
+        ...extensionGlobals,
+        PageMediaOptions: "writable",
+        PageMediaStrings: "writable",
+        module: "writable"
+      }
+    }
+  },
+  {
     files: ["cli/**/*.mjs", "tools/**/*.mjs", "tests/**/*.mjs", "eslint.config.mjs", ".github/**/*.mjs"],
     ...nodePlugin.configs["flat/recommended-module"],
     languageOptions: { sourceType: "module", globals: { ...globals.node } }

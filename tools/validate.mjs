@@ -19,6 +19,9 @@ export function manifestFiles(manifest) {
   if (manifest.action?.default_popup) {
     files.add(manifest.action.default_popup);
   }
+  if (manifest.options_ui?.page) {
+    files.add(manifest.options_ui.page);
+  }
   for (const icon of Object.values({ ...manifest.icons, ...manifest.action?.default_icon })) {
     files.add(icon);
   }
