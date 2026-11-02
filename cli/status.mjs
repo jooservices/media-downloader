@@ -1,7 +1,5 @@
 // Printing a job and listing saved jobs.
-import { readdir } from "node:fs/promises";
-import path from "node:path";
-import { JOBS_DIR, readJson, getActiveJob, jobFile } from "./store.mjs";
+import { readJson, getActiveJob, jobFile, listJobs } from "./store.mjs";
 
 export function printJob(job) {
   process.stdout.write(`Job: ${job.jobId}\n`);
@@ -36,20 +34,22 @@ export async function showStatus(jobId) {
     printJob(active);
     return;
   }
-  const entries = await readdir(JOBS_DIR, { withFileTypes: true }).catch(() => []);
-  const files = entries.filter(entry => entry.isFile() && entry.name.endsWith(".json"));
-  const jobs = [];
-  for (const entry of files) {
-    const job = await readJson(path.join(JOBS_DIR, entry.name));
-    if (job) {
-      jobs.push(job);
-    }
-  }
-  jobs.sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)));
+  const jobs = (await listJobs()).sort((a, b) =>
+    String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt))
+  );
   if (!jobs.length) {
     process.stdout.write("No Page Media Saver jobs yet.\n");
     return;
   }
+  const counts = {};
+  for (const job of jobs) {
+    counts[job.status] = (counts[job.status] || 0) + 1;
+  }
+  process.stdout.write(
+    `Jobs: ${Object.entries(counts)
+      .map(([status, n]) => `${n} ${status}`)
+      .join(", ")}\n`
+  );
   for (const job of jobs.slice(0, 10)) {
     process.stdout.write(
       `${job.jobId}  ${job.status.padEnd(10)}  ${job.platform || ""}/${job.account || ""}  ${job.message || ""}\n`

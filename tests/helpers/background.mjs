@@ -80,6 +80,7 @@ export function loadBackground({
   const downloads = new Map();
   const started = [];
   const tabMessages = [];
+  const tabRemoves = [];
   const FakeDate = class extends Date {
     static now() {
       return now();
@@ -117,6 +118,9 @@ export function loadBackground({
       onRemoved: { addListener: listener => listeners.tabRemoved.push(listener) },
       sendMessage: async (id, message) => {
         tabMessages.push({ id, message });
+      },
+      remove: async id => {
+        tabRemoves.push(id);
       }
     }
   };
@@ -148,6 +152,7 @@ export function loadBackground({
     downloads,
     started,
     tabMessages,
+    tabRemoves,
     send: (message, sender = {}) => new Promise(resolve => listeners.message[0](message, sender, resolve)),
     determine: item =>
       new Promise((resolve, reject) => {

@@ -75,7 +75,7 @@ async function handleBridgeResponse(message) {
         error: response?.error || "The page could not start the automatic scan."
       });
     } else if (response.state?.running) {
-      await chrome.storage.local.set({ activeCliJob: { jobId: message.job.jobId, tabId: message.tabId } });
+      await rememberCliJob(message.tabId, message.job.jobId);
     }
   } catch (error) {
     await postBridgeMessage({
@@ -94,6 +94,33 @@ function noteBridgeFailure(tabId, isProgress) {
   if (isProgress && goneTooLong && Number.isInteger(tabId)) {
     chrome.tabs.sendMessage(tabId, { type: "AUTO_STOP" }).catch(() => {});
   }
+}
+
+// Several pages can run a job at once (one per worker), so each tab's job is remembered separately.
+// The map survives the service worker being stopped and restarted by the browser.
+async function readCliJobs() {
+  const { activeCliJobs } = await chrome.storage.local.get({ activeCliJobs: {} });
+  return activeCliJobs && typeof activeCliJobs === "object" ? activeCliJobs : {};
+}
+
+async function rememberCliJob(tabId, jobId) {
+  const jobs = await readCliJobs();
+  jobs[String(tabId)] = jobId;
+  await chrome.storage.local.set({ activeCliJobs: jobs });
+}
+
+// Forgets the tab's job and returns its id, or null when the tab had none.
+async function takeCliJob(tabId) {
+  if (!Number.isInteger(tabId)) {
+    return null;
+  }
+  const jobs = await readCliJobs();
+  const jobId = jobs[String(tabId)] || null;
+  if (jobId) {
+    delete jobs[String(tabId)];
+    await chrome.storage.local.set({ activeCliJobs: jobs });
+  }
+  return jobId;
 }
 
 const failureResponse = error => ({ ok: false, error: error?.message || String(error) });
@@ -131,7 +158,7 @@ function handleAutoProgress(message, sender) {
   }
   const finished = message.type === "AUTO_DONE";
   if (finished) {
-    chrome.storage.local.remove("activeCliJob").catch(() => {});
+    takeCliJob(sender?.tab?.id).catch(() => {});
   }
   return postBridgeMessage({
     type: finished ? "JOB_DONE" : "JOB_PROGRESS",
@@ -153,14 +180,13 @@ function handleAutoProgress(message, sender) {
 
 chrome.tabs.onRemoved.addListener(async tabId => {
   try {
-    const { activeCliJob } = await chrome.storage.local.get({ activeCliJob: null });
-    if (activeCliJob?.tabId !== tabId) {
+    const jobId = await takeCliJob(tabId);
+    if (!jobId) {
       return;
     }
-    await chrome.storage.local.remove("activeCliJob");
     postBridgeMessage({
       type: "JOB_ERROR",
-      jobId: activeCliJob.jobId,
+      jobId,
       error: "The Edge profile tab was closed before the scan finished. Use the CLI resume command to continue."
     }).catch(() => {});
   } catch {

@@ -30,7 +30,7 @@ function describeLimit(limit) {
   return limit ? ` (limit ${limit} files)` : "";
 }
 
-async function openJobInEdge(job) {
+export async function openJobInEdge(job) {
   const edge = edgeExecutable();
   if (!edge) {
     throw new Error("Microsoft Edge was not found in its standard Windows installation folders.");
@@ -137,7 +137,7 @@ export async function launchAndMonitor(job, { openPage = true } = {}) {
   }
 }
 
-export async function startDownload(rawUrl, limit = DEFAULT_LIMIT) {
+async function requireInstalled() {
   if (process.platform !== "win32") {
     throw new Error("The Edge CLI bridge currently runs on Windows only.");
   }
@@ -147,14 +147,11 @@ export async function startDownload(rawUrl, limit = DEFAULT_LIMIT) {
   if (!(await readJson(BRIDGE_CONFIG_FILE))?.extensionOrigin) {
     throw new Error(INSTALL_HINT);
   }
-  const { url, platform, account, mediaPage } = normalizeProfileUrl(rawUrl);
-  const active = await getActiveJob();
-  if (active && !TERMINAL_STATES.has(active.status)) {
-    throw new Error(
-      `Job ${active.jobId} is still ${active.status}. Use “status” to check it before starting another URL.`
-    );
-  }
+}
 
+// Writes a waiting job file for a profile or post URL. Nothing is opened yet.
+export async function createJob(rawUrl, limit = DEFAULT_LIMIT) {
+  const { url, platform, account, mediaPage } = normalizeProfileUrl(rawUrl);
   const jobId = randomUUID();
   const now = new Date().toISOString();
   const job = {
@@ -174,10 +171,24 @@ export async function startDownload(rawUrl, limit = DEFAULT_LIMIT) {
     pending: 0,
     videoStarted: 0,
     videoSkipped: 0,
-    rounds: 0
+    rounds: 0,
+    attempts: 0,
+    openedAt: null
   };
   await writeJsonAtomic(jobFile(jobId), job);
-  await writeJsonAtomic(QUEUE_FILE, { jobId, updatedAt: now });
+  return job;
+}
+
+export async function startDownload(rawUrl, limit = DEFAULT_LIMIT) {
+  await requireInstalled();
+  const active = await getActiveJob();
+  if (active && !TERMINAL_STATES.has(active.status)) {
+    throw new Error(
+      `Job ${active.jobId} is still ${active.status}. Use “status” to check it before starting another URL.`
+    );
+  }
+  const job = await createJob(rawUrl, limit);
+  await writeJsonAtomic(QUEUE_FILE, { jobId: job.jobId, updatedAt: job.createdAt });
   return launchAndMonitor(job);
 }
 

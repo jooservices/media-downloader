@@ -1,0 +1,71 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { DEFAULT_CONFIG, MAX_WORKERS, parseConfig } from "../../cli/config.mjs";
+import { plain } from "../helpers/background.mjs";
+
+test("an empty or missing config gives the safe defaults: one worker per site", () => {
+  for (const raw of [null, undefined, {}]) {
+    assert.deepEqual(plain(parseConfig(raw)), plain(DEFAULT_CONFIG));
+  }
+  assert.deepEqual(plain(DEFAULT_CONFIG.workers), { Twitter: 1, Instagram: 1, Facebook: 1 });
+});
+
+test("workers are set per site, and x is another name for Twitter", () => {
+  const config = parseConfig({ workers: { x: 3, Instagram: 2 } });
+  assert.deepEqual(plain(config.workers), { Twitter: 3, Instagram: 2, Facebook: 1 });
+  assert.equal(parseConfig({ workers: { TWITTER: 2 } }).workers.Twitter, 2);
+});
+
+test("rejects a worker count that is not a whole number from 1 to the maximum", () => {
+  for (const value of [0, -1, 1.5, "2", null, MAX_WORKERS + 1]) {
+    assert.throws(() => parseConfig({ workers: { x: value } }), /workers\.x must be a whole number/, String(value));
+  }
+  assert.doesNotThrow(() => parseConfig({ workers: { x: MAX_WORKERS } }));
+  assert.throws(() => parseConfig({ workers: { tiktok: 1 } }), /unknown site/);
+});
+
+test("the pause between accounts needs min <= max within an hour", () => {
+  assert.deepEqual(plain(parseConfig({ delaySeconds: { min: 5 } }).delaySeconds), { min: 5, max: 60 });
+  assert.deepEqual(plain(parseConfig({ delaySeconds: { min: 0, max: 0 } }).delaySeconds), { min: 0, max: 0 });
+  for (const delay of [{ min: 90, max: 10 }, { min: -1 }, { max: 3601 }, { min: "a" }]) {
+    assert.throws(() => parseConfig({ delaySeconds: delay }), /delaySeconds/, JSON.stringify(delay));
+  }
+});
+
+test("maxAttempts is a whole number from 1 to 20", () => {
+  assert.equal(parseConfig({ maxAttempts: 5 }).maxAttempts, 5);
+  for (const value of [0, 21, 2.5, "3"]) {
+    assert.throws(() => parseConfig({ maxAttempts: value }), /maxAttempts/, String(value));
+  }
+});
+
+test("downloadDir accepts a drive folder or a network share and normalises it", () => {
+  assert.equal(parseConfig({ downloadDir: "D:\\Media\\" }).downloadDir, "D:\\Media");
+  assert.equal(parseConfig({ downloadDir: "D:/Media/Social" }).downloadDir, "D:\\Media\\Social");
+  assert.equal(parseConfig({ downloadDir: "\\\\nas\\share\\Media" }).downloadDir, "\\\\nas\\share\\Media");
+  assert.equal(parseConfig({ downloadDir: "" }).downloadDir, null);
+  assert.equal(parseConfig({}).downloadDir, null);
+});
+
+test("downloadDir refuses a relative path, a drive root and system folders", () => {
+  for (const dir of [
+    "Media",
+    ".\\Media",
+    "..\\x",
+    "D:",
+    "D:\\",
+    "C:\\Windows",
+    "C:\\Windows\\System32",
+    "C:\\Program Files\\x",
+    42,
+    "D:\\a\0b"
+  ]) {
+    assert.throws(() => parseConfig({ downloadDir: dir }), /downloadDir/, String(dir));
+  }
+});
+
+test("the config must be a JSON object", () => {
+  for (const raw of ["text", 5, [], true]) {
+    assert.throws(() => parseConfig(raw), /JSON object/, JSON.stringify(raw));
+  }
+});
