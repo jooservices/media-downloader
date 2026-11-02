@@ -125,10 +125,16 @@ async function takeCliJob(tabId) {
 
 const failureResponse = error => ({ ok: false, error: error?.message || String(error) });
 
-function handleCliPageReady(message, sender) {
+// A tab the extension's own queue opened is handled there; any other tab belongs to the CLI.
+async function handleCliPageReady(message, sender) {
   if (!Number.isInteger(sender?.tab?.id)) {
-    return Promise.resolve({ ok: false, error: "The page tab could not be identified." });
+    return { ok: false, error: "The page tab could not be identified." };
   }
+  const local = await queueEngine.pageReady(sender.tab.id, message);
+  return local.handled ? { ok: true, waiting: false } : handleBridgePageReady(message, sender);
+}
+
+function handleBridgePageReady(message, sender) {
   return postBridgeMessage({
     type: "PAGE_READY",
     tabId: sender.tab.id,
@@ -157,10 +163,17 @@ function closeFinishedTab(tabId) {
   }
 }
 
-function handleAutoProgress(message, sender) {
+async function handleAutoProgress(message, sender) {
   if (!message.state?.jobId) {
     return null;
   }
+  if (await queueEngine.progress(message)) {
+    return { ok: true };
+  }
+  return handleBridgeProgress(message, sender);
+}
+
+function handleBridgeProgress(message, sender) {
   const finished = message.type === "AUTO_DONE";
   if (finished) {
     takeCliJob(sender?.tab?.id).catch(() => {});
