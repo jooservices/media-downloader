@@ -1,5 +1,6 @@
 // The loopback server the extension talks to while a job runs.
 import { createServer } from "node:http";
+import { createRequire } from "node:module";
 import { unlink } from "node:fs/promises";
 import {
   QUEUE_FILE,
@@ -17,7 +18,8 @@ import {
 
 const MAX_BODY_BYTES = 1_000_000;
 const JOB_UPDATES = new Set(["JOB_PROGRESS", "JOB_DONE", "JOB_ERROR"]);
-const PROGRESS_COUNTERS = ["started", "skipped", "videoStarted", "videoSkipped", "failed", "pending", "rounds"];
+const require = createRequire(import.meta.url);
+const { applyProgress, applyError } = require("../lib/job-progress.js");
 
 function respondJson(response, status, body, extraHeaders = {}) {
   response.writeHead(status, { "Content-Type": "application/json", ...extraHeaders });
@@ -199,28 +201,6 @@ async function handlePageReady(message, claimedJobs) {
   return { ok: true, type: "START_JOB", tabId: message.tabId, job: started };
 }
 
-function applyProgress(job, message) {
-  const state = message.state || {};
-  for (const key of PROGRESS_COUNTERS) {
-    job[key] = Number(state[key] || 0);
-  }
-  job.message = String(state.message || "Scanning profile grid.").slice(0, 500);
-  if (job.mediaPage && state.account) {
-    job.account = String(state.account);
-  }
-  if (Array.isArray(state.repairFound)) {
-    job.repairFound = state.repairFound;
-  }
-  if (Array.isArray(state.repairFiles)) {
-    job.repairFiles = state.repairFiles;
-  }
-  if (message.type === "JOB_DONE") {
-    job.status = TERMINAL_STATES.has(state.status) ? state.status : "incomplete";
-  } else {
-    job.status = "running";
-  }
-}
-
 async function handleJobUpdate(message) {
   const jobId = message?.jobId || message?.state?.jobId;
   if (!jobId || !JOB_UPDATES.has(message?.type)) {
@@ -231,8 +211,7 @@ async function handleJobUpdate(message) {
   }
   const job = await updateJob(jobId, current => {
     if (message.type === "JOB_ERROR") {
-      current.status = "error";
-      current.message = String(message.error || "The page scan could not start.").slice(0, 500);
+      applyError(current, message.error);
     } else {
       applyProgress(current, message);
     }
