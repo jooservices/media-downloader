@@ -182,6 +182,11 @@ globalThis.PageMediaSaver ??= {};
     return Boolean(target?.ok) && !target.skip;
   }
 
+  // Promoted, suggested and reposted X posts on a profile belong to someone else.
+  function isForeignXPost(platform, owner, account) {
+    return platform === "Twitter" && !scanState().singlePage && owner.toLowerCase() !== String(account).toLowerCase();
+  }
+
   async function collectNativeVideoDownloads(platform, account, budget = limitRemaining()) {
     const containers = globalThis.PageMediaDetection.collectVideoContainers(document, platform);
     const maxPerScan = Math.min(MAX_NATIVE_VIDEOS_PER_SCAN, budget);
@@ -192,6 +197,10 @@ globalThis.PageMediaSaver ??= {};
       const owner = getAccount(platform, container) || account;
       if (scanState().singlePage && owner) {
         scanState().account = owner;
+      }
+      if (isForeignXPost(platform, owner, account)) {
+        videoDownloadsSkipped++;
+        continue;
       }
       const token = videoPostToken(platform, container, video, i + 1);
       const key = PageMediaLib.keys.videoKey(platform, token, 1);

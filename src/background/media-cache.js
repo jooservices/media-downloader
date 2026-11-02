@@ -108,6 +108,12 @@ function cachedMediaItem(entry, account) {
   };
 }
 
+// A known owner must be the scanned account: promoted, suggested and reposted
+// posts on the same page carry ids too, and must not land in another folder.
+function ownerMatches(entry, wantedAccount) {
+  return !entry.owner || !wantedAccount || entry.owner.toLowerCase() === wantedAccount;
+}
+
 // `ids` (post or media ids read from the page's own links) selects entries on
 // pages where the cached owner is unknown; without them only entries whose
 // cached owner matches `account` are saved, so unrelated feed media never lands
@@ -124,8 +130,8 @@ async function downloadCachedMedia({ platform, account, ids, limit }) {
     entry =>
       entry.platform === platform &&
       (wantedIds
-        ? wantedIds.has(entry.id)
-        : Boolean(entry.owner) && (!wantedAccount || entry.owner.toLowerCase() === wantedAccount))
+        ? wantedIds.has(entry.id) && ownerMatches(entry, wantedAccount)
+        : Boolean(entry.owner) && ownerMatches(entry, wantedAccount))
   );
   const coveredIds = [...new Set(entries.map(entry => entry.id))];
   const items = entries.map(entry => cachedMediaItem(entry, account));
