@@ -118,6 +118,13 @@ function handleCliPageReady(message, sender) {
     .catch(failureResponse);
 }
 
+// The CLI opened this tab for one job; once the job has reported its end the tab has no use.
+function closeFinishedTab(tabId) {
+  if (Number.isInteger(tabId)) {
+    Promise.resolve(chrome.tabs.remove?.(tabId)).catch(() => {});
+  }
+}
+
 function handleAutoProgress(message, sender) {
   if (!message.state?.jobId) {
     return null;
@@ -133,6 +140,9 @@ function handleAutoProgress(message, sender) {
   })
     .then(() => {
       bridgeLostSince = null;
+      if (finished) {
+        closeFinishedTab(sender?.tab?.id);
+      }
       return { ok: true };
     })
     .catch(error => {
