@@ -90,6 +90,21 @@ test("a second tab for a running job is closed, the first can reload and keeps g
   assert.equal(reload.close, undefined);
 });
 
+test("the tab running a job is not closed when its page changes during the scan", async () => {
+  const job = await createJob("https://www.instagram.com/mia/");
+  const claimed = new Set();
+  assert.equal((await handleBridgeMessage(tagged(job, 40), claimed)).type, "START_JOB");
+  // Instagram opens each post, so the tab's URL changes while the scan runs and the tab announces itself again.
+  for (const pageUrl of [
+    "https://www.instagram.com/mia/p/DabcDEFghij/",
+    "https://www.instagram.com/reel/XyZ12345678/"
+  ]) {
+    const result = await handleBridgeMessage(tagged(job, 40, pageUrl), claimed);
+    assert.notEqual(result.close, true, pageUrl);
+  }
+  assert.equal((await store.listJobs()).find(item => item.jobId === job.jobId).status, "running");
+});
+
 test("a sign-in page ends the job without retries and closes the tab", async () => {
   const job = await createJob("https://www.instagram.com/kim/");
   const result = await handleBridgeMessage(

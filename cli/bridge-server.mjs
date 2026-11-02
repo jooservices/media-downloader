@@ -129,7 +129,12 @@ export async function startBridgeServer() {
 
 // Does the page that announced itself belong to this job?
 function pageMatchesJob(message, job) {
-  const sameUrl = normalizeProfileUrl(message.pageUrl || "").url === normalizeProfileUrl(job.url).url;
+  let sameUrl;
+  try {
+    sameUrl = normalizeProfileUrl(message.pageUrl || "").url === normalizeProfileUrl(job.url).url;
+  } catch {
+    return false; // a page the CLI does not scan (an opened post, a sign-in page) matches no job
+  }
   const sameAccount = job.mediaPage || message.account?.toLowerCase() === job.account.toLowerCase();
   return sameUrl && message.platform === job.platform && sameAccount;
 }
@@ -151,6 +156,11 @@ async function judgeTaggedTab(message) {
       job.message = `${job.platform} asked to sign in. Sign in with Edge's profile, then queue this profile again.`;
     });
     return CLOSE_TAB;
+  }
+  // The tab that runs the job moves between pages while it scans (Instagram opens each post), so
+  // only a tab that has not started the job is judged by the page it shows.
+  if (tagged.status === "running" && tagged.tabId === message.tabId) {
+    return null;
   }
   const duplicate = tagged.status === "running" && tagged.tabId && tagged.tabId !== message.tabId;
   return duplicate || !pageMatchesJob(message, tagged) ? CLOSE_TAB : null;
