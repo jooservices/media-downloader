@@ -26,6 +26,7 @@ globalThis.PageMediaSaver ??= {};
     videoStarted: 0,
     videoSkipped: 0,
     failed: 0,
+    unavailable: 0,
     pending: 0,
     rounds: 0,
     message: "",
@@ -96,6 +97,7 @@ globalThis.PageMediaSaver ??= {};
       drains++;
       autoState.pending = status.pending || 0;
       autoState.failed = status.failed || 0;
+      autoState.unavailable = status.unavailable || 0;
       updateAutoMessage();
       if (autoState.pending > 0) {
         continue;
@@ -131,6 +133,7 @@ globalThis.PageMediaSaver ??= {};
     const finalStatus = await finishDownloads();
     autoState.pending = finalStatus.pending || 0;
     autoState.failed = finalStatus.failed || 0;
+    autoState.unavailable = finalStatus.unavailable || 0;
   }
 
   function endScan(status, message) {
@@ -253,6 +256,10 @@ globalThis.PageMediaSaver ??= {};
     );
   }
 
+  // Files the site no longer serves (taken down, blocked) are skipped for good, not counted as failures.
+  const unavailableNote = () =>
+    autoState.unavailable ? ` (${autoState.unavailable} of them the site no longer serves)` : "";
+
   // The scroll loop ended because four checks found no older rows.
   async function finishGrid() {
     await settleDownloads();
@@ -264,7 +271,7 @@ globalThis.PageMediaSaver ??= {};
     } else if (hasOutstanding()) {
       message = `Grid scan ended after four checks found no older rows. ${started} download request(s) started; ${pending} remain pending and ${failed} failed after retries.`;
     } else {
-      message = `Download finished: ${started} photo request(s) and ${videoStarted} page-data file(s) completed with no pending or failed files; ${skippedCount()} saved or unavailable items skipped. Four end checks found no older rows.`;
+      message = `Download finished: ${started} photo request(s) and ${videoStarted} page-data file(s) completed with no pending or failed files; ${skippedCount()} saved or unavailable items skipped${unavailableNote()}. Four end checks found no older rows.`;
     }
     endScan(hasOutstanding() || repairShort ? "incomplete" : "complete", message);
   }
@@ -387,6 +394,7 @@ globalThis.PageMediaSaver ??= {};
       videoStarted: 0,
       videoSkipped: 0,
       failed: 0,
+      unavailable: 0,
       pending: 0,
       rounds: 0,
       limit: Number.isInteger(limit) && limit > 0 ? limit : null,

@@ -5,12 +5,18 @@ const STORAGE_DEFAULTS = {
   pendingItems: {},
   downloadAttempts: {},
   failedDownloads: {},
+  unavailableDownloads: {},
   downloadTargets: {},
   nativeVideoTarget: null,
   nativeVideoPending: {},
   nativeVideoFailures: {},
   nativeVideoAttempts: {}
 };
+
+// Errors that mean the site will never serve this file (taken down, blocked or private), unlike a network
+// hiccup. Retrying them only wastes time, so such a file is settled: skipped now and on every later scan.
+const UNAVAILABLE_ERRORS = new Set(["SERVER_FORBIDDEN", "SERVER_BAD_CONTENT", "SERVER_UNAUTHORIZED"]);
+const isUnavailableError = error => UNAVAILABLE_ERRORS.has(error);
 
 const FINISHED_STATES = ["complete", "interrupted"];
 const MAX_BATCH_ITEMS = 300;
@@ -65,6 +71,7 @@ async function readDownloadState() {
     pendingItems: { ...stored.pendingItems },
     attempts: { ...stored.downloadAttempts },
     failed: { ...stored.failedDownloads },
+    unavailable: { ...stored.unavailableDownloads },
     nativePending: { ...stored.nativeVideoPending },
     nativeFailures: { ...stored.nativeVideoFailures },
     nativeAttempts: { ...stored.nativeVideoAttempts },
@@ -78,6 +85,7 @@ async function writeDownloadState(state) {
     pendingItems: state.pendingItems,
     downloadAttempts: state.attempts,
     failedDownloads: state.failed,
+    unavailableDownloads: state.unavailable,
     nativeVideoPending: state.nativePending,
     nativeVideoFailures: state.nativeFailures,
     nativeVideoAttempts: state.nativeAttempts,
@@ -96,6 +104,29 @@ async function findFinishedDownload(id) {
   }
 }
 
+// A file the site will not serve: remember it as settled so no scan tries it again, and keep a count
+// for the job's summary. `who` carries the platform and account the file belongs to.
+async function settleUnavailable(state, key, who) {
+  await ledgerAdd(key);
+  delete state.failed[key];
+  delete state.nativeFailures[key];
+  state.unavailable[key] = { platform: who.platform, account: who.account };
+}
+
+// Failures recorded by an earlier version (or an earlier pass) that turn out to be permanent are settled too.
+async function settleKnownUnavailable(state) {
+  for (const [key, entry] of Object.entries(state.failed)) {
+    if (isUnavailableError(entry.error)) {
+      await settleUnavailable(state, key, entry.item);
+    }
+  }
+  for (const [key, entry] of Object.entries(state.nativeFailures)) {
+    if (isUnavailableError(entry.error)) {
+      await settleUnavailable(state, key, entry);
+    }
+  }
+}
+
 async function reconcilePending(state) {
   for (const [key, downloadId] of Object.entries(state.pending)) {
     const download = await findFinishedDownload(downloadId);
@@ -108,6 +139,8 @@ async function reconcilePending(state) {
     if (download.state === "complete") {
       await ledgerAdd(key);
       delete state.failed[key];
+    } else if (item && isUnavailableError(download.error)) {
+      await settleUnavailable(state, key, item);
     } else if (item) {
       state.failed[key] = {
         item,
@@ -128,6 +161,8 @@ async function reconcileNative(state) {
     if (download.state === "complete") {
       await ledgerAdd(entry.key);
       delete state.nativeFailures[entry.key];
+    } else if (isUnavailableError(download.error)) {
+      await settleUnavailable(state, entry.key, entry);
     } else {
       state.nativeFailures[entry.key] = {
         platform: entry.platform,
@@ -156,6 +191,7 @@ async function reconcileDownloads() {
   await reconcilePending(state);
   await reconcileNative(state);
   expireNativeTarget(state);
+  await settleKnownUnavailable(state);
   await writeDownloadState(state);
   return state;
 }
@@ -185,6 +221,7 @@ function statusFor(state, platform, account) {
     ok: true,
     pending: countPending(state, platform, account),
     failed: failedItems.length + nativeFailedItems.length,
+    unavailable: Object.values(state.unavailable).filter(entry => matchesFilter(entry, platform, account)).length,
     retryable: failedItems.filter(entry => entry.attempts < MAX_ATTEMPTS).length
   };
 }
