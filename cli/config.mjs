@@ -11,7 +11,8 @@ export async function loadConfig() {
 
 // Writes a config.json with the defaults so the options are discoverable, but never overwrites one.
 export async function ensureConfigFile() {
-  if (await readJson(CONFIG_FILE).catch(() => null)) {
+  // A file that exists but cannot be parsed or read is the user's to fix: the error surfaces instead of the defaults replacing it.
+  if (await readJson(CONFIG_FILE)) {
     return false;
   }
   await writeJsonAtomic(CONFIG_FILE, DEFAULT_CONFIG);

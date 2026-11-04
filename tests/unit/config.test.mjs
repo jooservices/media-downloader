@@ -1,7 +1,35 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { DEFAULT_CONFIG, MAX_WORKERS, parseConfig } from "../../cli/config.mjs";
 import { plain } from "../helpers/background.mjs";
+
+test("a config.json that cannot be parsed is left alone: the error surfaces and the file is not replaced", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pms-config-"));
+  const script = `
+    import { ensureConfigFile } from ${JSON.stringify(pathToFileURL(path.resolve("cli/config.mjs")).href)};
+    try { await ensureConfigFile(); console.log("no error"); } catch (error) { console.log("error:" + error.name); }
+  `;
+  const run = () =>
+    execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+      env: { ...process.env, LOCALAPPDATA: root, XDG_DATA_HOME: root, HOME: root },
+      encoding: "utf8"
+    }).trim();
+  const file = path.join(root, "PageMediaSaver", "config.json");
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, '{ "downloadDir": "D:\\\\Media", }');
+
+  assert.equal(run(), "error:SyntaxError");
+  assert.match(await readFile(file, "utf8"), /downloadDir/, "the user's file is untouched");
+
+  await rm(file);
+  assert.equal(run(), "no error");
+  assert.match(await readFile(file, "utf8"), /workers/, "a missing file gets the defaults");
+});
 
 test("an empty or missing config gives the safe defaults: one worker per site", () => {
   for (const raw of [null, undefined, {}]) {

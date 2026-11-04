@@ -39,6 +39,18 @@ test("a finished job's tab is closed and forgotten, and its later removal is not
   assert.equal(posted.filter(message => message.type === "JOB_DONE").length, 1);
 });
 
+test("two tabs that become ready at the same moment are both remembered", async () => {
+  const env = loadBackground({ fetchImpl });
+  await env.inContext(
+    `Promise.all([rememberCliJob(7, "job-a"), rememberCliJob(8, "job-b"), rememberCliJob(9, "job-c")])`
+  );
+  assert.deepEqual(env.storage.activeCliJobs, { 7: "job-a", 8: "job-b", 9: "job-c" });
+
+  const taken = await env.inContext(`Promise.all([takeCliJob(7), rememberCliJob(10, "job-d"), takeCliJob(9)])`);
+  assert.deepEqual([taken[0], taken[2]], ["job-a", "job-c"]);
+  assert.deepEqual(env.storage.activeCliJobs, { 8: "job-b", 10: "job-d" });
+});
+
 test("progress from a running tab does not close it", async () => {
   posted.length = 0;
   const env = loadBackground({ fetchImpl, storage: { activeCliJobs: { 7: "job-a" } } });

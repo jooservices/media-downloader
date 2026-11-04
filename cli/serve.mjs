@@ -115,36 +115,37 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null 
   await ensureConfigFile();
   await loadConfig();
   const log = await createLogger();
-  const server = await startBridgeServer();
-  await writeJsonAtomic(DAEMON_FILE, { pid: process.pid, startedAt: new Date().toISOString(), inbox });
-  const deps = await buildDeps(log);
-  const recovered = await recoverInterrupted(deps);
-  if (recovered) {
-    log(`Recovered ${recovered} job(s) left by a previous run.`);
-  }
-  const supervisor = createSupervisor(deps);
-
+  let server = null;
   let stopping = false;
   const stop = () => {
     stopping = true;
   };
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
-  log(`Serving. Add URLs to ${inbox} or run “add <url>”; stop with Ctrl+C.`);
-
-  const pass = async () => {
-    const settings = await loadConfig().catch(() => null);
-    const { created } = await addUrls(await readUrlFile(inbox), { limit: settings?.limit ?? limit });
-    if (created.length) {
-      log(`Queued ${created.length} new URL(s) from the inbox.`);
-    }
-    await supervisor.tick();
-  };
-
-  // One bad pass (a file briefly locked, a disk hiccup) must not end an unattended run;
-  // many in a row means something is really wrong, so stop and say so.
-  let failures = 0;
+  // Everything after the bridge starts is inside the try, so a failed setup step still closes the bridge.
   try {
+    server = await startBridgeServer();
+    await writeJsonAtomic(DAEMON_FILE, { pid: process.pid, startedAt: new Date().toISOString(), inbox });
+    const deps = await buildDeps(log);
+    const recovered = await recoverInterrupted(deps);
+    if (recovered) {
+      log(`Recovered ${recovered} job(s) left by a previous run.`);
+    }
+    const supervisor = createSupervisor(deps);
+    process.once("SIGINT", stop);
+    process.once("SIGTERM", stop);
+    log(`Serving. Add URLs to ${inbox} or run “add <url>”; stop with Ctrl+C.`);
+
+    const pass = async () => {
+      const settings = await loadConfig().catch(() => null);
+      const { created } = await addUrls(await readUrlFile(inbox), { limit: settings?.limit ?? limit });
+      if (created.length) {
+        log(`Queued ${created.length} new URL(s) from the inbox.`);
+      }
+      await supervisor.tick();
+    };
+
+    // One bad pass (a file briefly locked, a disk hiccup) must not end an unattended run;
+    // many in a row means something is really wrong, so stop and say so.
+    let failures = 0;
     while (!stopping) {
       try {
         await pass();
@@ -164,8 +165,10 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null 
   } finally {
     process.removeListener("SIGINT", stop);
     process.removeListener("SIGTERM", stop);
-    await new Promise(resolve => server.close(() => resolve()));
-    await writeJsonAtomic(DAEMON_FILE, { pid: null, stoppedAt: new Date().toISOString() });
+    if (server) {
+      await new Promise(resolve => server.close(() => resolve()));
+      await writeJsonAtomic(DAEMON_FILE, { pid: null, stoppedAt: new Date().toISOString() });
+    }
     log("Stopped.");
   }
 }

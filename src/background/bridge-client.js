@@ -103,24 +103,35 @@ async function readCliJobs() {
   return activeCliJobs && typeof activeCliJobs === "object" ? activeCliJobs : {};
 }
 
-async function rememberCliJob(tabId, jobId) {
-  const jobs = await readCliJobs();
-  jobs[String(tabId)] = jobId;
-  await chrome.storage.local.set({ activeCliJobs: jobs });
+// Read-modify-write on the map runs one at a time: two tabs starting together must not overwrite each other.
+let cliJobsChain = Promise.resolve();
+function updateCliJobs(change) {
+  const run = cliJobsChain.then(async () => {
+    const jobs = await readCliJobs();
+    const result = change(jobs);
+    await chrome.storage.local.set({ activeCliJobs: jobs });
+    return result;
+  });
+  cliJobsChain = run.catch(() => {});
+  return run;
+}
+
+function rememberCliJob(tabId, jobId) {
+  return updateCliJobs(jobs => {
+    jobs[String(tabId)] = jobId;
+  });
 }
 
 // Forgets the tab's job and returns its id, or null when the tab had none.
-async function takeCliJob(tabId) {
+function takeCliJob(tabId) {
   if (!Number.isInteger(tabId)) {
-    return null;
+    return Promise.resolve(null);
   }
-  const jobs = await readCliJobs();
-  const jobId = jobs[String(tabId)] || null;
-  if (jobId) {
+  return updateCliJobs(jobs => {
+    const jobId = jobs[String(tabId)] || null;
     delete jobs[String(tabId)];
-    await chrome.storage.local.set({ activeCliJobs: jobs });
-  }
-  return jobId;
+    return jobId;
+  });
 }
 
 const failureResponse = error => ({ ok: false, error: error?.message || String(error) });

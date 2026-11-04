@@ -74,6 +74,48 @@ test("refuses a destination that is, contains or sits inside the Downloads folde
   }
 });
 
+test("same name and size but different bytes is not a duplicate: the source is moved under a new name", async () => {
+  const { source, dest } = await area();
+  await put(path.join(dest, "Instagram", "alice", "photo.jpg"), "AAAAA");
+  await put(path.join(source, "Instagram", "alice", "photo.jpg"), "BBBBB");
+
+  const result = await moveFinishedFiles({ sourceRoot: source, destRoot: dest, now: NOW });
+  assert.equal(result.duplicates, 0);
+  assert.equal(result.moved, 1);
+  assert.deepEqual(await names(path.join(dest, "Instagram", "alice")), ["photo (1).jpg", "photo.jpg"]);
+  assert.equal(await readFile(path.join(dest, "Instagram", "alice", "photo (1).jpg"), "utf8"), "BBBBB");
+});
+
+test("a destination that is a link to the Downloads folder is refused before anything is deleted", async t => {
+  const { source, root } = await area();
+  await put(path.join(source, "Instagram", "alice", "a.jpg"), "data");
+  const alias = path.join(root, "Alias");
+  try {
+    await symlink(source, alias, "junction");
+  } catch {
+    t.skip("this system does not allow creating links");
+    return;
+  }
+  await assert.rejects(() => moveFinishedFiles({ sourceRoot: source, destRoot: alias, now: NOW }), /must not be/);
+  assert.equal(await readFile(path.join(source, "Instagram", "alice", "a.jpg"), "utf8"), "data");
+});
+
+test("an account folder in the destination that links into the Downloads folder is reported, not moved into", async t => {
+  const { source, dest } = await area();
+  await put(path.join(source, "Instagram", "alice", "a.jpg"), "data");
+  await mkdir(path.join(dest, "Instagram"), { recursive: true });
+  try {
+    await symlink(path.join(source, "Instagram", "alice"), path.join(dest, "Instagram", "alice"), "junction");
+  } catch {
+    t.skip("this system does not allow creating links");
+    return;
+  }
+  const result = await moveFinishedFiles({ sourceRoot: source, destRoot: dest, now: NOW });
+  assert.equal(result.moved + result.duplicates, 0);
+  assert.equal(result.failed, 1);
+  assert.equal(await readFile(path.join(source, "Instagram", "alice", "a.jpg"), "utf8"), "data");
+});
+
 test("only the three site folders are touched", async () => {
   const { source, dest } = await area();
   await put(path.join(source, "Documents", "x", "keep.txt"), "mine");
