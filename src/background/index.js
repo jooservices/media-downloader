@@ -5,17 +5,28 @@ importScripts(
   "../../lib/paths.js",
   "../../lib/urls.js",
   "../../lib/keys.js",
+  "../../lib/config.js",
+  "../../lib/scheduler.js",
+  "../../lib/supervisor.js",
+  "../../lib/login.js",
+  "../../lib/job-progress.js",
   "core.js",
   "ledger.js",
   "download-queue.js",
   "media-cache.js",
   "menu-video.js",
+  "queue-store.js",
+  "queue-settings.js",
+  "queue-login.js",
+  "queue-engine.js",
+  "queue-service.js",
   "bridge-client.js"
 );
 
 // message.type -> handler. A handler returns a promise of the response, or null when
 // the message needs no answer.
 const handlers = {
+  ...queueHandlers,
   CLI_PAGE_READY: handleCliPageReady,
   AUTO_PROGRESS: handleAutoProgress,
   AUTO_DONE: handleAutoProgress,

@@ -25,6 +25,20 @@ function crc32(data) {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
+const LOCAL_ASSET = /<(?:script[^>]*\ssrc|link[^>]*\shref)="([^"]+)"/g;
+
+/** The scripts and stylesheets a page of the extension loads, relative to the extension root. */
+export function htmlAssets(htmlPath, html) {
+  const directory = path.posix.dirname(htmlPath);
+  const assets = [];
+  for (const match of html.matchAll(LOCAL_ASSET)) {
+    if (!/^[a-z]+:|^\/\//i.test(match[1])) {
+      assets.push(path.posix.normalize(path.posix.join(directory, match[1])));
+    }
+  }
+  return assets;
+}
+
 /** The files that make up the extension: the manifest plus everything it references and imports. */
 export function extensionFiles(manifest, readText) {
   const files = new Set(["manifest.json", ...manifestFiles(manifest)]);
@@ -35,6 +49,12 @@ export function extensionFiles(manifest, readText) {
       for (const name of match[1].matchAll(/["']([^"']+)["']/g)) {
         files.add(path.posix.normalize(path.posix.join(workerDirectory, name[1])));
       }
+    }
+  }
+  // A page's own scripts and styles are named only inside its HTML, so they are found there.
+  for (const page of [...files].filter(file => file.endsWith(".html"))) {
+    for (const asset of htmlAssets(page, readText(page))) {
+      files.add(asset);
     }
   }
   return [...files].sort();

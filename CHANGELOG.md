@@ -6,6 +6,9 @@ All notable changes to this project are documented in this file. Format follows 
 
 ### Added
 
+- A dashboard (the extension's options page, opened on first install and from the popup): paste profile links, see each profile's progress, pause, stop, retry or remove, and change workers per site, the pause between profiles, retries and files per profile. English and Vietnamese
+- The extension runs its own download queue, so no Node.js or command line is needed for normal use
+- Sign-in check before anything starts: the extension looks at the names of each site's session cookies and holds that site's queue with a clear message and a button to open its sign-in page; a sign-in wall met mid-run does the same and keeps the link. Needs the new `cookies` and `alarms` permissions (cookie values are never read)
 - `serve` and `add` CLI commands: a queue that runs unattended. Profiles can be added at any time with `add <url>` or by listing them in an inbox file; `serve` works through them, retries transient failures and recovers jobs left by a crashed run
 - Several jobs at once: `workers` in `config.json` sets how many pages each site (X, Instagram, Facebook) may scan in parallel (default 1), with a random `delaySeconds` pause between accounts on the same site
 - `downloadDir` in `config.json` (also `move` command): finished files are moved from the browser's Downloads folder to a folder of your choice, including a network share. Files are copied and verified before the original is removed, never overwritten, and files still being written are left alone
@@ -14,6 +17,7 @@ All notable changes to this project are documented in this file. Format follows 
 
 ### Fixed
 
+- The packaged zip left out the scripts a page loads (`popup.js` was missing, so the popup did nothing in a packaged build); the packager now includes them
 - X: promoted, suggested and reposted posts no longer land in the scanned account's folder (cached media, page photos and menu videos)
 - Instagram: the page hook now reads `POST /api/graphql` responses (it only matched URLs ending in `/graphql/`), and posts addressed by 39-character codes are accepted
 - Job files: a rename blocked for a moment by antivirus or an indexer (`EPERM`/`EBUSY`) is retried instead of failing the update, and concurrent updates to one job file are applied in order

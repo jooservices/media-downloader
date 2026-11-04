@@ -8,6 +8,30 @@ const limitUnlimited = document.querySelector("#limit-unlimited");
 
 const { platforms, settings } = PageMediaLib;
 
+// The dashboard is where lists of profiles are managed; the popup only points to it and says how it is going.
+const t = PageMediaStrings.translator(chrome.i18n?.getUILanguage?.() || navigator.language);
+const dashboardButton = document.querySelector("#open-dashboard");
+const queueSummary = document.querySelector("#queue-summary");
+dashboardButton.textContent = t("openDashboard");
+dashboardButton.addEventListener("click", () => {
+  chrome.runtime.openOptionsPage();
+  window.close();
+});
+
+async function showQueueSummary() {
+  const reply = await chrome.runtime.sendMessage({ type: "QUEUE_STATE" }).catch(() => null);
+  if (!reply?.ok) {
+    return;
+  }
+  const needed = PageMediaOptions.signInNeeded(reply.login, reply.jobs);
+  if (needed.length) {
+    queueSummary.textContent = t("signInNeeded", { site: needed[0].label });
+  } else if (reply.jobs.length) {
+    queueSummary.textContent = t("summary", PageMediaOptions.summarize(reply.jobs));
+  }
+}
+showQueueSummary();
+
 function setStatus(message) {
   statusBox.textContent = message;
 }

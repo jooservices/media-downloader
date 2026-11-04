@@ -108,7 +108,24 @@ export default [
   },
   {
     files: ["src/popup/**/*.js"],
-    languageOptions: { sourceType: "script", globals: { ...globals.browser, ...extensionGlobals } }
+    languageOptions: {
+      sourceType: "script",
+      globals: { ...globals.browser, ...extensionGlobals, PageMediaOptions: "readonly", PageMediaStrings: "readonly" }
+    }
+  },
+  {
+    // The dashboard's helpers are classic scripts that also load in Node for their tests.
+    files: ["src/options/**/*.js"],
+    languageOptions: {
+      sourceType: "script",
+      globals: {
+        ...globals.browser,
+        ...extensionGlobals,
+        PageMediaOptions: "writable",
+        PageMediaStrings: "writable",
+        module: "writable"
+      }
+    }
   },
   {
     files: ["cli/**/*.mjs", "tools/**/*.mjs", "tests/**/*.mjs", "eslint.config.mjs", ".github/**/*.mjs"],

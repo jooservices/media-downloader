@@ -65,6 +65,35 @@ test("extensionFiles adds what the worker imports, relative to the worker", () =
   ]);
 });
 
+test("a page's own scripts and styles are packaged, but not remote ones", () => {
+  const pages = {
+    "src/popup/popup.html":
+      '<link rel="stylesheet" href="popup.css"><script src="../../lib/s.js"></script><script src="popup.js"></script>',
+    "src/options/options.html":
+      '<script src="https://cdn.example/x.js"></script><script src="//cdn.example/y.js"></script><script src="options.js"></script>'
+  };
+  const withOptions = { ...manifest, options_ui: { page: "src/options/options.html" } };
+  const files = extensionFiles(withOptions, name => pages[name] ?? "");
+  for (const expected of [
+    "src/popup/popup.js",
+    "src/popup/popup.css",
+    "lib/s.js",
+    "src/options/options.html",
+    "src/options/options.js"
+  ]) {
+    assert.ok(files.includes(expected), expected);
+  }
+  assert.ok(!files.some(file => file.includes("cdn.example")));
+});
+
+test("the options page counts as a file the manifest points at", () => {
+  assert.ok(
+    manifestFiles({ ...manifest, options_ui: { page: "src/options/options.html" } }).includes(
+      "src/options/options.html"
+    )
+  );
+});
+
 test("createZip writes a readable archive", () => {
   const content = Buffer.from("hello hello hello hello");
   const zip = createZip([

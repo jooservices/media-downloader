@@ -68,6 +68,12 @@ test("a retry waits until its notBefore time", () => {
   assert.deepEqual(ids(pick(jobs, config({}), { now: NOW + 61_000 })), ["1"]);
 });
 
+test("a blocked site starts nothing while other sites are unaffected", () => {
+  const jobs = [job("1", "Instagram"), job("2", "Twitter")];
+  assert.deepEqual(ids(pick(jobs, config({}), { blocked: ["Instagram"] })), ["2"]);
+  assert.deepEqual(ids(pick(jobs, config({}), { blocked: [] })), ["1", "2"]);
+});
+
 test("the caller's lastOpenedAt is not modified", () => {
   const last = {};
   pick([job("1", "Twitter")], config({}), { lastOpenedAt: last });

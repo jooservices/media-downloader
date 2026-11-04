@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import test from "node:test";
 import { parseConfig } from "../../cli/config.mjs";
 import {
@@ -38,6 +38,7 @@ function setup(configInput = {}, jobs = []) {
     }
   });
   return {
+    supervisor,
     store,
     opened,
     moves,
@@ -157,7 +158,7 @@ test("a job that could not be opened is failed with the reason", async () => {
   });
   await failing.tick();
   assert.equal(env.job("1").status, "error");
-  assert.match(env.job("1").message, /Could not open Edge: Edge missing/);
+  assert.match(env.job("1").message, /Could not open the page: Edge missing/);
 });
 
 test("files are moved only when a download folder is configured, at most every 20 s", async () => {
@@ -173,6 +174,51 @@ test("files are moved only when a download folder is configured, at most every 2
   await on.tick();
   assert.equal(on.moves.length, 2);
   assert.ok(on.logs.some(line => /Moved 2 file/.test(line)));
+});
+
+test("a sign-in wall puts the job back to waiting and holds the whole site, while other sites carry on", async () => {
+  const env = setup({}, [queued("1", "Instagram", "a"), queued("2", "Instagram", "b"), queued("3", "Twitter", "c")]);
+  await env.tick();
+  assert.deepEqual(env.opened.sort(), ["Instagram/a", "Twitter/c"]);
+
+  // The page reported a sign-in wall for the Instagram job.
+  Object.assign(env.job("1"), { status: "error", needsLogin: true });
+  env.job("3").status = "complete";
+  const second = await env.tick();
+  assert.equal(second.heldForSignIn, 1);
+  assert.equal(env.job("1").status, "queued", "the URL is kept, not lost");
+  assert.equal(env.job("1").attempts, 0, "the sign-in wall does not use up an attempt");
+  assert.match(env.job("1").message, /sign in to Instagram/);
+  assert.equal(second.opened, 0, "nothing else starts on Instagram");
+  assert.ok(env.logs.some(line => /Instagram: sign-in needed/.test(line)));
+});
+
+test("the held site starts again once the user says they signed in, or after the recheck time", async () => {
+  const env = setup({}, [queued("1", "Instagram", "a")]);
+  await env.tick();
+  Object.assign(env.job("1"), { status: "error", needsLogin: true });
+  await env.tick();
+  assert.equal(env.opened.length, 1);
+
+  env.advance(5 * 60_000);
+  await env.tick();
+  assert.equal(env.opened.length, 1, "still held after 5 minutes");
+
+  env.advance(6 * 60_000);
+  await env.tick();
+  assert.equal(env.opened.length, 2, "one job probes again after 10 minutes");
+});
+
+test("clearSignIn lets the site start immediately", async () => {
+  const env = setup({}, [queued("1", "Instagram", "a")]);
+  await env.tick();
+  Object.assign(env.job("1"), { status: "error", needsLogin: true });
+  await env.tick();
+  assert.deepEqual(env.supervisor.signInNeeded(), ["Instagram"]);
+  env.supervisor.clearSignIn("Instagram");
+  assert.deepEqual(env.supervisor.signInNeeded(), []);
+  await env.tick();
+  assert.equal(env.opened.length, 2);
 });
 
 test("on start, jobs left running by a dead process are ended and unanswered ones are reopened", async () => {
@@ -210,7 +256,7 @@ test("an invalid config is rejected at start but the previous one is kept while 
   await supervisor.tick();
   current = { workers: { x: 99 } };
   await supervisor.tick();
-  assert.ok(logs.some(line => /config\.json is invalid/.test(line)));
+  assert.ok(logs.some(line => /settings are invalid/.test(line)));
 
   const fresh = createSupervisor({
     now: () => 0,

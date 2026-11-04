@@ -15,19 +15,34 @@
 [![Last commit](https://img.shields.io/github/last-commit/jooservices/media-downloader/develop)](https://github.com/jooservices/media-downloader/commits/develop)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Page Media Saver: a Manifest V3 Edge/Chromium extension and a local Windows CLI that save the full-size photos and videos of Instagram, Facebook and X pages you are signed in to, without sending anything to a server.
+Page Media Saver: a Manifest V3 Edge/Chromium extension that saves the full-size photos and videos of the Instagram, Facebook and X profiles you add, using the account you are already signed in to. Nothing is sent to a server.
+
+## Getting started
+
+You need Microsoft Edge (or Chrome). **Nothing else has to be installed**: no Node.js, no commands.
+
+1. Install the extension (see [Install](#install-in-microsoft-edge) below). The dashboard opens by itself.
+2. Sign in to the sites you want to use in the same browser. The dashboard shows who is signed in and, if a site you added needs it, offers a button to open its sign-in page. Nothing starts on a site until you are signed in to it.
+3. Paste profile links (X, Instagram, Facebook), one per line, and press **Add to the list**.
+4. Watch the list. It works through the profiles one by one, per site, and closes each tab it opens when it is done. **Pause all**, **Stop**, **Try again** and **Remove** are one click away.
+5. Open **Settings** in the dashboard to change how many profiles run at once per site, the pause between profiles, the number of tries and the number of files per profile.
+
+Files are saved in your browser's Downloads folder, in `<Site>\<profile>\`. To use another drive or folder, change it in the browser (Settings → Downloads).
+
+The `serve`/`add` command-line queue described further down is an optional extra for people who want to automate it from scripts or save to a network folder; it is not needed for normal use.
 
 ## Features
 
 - Photos and videos from profile grids, timelines, posts and reels on X, Instagram and Facebook.
 - Largest rendition only (never a thumbnail), named with its real pixel size.
 - No duplicates: a local ledger remembers what was saved, whichever account folder it was found under.
-- A CLI with `--limit N` (default 10) and `--unlimited`, resumable jobs and a loopback-only bridge to the extension.
+- A dashboard with a profile list, sign-in checks and settings, in English and Vietnamese.
+- Optional CLI (`--limit N`, `--unlimited`, a background queue, a download folder) with a loopback-only bridge to the extension.
 
 ## Requirements
 
 - Microsoft Edge or another Chromium browser (Manifest V3)
-- Node.js `>= 22` for the CLI and for development
+- Node.js `>= 22` only for the optional CLI and for development
 - Windows for the CLI's Edge integration; the tests and the other tools run anywhere
 
 ## Development
@@ -44,12 +59,20 @@ A Manifest V3 Edge extension and local CLI for saving photos exposed by the page
 
 ## Install in Microsoft Edge
 
-1. Download `media-downloader-<version>.zip` from the [latest release](https://github.com/jooservices/media-downloader/releases/latest) (or run `npm run build`) and extract it to a permanent folder.
-2. Open `edge://extensions`.
-3. Turn on **Developer mode**.
-4. Select **Load unpacked** and choose the extracted folder. Allow the extension to access Instagram, Facebook, and X when Edge asks.
-5. In PowerShell, from the extracted folder, run `node .\cli\mediasaver.mjs install`. This records the loaded extension ID and signed-in Edge profile for the current Windows user; it does not need administrator access.
-6. Run `node .\cli\mediasaver.mjs download <profile-or-post-URL>`. The CLI opens the URL in the existing Edge profile and runs a local bridge on `127.0.0.1:38541`. The extension accepts bridge requests only from its configured extension origin. It scrolls Instagram/Facebook grids and X profile timelines, including X's `/media` tab; a direct Instagram post/reel, Facebook video/reel, or X status URL is scanned once. It saves visible photos and eligible video downloads, skips duplicates, limits concurrent downloads, retries interrupted image downloads up to three times, and waits for native video downloads to settle. You can switch to another Edge tab while the job runs. Keep the CLI process open until the job completes. Use `node .\cli\mediasaver.mjs status` to check progress and `node .\cli\mediasaver.mjs resume` to reconnect to a queued or interrupted job.
+Until the extension is published in a browser store, a one-time manual install is needed (Edge and Chrome only allow other installs on managed company computers):
+
+1. Download `media-downloader-<version>.zip` from the [latest release](https://github.com/jooservices/media-downloader/releases/latest) and extract it to a permanent folder (do not delete the folder afterwards).
+2. Open `edge://extensions` and turn on **Developer mode**.
+3. Select **Load unpacked** and choose the extracted folder. Allow the extension to access Instagram, Facebook, and X when Edge asks. The dashboard opens.
+
+When it is published as an unlisted or public store listing, installing becomes one click on its page and updates arrive by themselves; no Developer mode is involved.
+
+### Optional: the command line
+
+Only needed for scripts, `--limit` runs or saving to a network folder. It requires Node.js `>= 22`.
+
+4. In PowerShell, from the extracted folder, run `node .\cli\mediasaver.mjs install`. This records the loaded extension ID and signed-in Edge profile for the current Windows user; it does not need administrator access.
+5. Run `node .\cli\mediasaver.mjs download <profile-or-post-URL>`. The CLI opens the URL in the existing Edge profile and runs a local bridge on `127.0.0.1:38541`. The extension accepts bridge requests only from its configured extension origin. It scrolls Instagram/Facebook grids and X profile timelines, including X's `/media` tab; a direct Instagram post/reel, Facebook video/reel, or X status URL is scanned once. It saves visible photos and eligible video downloads, skips duplicates, limits concurrent downloads, retries interrupted image downloads up to three times, and waits for native video downloads to settle. You can switch to another Edge tab while the job runs. Keep the CLI process open until the job completes. Use `node .\cli\mediasaver.mjs status` to check progress and `node .\cli\mediasaver.mjs resume` to reconnect to a queued or interrupted job.
 
 To repair known image files that landed directly in the Downloads root, create `%LOCALAPPDATA%\PageMediaSaver\repair-root-manifest.json` with a `jobs` array. Each job has `url`, `platform`, `account`, and `files`; each file has its root-level `basename` and absolute `rootPath`. Run `node .\cli\mediasaver.mjs repair-root`. The extension matches those source filenames on the corresponding profile grid, downloads the largest rendition exposed there, and overwrites the account-folder target. The CLI removes a root file only after all targets for that account are found and each destination file is nonempty and newer than the repair job. If any target is missing or fails, all original root files for that account are retained.
 
@@ -152,7 +175,9 @@ A scan stops after it has started a limited number of files (photos and videos t
 
 - `activeTab` and `scripting`: inspect and scroll pages when you start a download from the popup.
 - `downloads`: write selected files and track completion.
-- `storage`: remember item keys to avoid repeated downloads and route platform-provided video downloads into the account folder.
+- `storage`: remember item keys to avoid repeated downloads, keep the profile list and your settings, and route platform-provided video downloads into the account folder.
+- `alarms`: wake the extension every half minute so the profile list keeps moving while you use the browser for something else.
+- `cookies`: check whether you are signed in to each site. Only the **names** of the session cookies are looked at; their values are never read, stored or sent anywhere.
 - `http://127.0.0.1/*`: communicate with the CLI's loopback-only bridge while a job is running.
 - Instagram, Facebook, and X site access: inject the content script on profile/timeline pages opened by the CLI, without requiring a popup click.
 

@@ -13,6 +13,8 @@ globalThis.PageMediaSaver ??= {};
   const MAX_ROUNDS = 10000;
   const VIDEO_WAIT_MS = 12000;
   const END_CHECKS = 4;
+  const LAZY_LOAD_POLL_MS = 500;
+  const LAZY_LOAD_POLLS = 12;
   const STALL_CHECKS = 8;
 
   let autoRunning = false;
@@ -26,6 +28,7 @@ globalThis.PageMediaSaver ??= {};
     videoStarted: 0,
     videoSkipped: 0,
     failed: 0,
+    unavailable: 0,
     pending: 0,
     rounds: 0,
     message: "",
@@ -96,6 +99,7 @@ globalThis.PageMediaSaver ??= {};
       drains++;
       autoState.pending = status.pending || 0;
       autoState.failed = status.failed || 0;
+      autoState.unavailable = status.unavailable || 0;
       updateAutoMessage();
       if (autoState.pending > 0) {
         continue;
@@ -131,6 +135,7 @@ globalThis.PageMediaSaver ??= {};
     const finalStatus = await finishDownloads();
     autoState.pending = finalStatus.pending || 0;
     autoState.failed = finalStatus.failed || 0;
+    autoState.unavailable = finalStatus.unavailable || 0;
   }
 
   function endScan(status, message) {
@@ -253,6 +258,10 @@ globalThis.PageMediaSaver ??= {};
     );
   }
 
+  // Files the site no longer serves (taken down, blocked) are skipped for good, not counted as failures.
+  const unavailableNote = () =>
+    autoState.unavailable ? ` (${autoState.unavailable} of them the site no longer serves)` : "";
+
   // The scroll loop ended because four checks found no older rows.
   async function finishGrid() {
     await settleDownloads();
@@ -264,17 +273,25 @@ globalThis.PageMediaSaver ??= {};
     } else if (hasOutstanding()) {
       message = `Grid scan ended after four checks found no older rows. ${started} download request(s) started; ${pending} remain pending and ${failed} failed after retries.`;
     } else {
-      message = `Download finished: ${started} photo request(s) and ${videoStarted} page-data file(s) completed with no pending or failed files; ${skippedCount()} saved or unavailable items skipped. Four end checks found no older rows.`;
+      message = `Download finished: ${started} photo request(s) and ${videoStarted} page-data file(s) completed with no pending or failed files; ${skippedCount()} saved or unavailable items skipped${unavailableNote()}. Four end checks found no older rows.`;
     }
     endScan(hasOutstanding() || repairShort ? "incomplete" : "complete", message);
+  }
+
+  // Lazy rows can take several seconds on a slow connection: poll until the page grows or the wait runs out.
+  async function waitForMoreRows(heightBefore) {
+    await pause(1800);
+    for (let polls = 0; polls < LAZY_LOAD_POLLS && pageHeight() <= heightBefore + 40; polls++) {
+      await pause(LAZY_LOAD_POLL_MS);
+    }
   }
 
   // At the bottom of the grid: wait for lazy rows, nudge the page, and count a stall when nothing new came.
   // Returns true when the scan has ended.
   async function runBottomPass(scroll, heightBefore) {
-    await pause(1800);
+    await waitForMoreRows(heightBefore);
     window.scrollBy({ top: Math.max(250, Math.floor(window.innerHeight * 0.55)), left: 0, behavior: "instant" });
-    await pause(1800);
+    await waitForMoreRows(pageHeight());
     const endBatch = await downloadVisibleBatch();
     accumulate(endBatch);
     if (limitReached()) {
@@ -387,6 +404,7 @@ globalThis.PageMediaSaver ??= {};
       videoStarted: 0,
       videoSkipped: 0,
       failed: 0,
+      unavailable: 0,
       pending: 0,
       rounds: 0,
       limit: Number.isInteger(limit) && limit > 0 ? limit : null,

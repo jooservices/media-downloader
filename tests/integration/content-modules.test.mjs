@@ -113,7 +113,7 @@ test("a scan of an empty profile finishes and reports to the background", async 
         : { ok: true, started: 0, skipped: 0, failed: 0, pending: 0, cached: 0 }
   });
   await page.request({ type: "AUTO_START_CLI", job: { jobId: "j3", url: "https://x.com/NASA/", limit: 5 } });
-  for (let i = 0; i < 40 && page.context.PageMediaSaver.scan.state.running; i++) {
+  for (let i = 0; i < 400 && page.context.PageMediaSaver.scan.state.running; i++) {
     await page.settle();
   }
   const state = page.context.PageMediaSaver.scan.state;
