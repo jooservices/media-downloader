@@ -7,10 +7,12 @@ import {
   BRIDGE_PORT,
   TERMINAL_STATES,
   normalizeProfileUrl,
-  writeJsonAtomic,
   readJson,
-  jobFile,
-  isJobId
+  listJobs,
+  updateJob,
+  isJobId,
+  isSignInPage,
+  jobFile
 } from "./store.mjs";
 
 const MAX_BODY_BYTES = 1_000_000;
@@ -127,34 +129,74 @@ export async function startBridgeServer() {
 
 // Does the page that announced itself belong to this job?
 function pageMatchesJob(message, job) {
-  const sameUrl = normalizeProfileUrl(message.pageUrl || "").url === normalizeProfileUrl(job.url).url;
+  let sameUrl;
+  try {
+    sameUrl = normalizeProfileUrl(message.pageUrl || "").url === normalizeProfileUrl(job.url).url;
+  } catch {
+    return false; // a page the CLI does not scan (an opened post, a sign-in page) matches no job
+  }
   const sameAccount = job.mediaPage || message.account?.toLowerCase() === job.account.toLowerCase();
   return sameUrl && message.platform === job.platform && sameAccount;
 }
 
+const CLOSE_TAB = { ok: true, type: "NO_JOB", close: true };
+
+// A tab the CLI opened names its job in the URL. Say whether that tab is still useful; when it is
+// not (its job is gone or finished, the site wants a sign-in, it landed on the wrong page, or another
+// tab already runs the job) the extension closes it so tabs never pile up.
+async function judgeTaggedTab(message) {
+  const tagged = isJobId(message.cliJobId) ? await readJson(jobFile(message.cliJobId)) : null;
+  if (!tagged || TERMINAL_STATES.has(tagged.status)) {
+    return CLOSE_TAB;
+  }
+  if (isSignInPage(message.pageUrl)) {
+    await updateJob(tagged.jobId, job => {
+      job.status = "error";
+      job.noRetry = true;
+      job.message = `${job.platform} asked to sign in. Sign in with Edge's profile, then queue this profile again.`;
+    });
+    return CLOSE_TAB;
+  }
+  // The tab that runs the job moves between pages while it scans (Instagram opens each post), so
+  // only a tab that has not started the job is judged by the page it shows.
+  if (tagged.status === "running" && tagged.tabId === message.tabId) {
+    return null;
+  }
+  const duplicate = tagged.status === "running" && tagged.tabId && tagged.tabId !== message.tabId;
+  return duplicate || !pageMatchesJob(message, tagged) ? CLOSE_TAB : null;
+}
+
+// Several jobs can be waiting at once (one per worker), so the page is matched against all of them.
+// The oldest waiting job for this page starts; a page that reloads while its job runs just reconnects.
 async function handlePageReady(message, claimedJobs) {
   if (!Number.isInteger(message.tabId)) {
     return { ok: false, error: "The Edge tab could not be identified." };
   }
-  const queue = await readJson(QUEUE_FILE);
-  const job = queue?.jobId ? await readJson(jobFile(queue.jobId)) : null;
-  if (!job || TERMINAL_STATES.has(job.status) || !pageMatchesJob(message, job)) {
-    return { ok: true, type: "NO_JOB" };
+  if (message.cliJobId) {
+    const verdict = await judgeTaggedTab(message);
+    if (verdict) {
+      return verdict;
+    }
   }
-  if (claimedJobs.has(job.jobId)) {
-    return { ok: true, type: "JOB_CONNECTED" };
+  const matching = (await listJobs())
+    .filter(job => !TERMINAL_STATES.has(job.status) && pageMatchesJob(message, job))
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  const waiting = matching.find(job => job.status === "queued" && !claimedJobs.has(job.jobId));
+  if (!waiting) {
+    return { ok: true, type: matching.length ? "JOB_CONNECTED" : "NO_JOB" };
   }
-  claimedJobs.add(job.jobId);
-  if (job.mediaPage) {
-    job.account = String(message.account || job.account);
-  }
-  job.status = "running";
-  job.message = job.mediaPage
-    ? "Edge acknowledged the media post; checking its platform download control."
-    : "Edge acknowledged the profile page; scanning and downloading.";
-  job.updatedAt = new Date().toISOString();
-  await writeJsonAtomic(jobFile(job.jobId), job);
-  return { ok: true, type: "START_JOB", tabId: message.tabId, job };
+  claimedJobs.add(waiting.jobId);
+  const started = await updateJob(waiting.jobId, job => {
+    if (job.mediaPage) {
+      job.account = String(message.account || job.account);
+    }
+    job.status = "running";
+    job.tabId = message.tabId;
+    job.message = job.mediaPage
+      ? "Edge acknowledged the media post; checking its platform download control."
+      : "Edge acknowledged the profile page; scanning and downloading.";
+  });
+  return { ok: true, type: "START_JOB", tabId: message.tabId, job: started };
 }
 
 function applyProgress(job, message) {
@@ -187,19 +229,17 @@ async function handleJobUpdate(message) {
   if (!isJobId(jobId)) {
     return { ok: false, error: "Invalid job id." };
   }
-  const filePath = jobFile(jobId);
-  const job = await readJson(filePath);
+  const job = await updateJob(jobId, current => {
+    if (message.type === "JOB_ERROR") {
+      current.status = "error";
+      current.message = String(message.error || "The page scan could not start.").slice(0, 500);
+    } else {
+      applyProgress(current, message);
+    }
+  });
   if (!job) {
     return { ok: false, error: "The CLI job no longer exists." };
   }
-  if (message.type === "JOB_ERROR") {
-    job.status = "error";
-    job.message = String(message.error || "The page scan could not start.").slice(0, 500);
-  } else {
-    applyProgress(job, message);
-  }
-  job.updatedAt = new Date().toISOString();
-  await writeJsonAtomic(filePath, job);
   if (TERMINAL_STATES.has(job.status)) {
     const queue = await readJson(QUEUE_FILE);
     if (queue?.jobId === jobId) {
