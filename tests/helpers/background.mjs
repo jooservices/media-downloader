@@ -153,6 +153,7 @@ export function loadBackground({
     started,
     tabMessages,
     tabRemoves,
+    inContext,
     send: (message, sender = {}) => new Promise(resolve => listeners.message[0](message, sender, resolve)),
     determine: item =>
       new Promise((resolve, reject) => {

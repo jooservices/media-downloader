@@ -70,7 +70,7 @@ node .\cli\mediasaver.mjs serve                 # keep running; stop with Ctrl+C
 node .\cli\mediasaver.mjs add <url> [<url>...]  # from another window, at any time
 ```
 
-`serve` also reads an inbox file once a few seconds, one profile URL per line (default `%LOCALAPPDATA%\PageMediaSaver\inbox.txt`, or `serve --inbox <file>`). Pasting a link with tracking parameters (`?e=…&g=5`) is fine. A profile that has already run, even one that failed, is not queued again; use `add <url> --again` to run it anew.
+`serve` also reads an inbox file every few seconds, one profile URL per line (default `%LOCALAPPDATA%\PageMediaSaver\inbox.txt`, or `serve --inbox <file>`). Pasting a link with tracking parameters (`?e=…&g=5`) is fine. A profile that has already run, even one that failed, is not queued again; use `add <url> --again` to run it anew.
 
 Each job is retried a few times when Edge does not answer or the page is closed (`maxAttempts`). Jobs left running by a crashed or stopped `serve` are recovered when it starts again. While `serve` is running, `download <url>` hands its URL to the queue instead of competing for the bridge. `status` shows every job and its state. Logs are written to `%LOCALAPPDATA%\PageMediaSaver\logs\`.
 
