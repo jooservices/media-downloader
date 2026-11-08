@@ -101,10 +101,11 @@ Each job is retried a few times when Edge does not answer or the page is closed 
 
 `service install` registers that queue to start when you sign in (the Windows Startup folder, a systemd user service, or a macOS launch agent) and starts it now. Run it from the project folder, or pass the full path to `mediasaver.mjs`. `service remove` unregisters it. It is not a Session 0 Windows service: the download has to open the signed-in browser on the desktop.
 
-While the queue is running, this is enough to request a download. Nothing else on the network can call it.
+While the queue is running, this is enough to request a download. The API listens on loopback only and needs the token that `serve` creates in `api-token` (only `/health` is open); POST bodies must be `application/json`.
 
 ```powershell
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:38542/downloads -ContentType application/json -Body '{"url":"https://www.instagram.com/name/"}'
+$token = (Get-Content "$env:LOCALAPPDATAPageMediaSaverapi-token").Trim()
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:38542/downloads -Headers @{ Authorization = "Bearer $token" } -ContentType application/json -Body '{"url":"https://www.instagram.com/name/"}'
 ```
 
 The reply lists the jobs that were queued. A Facebook profile still adds Photos, Reels and Videos. `GET http://127.0.0.1:38542/jobs` shows the latest jobs. A link that already ran is skipped unless the body also has `"again": true`.

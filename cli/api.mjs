@@ -1,9 +1,11 @@
 // Loopback API for the running queue. A page on the internet cannot call it: the server
 // listens on 127.0.0.1 only and rejects any other Host header, and it sends no CORS headers.
+import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 
 export const API_PORT = 38542;
 const MAX_BODY_BYTES = 8192;
+const JSON_TYPE = /^application\/json\b/i;
 const ALREADY_QUEUED = "already queued or done";
 
 export function jobView(job) {
@@ -74,9 +76,9 @@ async function queueDownload(request, response, addUrls) {
   respond(response, 202, { ok: true, created: created.map(jobView), skipped });
 }
 
-function createApiServer(addUrls, listJobs, expectedHost) {
+function createApiServer(deps) {
   return createServer((request, response) => {
-    route(request, response, addUrls, listJobs, expectedHost).catch(() => {
+    route(request, response, deps).catch(() => {
       if (!response.headersSent) {
         respond(response, 500, { ok: false, error: "The request failed." });
       }
@@ -84,12 +86,27 @@ function createApiServer(addUrls, listJobs, expectedHost) {
   });
 }
 
-async function route(request, response, addUrls, listJobs, expectedHost) {
+function hasValidToken(request, token) {
+  const given = Buffer.from(String(request.headers.authorization || ""));
+  const wanted = Buffer.from(`Bearer ${token}`);
+  return given.length === wanted.length && timingSafeEqual(given, wanted);
+}
+
+async function route(request, response, { addUrls, listJobs, expectedHost, token }) {
   if (request.headers.host !== expectedHost()) {
     respond(response, 403, { ok: false, error: "Only 127.0.0.1 is accepted." });
     return;
   }
   const pathname = (request.url || "/").split("?")[0];
+  if (token && pathname !== "/health" && !hasValidToken(request, token)) {
+    respond(response, 401, { ok: false, error: "Send the API token as: Authorization: Bearer <token>." });
+    return;
+  }
+  // JSON only: a web page cannot send this type to another origin without a CORS preflight, which is never answered.
+  if (request.method === "POST" && !JSON_TYPE.test(request.headers["content-type"] || "")) {
+    respond(response, 415, { ok: false, error: "Content-Type must be application/json." });
+    return;
+  }
   if (request.method === "GET" && pathname === "/health") {
     respond(response, 200, { ok: true });
     return;
@@ -105,9 +122,9 @@ async function route(request, response, addUrls, listJobs, expectedHost) {
   respond(response, 404, { ok: false, error: "Not found." });
 }
 
-export function startApiServer({ addUrls, listJobs, port = API_PORT }) {
+export function startApiServer({ addUrls, listJobs, port = API_PORT, token = null }) {
   let host = `127.0.0.1:${port}`;
-  const server = createApiServer(addUrls, listJobs, () => host);
+  const server = createApiServer({ addUrls, listJobs, token, expectedHost: () => host });
   return new Promise((resolve, reject) => {
     server.once("error", error => {
       reject(error?.code === "EADDRINUSE" ? new Error(`Download API port ${port} is already in use.`) : error);

@@ -5,7 +5,9 @@ import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   APP_DIR,
+  API_TOKEN_FILE,
   DAEMON_FILE,
+  ensureApiToken,
   EDGE_PROFILE_FILE,
   LOGS_DIR,
   TERMINAL_STATES,
@@ -129,7 +131,7 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
   // Everything after the bridge starts is inside the try, so a failed setup step still closes the bridge.
   try {
     servers.push(await startBridgeServer());
-    servers.push(await startApiServer({ addUrls, listJobs }));
+    servers.push(await startApiServer({ addUrls, listJobs, token: await ensureApiToken() }));
     await writeJsonAtomic(DAEMON_FILE, { pid: process.pid, startedAt: new Date().toISOString(), inbox });
     const deps = await buildDeps(log);
     const recovered = await recoverInterrupted(deps);
@@ -139,7 +141,9 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
     const supervisor = createSupervisor(deps);
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
-    log(`Serving. POST http://127.0.0.1:${API_PORT}/downloads {"url":"https://..."} or add a URL to ${inbox}.`);
+    log(
+      `Serving. POST http://127.0.0.1:${API_PORT}/downloads {"url":"https://..."} with the token from ${API_TOKEN_FILE}, or add a URL to ${inbox}.`
+    );
 
     const pass = async () => {
       const settings = await loadConfig().catch(() => null);

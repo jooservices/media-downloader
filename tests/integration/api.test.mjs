@@ -144,3 +144,32 @@ test("sign-in startup is a logon task on Windows and a user service on Linux and
   assert.match(systemdUnit(launch), /ExecStart=/);
   assert.match(launchdPlist({ executable: "/usr/bin/node", script: "/opt/a&b.mjs" }), /a&amp;b\.mjs/);
 });
+
+test("with a token set, calls need it, /health does not, and POST must be JSON", async () => {
+  const server = await startApiServer({
+    port: 0,
+    token: "s3cret",
+    addUrls: async () => ({ created: [], skipped: [] }),
+    listJobs: async () => []
+  });
+  const port = server.address().port;
+  const send = (pathname, headers = {}, method = "GET", body = "") =>
+    new Promise((resolve, reject) => {
+      const req = request({ hostname: "127.0.0.1", port, method, path: pathname, headers }, response => {
+        response.resume();
+        response.on("end", () => resolve(response.statusCode));
+      });
+      req.on("error", reject);
+      req.end(body);
+    });
+  try {
+    assert.equal(await send("/health"), 200);
+    assert.equal(await send("/jobs"), 401);
+    assert.equal(await send("/jobs", { authorization: "Bearer wrong" }), 401);
+    assert.equal(await send("/jobs", { authorization: "Bearer s3cret" }), 200);
+    const text = { authorization: "Bearer s3cret", "content-type": "text/plain" };
+    assert.equal(await send("/downloads", text, "POST", '{"url":"https://x.com/a"}'), 415);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});

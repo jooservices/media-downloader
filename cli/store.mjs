@@ -1,7 +1,7 @@
 // Where the CLI keeps its files, and how it reads and writes them.
 import { createRequire } from "node:module";
 import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,6 +34,7 @@ export const LOGS_DIR = path.join(APP_DIR, "logs");
 export const EDGE_PROFILE_FILE = path.join(APP_DIR, "edge-profile.json");
 export const BRIDGE_CONFIG_FILE = path.join(APP_DIR, "bridge-config.json");
 export const REPAIR_MANIFEST_FILE = path.join(APP_DIR, "repair-root-manifest.json");
+export const API_TOKEN_FILE = path.join(APP_DIR, "api-token");
 export const BRIDGE_PORT = 38541;
 export const TERMINAL_STATES = new Set(["complete", "incomplete", "paused", "error"]);
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -129,4 +130,27 @@ export async function getActiveJob() {
     return null;
   }
   return readJson(jobFile(queue.jobId));
+}
+
+// The secret every API call except /health must carry. Created once, readable only by this user.
+export async function ensureApiToken() {
+  try {
+    const existing = (await readFile(API_TOKEN_FILE, "utf8")).trim();
+    if (existing) {
+      return existing;
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  }
+  const token = randomBytes(32).toString("hex");
+  await mkdir(APP_DIR, { recursive: true });
+  await writeFile(
+    API_TOKEN_FILE,
+    `${token}
+`,
+    { encoding: "utf8", mode: 0o600 }
+  );
+  return token;
 }
