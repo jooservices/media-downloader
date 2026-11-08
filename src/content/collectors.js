@@ -56,9 +56,7 @@ globalThis.PageMediaSaver ??= {};
     }
     try {
       const url = new URL(candidate, location.href);
-      if (platform === "Twitter" && url.hostname === "pbs.twimg.com" && url.pathname.includes("/media/")) {
-        url.searchParams.set("name", "orig");
-      }
+      PageMediaLib.sites.get(platform)?.preferOriginal?.(url);
       return url.href;
     } catch {
       return null;
@@ -94,6 +92,10 @@ globalThis.PageMediaSaver ??= {};
   }
 
   async function collectX(account) {
+    const photos = PageMediaLib.sites.forHost(location.hostname)?.photos;
+    if (!photos) {
+      return { items: [] };
+    }
     const items = [];
     const seen = new Set();
     const articles = [...document.querySelectorAll("article")];
@@ -106,21 +108,23 @@ globalThis.PageMediaSaver ??= {};
       } // A repost or ad belongs to someone else; a video poster is never saved as a photo.
 
       let photoIndex = 0;
-      for (const img of article.querySelectorAll(
-        'img[src*="pbs.twimg.com/media"], img[srcset*="pbs.twimg.com/media"]'
-      )) {
+      for (const img of article.querySelectorAll(photos.selector)) {
         if (!isLarge(img)) {
           continue;
         }
-        const url = imageUrl(img, "Twitter");
+        const url = imageUrl(img, PageMediaLib.sites.forHost(location.hostname)?.name);
         if (!url || seen.has(url)) {
           continue;
         }
         seen.add(url);
-        items.push(makeItem({ platform: "Twitter", account, id: statusId, index: ++photoIndex, url }));
+        const platform = PageMediaLib.sites.forHost(location.hostname)?.name;
+        items.push(makeItem({ platform, account, id: statusId, index: ++photoIndex, url }));
       }
     }
-    return { items: items.filter(Boolean), ...(await collectPageMedia("Twitter", account)) };
+    return {
+      items: items.filter(Boolean),
+      ...(await collectPageMedia(PageMediaLib.sites.forHost(location.hostname)?.name, account))
+    };
   }
 
   ns.collectors = { collectX };

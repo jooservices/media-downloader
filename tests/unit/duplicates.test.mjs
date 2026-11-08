@@ -4,9 +4,11 @@ import test from "node:test";
 import vm from "node:vm";
 import { createFakeIndexedDB, loadBackground, plain } from "../helpers/background.mjs";
 
-const keysFile = new URL("../../lib/keys.js", import.meta.url);
 const keysContext = vm.createContext({});
-new vm.Script(fs.readFileSync(keysFile, "utf8"), { filename: keysFile.pathname }).runInContext(keysContext);
+for (const name of ["sites.js", "keys.js"]) {
+  const file = new URL(`../../lib/${name}`, import.meta.url);
+  new vm.Script(fs.readFileSync(file, "utf8"), { filename: file.pathname }).runInContext(keysContext);
+}
 const { photoKey, videoKey, toCanonicalKey } = keysContext.PageMediaLib.keys;
 
 const photo = (account, extra = {}) => ({

@@ -1,6 +1,7 @@
 // Service worker entry point. The files below are loaded in order and share one
 // global scope; this file only routes messages from pages and the popup.
 importScripts(
+  "../../lib/sites.js",
   "../../lib/platforms.js",
   "../../lib/paths.js",
   "../../lib/urls.js",

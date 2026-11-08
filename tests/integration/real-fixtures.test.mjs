@@ -9,6 +9,7 @@ const plain = value => JSON.parse(JSON.stringify(value));
 const context = { URL };
 context.globalThis = context;
 for (const file of [
+  "lib/sites.js",
   "lib/platforms.js",
   "src/page/x-media-parser.js",
   "src/page/instagram-media-parser.js",
@@ -106,6 +107,7 @@ test("the hook's embedded-script path reads the real Instagram and Facebook bloc
     };
     page.XMLHttpRequest.prototype.open = function open() {};
     page.globalThis = page;
+    runScript("lib/sites.js", page);
     runScript("src/page/media-network-hook.js", page);
     assert.equal(posted.length, 1, platform);
     assert.equal(posted[0].media[0].id, id, platform);

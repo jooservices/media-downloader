@@ -46,6 +46,28 @@
     );
   }
 
+  // Story frames are addressed by a numeric pk, not a post shortcode. `id` is sometimes "<pk>_<user>".
+  function storyPk(node) {
+    const raw = node?.pk ?? String(node?.id ?? "").split("_")[0];
+    const id = String(raw);
+    return /^\d{3,40}$/.test(id) ? id : null;
+  }
+
+  // A highlight reel's frames are archived stories. They are saved by the same largest-file rule.
+  function highlightItems(node) {
+    const id = String(node?.id || "");
+    if (node?.reel_type !== "highlight_reel" && !id.startsWith("highlight:")) {
+      return [];
+    }
+    return Array.isArray(node.items) ? node.items : [];
+  }
+
+  function isStoryItem(node) {
+    return (
+      node?.product_type === "story" && Boolean(storyPk(node)) && Boolean(node.video_versions || node.image_versions2)
+    );
+  }
+
   // Videos and full-size photos of every post in a response. A video's own
   // image_versions2 is only its poster, so a node with video_versions never
   // yields a photo; photos of a carousel are numbered by their position in it.
@@ -92,6 +114,30 @@
       });
     };
 
+    // A story's poster is not a photo. The largest listed file is the only one kept.
+    const addStory = node => {
+      const id = storyPk(node);
+      const owner = node.user?.username || node.owner?.username || null;
+      const video =
+        Array.isArray(node.video_versions) && node.video_versions.length ? pickBestVersion(node.video_versions) : null;
+      const photo = video ? null : pickBestImage(node.image_versions2?.candidates);
+      const best = video || photo;
+      if (!best) {
+        return;
+      }
+      found.set(`${video ? "video" : "photo"}:${id}:1`, {
+        platform: "Instagram",
+        kind: video ? "video" : "photo",
+        id,
+        index: 1,
+        owner,
+        durationMs: video ? Math.round((Number(node.video_duration) || 0) * 1000) : undefined,
+        width: best.width,
+        height: best.height,
+        url: best.url
+      });
+    };
+
     const addPostPhotos = (current, node) => {
       if (!Array.isArray(node.carousel_media)) {
         addPhoto(current, node, 1);
@@ -112,6 +158,17 @@
         return;
       }
       seen.add(node);
+
+      for (const item of highlightItems(node)) {
+        addStory(item);
+      }
+      if (isStoryItem(node)) {
+        addStory(node);
+        for (const key of Object.keys(node)) {
+          walk(node[key], null);
+        }
+        return;
+      }
 
       let current = post;
       const isPost = isPostNode(node) && !carouselItems.has(node);

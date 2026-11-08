@@ -35,12 +35,12 @@ test("an empty or missing config gives the safe defaults: one worker per site", 
   for (const raw of [null, undefined, {}]) {
     assert.deepEqual(plain(parseConfig(raw)), plain(DEFAULT_CONFIG));
   }
-  assert.deepEqual(plain(DEFAULT_CONFIG.workers), { Twitter: 1, Instagram: 1, Facebook: 1 });
+  assert.deepEqual(plain(DEFAULT_CONFIG.workers), { Twitter: 1, Instagram: 1, Facebook: 1, TikTok: 1 });
 });
 
 test("workers are set per site, and x is another name for Twitter", () => {
   const config = parseConfig({ workers: { x: 3, Instagram: 2 } });
-  assert.deepEqual(plain(config.workers), { Twitter: 3, Instagram: 2, Facebook: 1 });
+  assert.deepEqual(plain(config.workers), { Twitter: 3, Instagram: 2, Facebook: 1, TikTok: 1 });
   assert.equal(parseConfig({ workers: { TWITTER: 2 } }).workers.Twitter, 2);
 });
 
@@ -49,7 +49,7 @@ test("rejects a worker count that is not a whole number from 1 to the maximum", 
     assert.throws(() => parseConfig({ workers: { x: value } }), /workers\.x must be a whole number/, String(value));
   }
   assert.doesNotThrow(() => parseConfig({ workers: { x: MAX_WORKERS } }));
-  assert.throws(() => parseConfig({ workers: { tiktok: 1 } }), /unknown site/);
+  assert.throws(() => parseConfig({ workers: { tumblr: 1 } }), /unknown site/);
 });
 
 test("limit is a whole number of at least 1, or null for no limit", () => {
@@ -80,6 +80,7 @@ test("downloadDir accepts a drive folder or a network share and normalises it", 
   assert.equal(parseConfig({ downloadDir: "D:\\Media\\" }).downloadDir, "D:\\Media");
   assert.equal(parseConfig({ downloadDir: "D:/Media/Social" }).downloadDir, "D:\\Media\\Social");
   assert.equal(parseConfig({ downloadDir: "\\\\nas\\share\\Media" }).downloadDir, "\\\\nas\\share\\Media");
+  assert.equal(parseConfig({ downloadDir: "/home/me/Media/" }).downloadDir, "/home/me/Media");
   assert.equal(parseConfig({ downloadDir: "" }).downloadDir, null);
   assert.equal(parseConfig({}).downloadDir, null);
 });

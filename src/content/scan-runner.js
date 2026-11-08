@@ -9,7 +9,7 @@ globalThis.PageMediaSaver ??= {};
   const { collectX } = ns.collectors;
   const { collectPageMedia } = ns.videoSources;
 
-  const SUPPORTED_PLATFORMS = ["Facebook", "Instagram", "Twitter"];
+  const supported = () => PageMediaLib.sites.names();
   const MAX_ROUNDS = 10000;
   const VIDEO_WAIT_MS = 12000;
   const END_CHECKS = 4;
@@ -214,8 +214,8 @@ globalThis.PageMediaSaver ??= {};
     if (!result?.ok) {
       throw new Error(result?.error || "Could not read this page.");
     }
-    if (!SUPPORTED_PLATFORMS.includes(result.platform)) {
-      throw new Error("Automatic scrolling supports Instagram/Facebook grids and X profile timelines.");
+    if (!supported().includes(result.platform)) {
+      throw new Error("Automatic scrolling supports Instagram, Facebook, X, and TikTok profiles.");
     }
     if (!result.items.length) {
       return emptyBatch(result);
@@ -351,6 +351,11 @@ globalThis.PageMediaSaver ??= {};
         await runSinglePage();
         return;
       }
+      // A profile link means the whole account: posts, reels, and the current stories.
+      if (PageMediaLib.sites.get(autoState.platform)?.opensStories && !autoState.repairMode) {
+        autoState.videoStarted += await ns.videoSources.saveAccountStories(autoState.account);
+        updateAutoMessage();
+      }
       while (!autoStopRequested && autoState.rounds < MAX_ROUNDS) {
         if (await runGridPass(scroll)) {
           return;
@@ -381,14 +386,14 @@ globalThis.PageMediaSaver ??= {};
       return { ok: true, state: autoState };
     }
     const platform = platformForPage();
-    if (!SUPPORTED_PLATFORMS.includes(platform)) {
-      return { ok: false, error: "Automatic mode supports Instagram/Facebook grids and X profile timelines." };
+    if (!supported().includes(platform)) {
+      return { ok: false, error: "Automatic mode supports Instagram, Facebook, X, and TikTok profiles." };
     }
     const singlePage = !isProfileGrid(platform) && isMediaPostPage(platform);
     if (!isProfileGrid(platform) && !singlePage) {
       return {
         ok: false,
-        error: "Open a supported Instagram/Facebook profile grid, X timeline, or direct media post URL."
+        error: "Open a supported Instagram, Facebook, X, or TikTok profile, or a direct media post URL."
       };
     }
     autoStopRequested = false;
@@ -423,10 +428,10 @@ globalThis.PageMediaSaver ??= {};
   async function collect() {
     const platform = platformForPage();
     if (!platform) {
-      return { ok: false, error: "Open an Instagram, Facebook, or X page first." };
+      return { ok: false, error: "Open an Instagram, Facebook, X, or TikTok page first." };
     }
     const account = getAccount(platform);
-    if (platform === "Twitter") {
+    if (PageMediaLib.sites.get(platform)?.photos) {
       return { ok: true, platform, account, ...(await collectX(account)) };
     }
     return { ok: true, platform, account, items: [], ...(await collectPageMedia(platform, account)) };

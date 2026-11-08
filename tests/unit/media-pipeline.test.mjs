@@ -10,10 +10,12 @@ const manifest = JSON.parse(read("manifest.json"));
 const parserContext = { URL };
 parserContext.globalThis = parserContext;
 for (const file of [
+  "lib/sites.js",
   "lib/platforms.js",
   "src/page/x-media-parser.js",
   "src/page/instagram-media-parser.js",
-  "src/page/facebook-media-parser.js"
+  "src/page/facebook-media-parser.js",
+  "src/page/tiktok-media-parser.js"
 ]) {
   runScript(file, parserContext);
 }
@@ -38,7 +40,12 @@ const tweet = (restId, screenName, media) => ({
 });
 
 test("registers one parser per platform", () => {
-  assert.deepEqual(plain(Object.keys(parserContext.PageMediaParsers).sort()), ["Facebook", "Instagram", "Twitter"]);
+  assert.deepEqual(plain(Object.keys(parserContext.PageMediaParsers).sort()), [
+    "Facebook",
+    "Instagram",
+    "TikTok",
+    "Twitter"
+  ]);
 });
 
 test("picks the highest-bitrate mp4 and ignores HLS playlists", () => {
@@ -171,6 +178,73 @@ test("Instagram: numbers carousel videos under the parent post and skips photos"
   ]);
 });
 
+test("Instagram: a story keeps the largest photo or video and is keyed by its pk", () => {
+  const photo = "https://scontent.cdninstagram.com/v/t51/story-big.jpg";
+  const small = "https://scontent.cdninstagram.com/v/t51/story-small.jpg";
+  const [image, ...rest] = instagram.extractMedia({
+    reels: {
+      1: {
+        items: [
+          {
+            pk: "3345678901234567890",
+            id: "3345678901234567890_99",
+            product_type: "story",
+            media_type: 1,
+            user: { username: "tieu_hy26" },
+            image_versions2: {
+              candidates: [
+                { width: 320, height: 568, url: small },
+                { width: 1080, height: 1920, url: photo }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  });
+  assert.equal(rest.length, 0);
+  assert.equal(image.kind, "photo");
+  assert.equal(image.id, "3345678901234567890");
+  assert.equal(image.owner, "tieu_hy26");
+  assert.equal(image.url, photo);
+  const [video] = instagram.extractMedia({
+    pk: "3345678901234567891",
+    product_type: "story",
+    code: "CstoryCode1",
+    user: { username: "tieu_hy26" },
+    video_duration: 4,
+    video_versions: [{ width: 720, height: 1280, url: igUrl("story") }],
+    image_versions2: { candidates: [{ width: 720, height: 1280, url: photo }] }
+  });
+  assert.equal(video.kind, "video");
+  assert.equal(video.id, "3345678901234567891");
+  assert.match(video.url, /story/);
+});
+
+test("Instagram: a highlight reel keeps the largest frame and ignores a thumbnail-only node", () => {
+  const photo = "https://scontent.cdninstagram.com/v/t51/highlight-big.jpg";
+  const [image, ...rest] = instagram.extractMedia({
+    id: "highlight:1790",
+    reel_type: "highlight_reel",
+    items: [
+      {
+        pk: "3345678901234567892",
+        user: { username: "disleft" },
+        image_versions2: {
+          candidates: [
+            { width: 150, height: 150, url: "https://scontent.cdninstagram.com/v/t51/highlight-small.jpg" },
+            { width: 1080, height: 1920, url: photo }
+          ]
+        }
+      }
+    ]
+  });
+  assert.equal(rest.length, 0);
+  assert.equal(image.id, "3345678901234567892");
+  assert.equal(image.owner, "disleft");
+  assert.equal(image.url, photo);
+});
+
 test("Instagram: ignores unrelated codes and URLs outside Instagram's CDN", () => {
   assert.equal(
     instagram.extractMedia({ code: "US", video_versions: [{ width: 1, height: 1, url: igUrl("x") }] }).length,
@@ -242,14 +316,16 @@ test("Facebook: reads the legacy playable_url fields and rejects foreign hosts",
 test("manifest loads every parser and the hook in the page world before the bridge", () => {
   const hook = manifest.content_scripts.find(entry => entry.world === "MAIN");
   assert.deepEqual(hook.js, [
+    "lib/sites.js",
     "lib/platforms.js",
     "src/page/x-media-parser.js",
     "src/page/instagram-media-parser.js",
     "src/page/facebook-media-parser.js",
+    "src/page/tiktok-media-parser.js",
     "src/page/media-network-hook.js"
   ]);
   assert.equal(hook.run_at, "document_start");
-  for (const host of ["instagram.com", "facebook.com", "x.com", "twitter.com"]) {
+  for (const host of ["instagram.com", "facebook.com", "x.com", "twitter.com", "tiktok.com"]) {
     assert.ok(
       hook.matches.some(match => match.includes(host)),
       host
@@ -281,6 +357,7 @@ function loadHook(hostname, fetchImpl) {
   };
   page.XMLHttpRequest.prototype.open = function open() {};
   page.globalThis = page;
+  runScript("lib/sites.js", page);
   runScript("src/page/media-network-hook.js", page);
   return { page, posted };
 }

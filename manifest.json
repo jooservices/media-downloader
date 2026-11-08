@@ -2,14 +2,21 @@
   "manifest_version": 3,
   "name": "Page Media Saver",
   "version": "0.5.0",
-  "description": "Save visible photos and use platform-provided video download controls on logged-in Instagram, Facebook, and X pages.",
+  "description": "Save visible photos and use platform-provided video download controls on logged-in Instagram, Facebook, X, and TikTok pages.",
   "minimum_chrome_version": "111",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "page-media-saver@jooservices.dev",
+      "strict_min_version": "128.0"
+    }
+  },
   "permissions": ["activeTab", "scripting", "downloads", "storage", "alarms", "cookies"],
   "host_permissions": [
     "https://*.instagram.com/*",
     "https://*.facebook.com/*",
     "https://*.x.com/*",
     "https://*.twitter.com/*",
+    "https://*.tiktok.com/*",
     "http://127.0.0.1/*"
   ],
   "content_scripts": [
@@ -18,13 +25,16 @@
         "https://*.instagram.com/*",
         "https://*.facebook.com/*",
         "https://*.x.com/*",
-        "https://*.twitter.com/*"
+        "https://*.twitter.com/*",
+        "https://*.tiktok.com/*"
       ],
       "js": [
+        "lib/sites.js",
         "lib/platforms.js",
         "src/page/x-media-parser.js",
         "src/page/instagram-media-parser.js",
         "src/page/facebook-media-parser.js",
+        "src/page/tiktok-media-parser.js",
         "src/page/media-network-hook.js"
       ],
       "run_at": "document_start",
@@ -35,9 +45,10 @@
         "https://*.instagram.com/*",
         "https://*.facebook.com/*",
         "https://*.x.com/*",
-        "https://*.twitter.com/*"
+        "https://*.twitter.com/*",
+        "https://*.tiktok.com/*"
       ],
-      "js": ["src/page/media-bridge.js"],
+      "js": ["lib/sites.js", "src/page/media-bridge.js"],
       "run_at": "document_start"
     },
     {
@@ -45,9 +56,11 @@
         "https://*.instagram.com/*",
         "https://*.facebook.com/*",
         "https://*.x.com/*",
-        "https://*.twitter.com/*"
+        "https://*.twitter.com/*",
+        "https://*.tiktok.com/*"
       ],
       "js": [
+        "lib/sites.js",
         "lib/platforms.js",
         "lib/paths.js",
         "lib/urls.js",

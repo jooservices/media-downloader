@@ -5,7 +5,7 @@
   globalThis.__pageMediaSaverMediaBridge = true;
 
   const CHANNEL = "page-media-saver:media";
-  const PLATFORMS = new Set(["Twitter", "Instagram", "Facebook"]);
+  const PLATFORMS = new Set(globalThis.PageMediaLib?.sites?.names?.() || []);
 
   window.addEventListener("message", event => {
     if (event.source !== window || event.origin !== location.origin) {

@@ -4,13 +4,8 @@
     return;
   }
 
-  const host = global.location.hostname.toLowerCase();
-  const HOST_PLATFORMS = [
-    [/(^|\.)(x|twitter)\.com$/, "Twitter"],
-    [/(^|\.)instagram\.com$/, "Instagram"],
-    [/(^|\.)facebook\.com$/, "Facebook"]
-  ];
-  const platform = HOST_PLATFORMS.find(([pattern]) => pattern.test(host))?.[1] ?? null;
+  const site = global.PageMediaLib?.sites?.forHost(global.location.hostname);
+  const platform = site?.name ?? null;
   const parser = platform && global.PageMediaParsers?.[platform];
   if (!parser) {
     return;
@@ -18,11 +13,7 @@
   global.__pageMediaSaverMediaHook = true;
 
   // Only the platform's own data endpoints are read; everything else is left alone.
-  const DATA_URL = {
-    Twitter: /\/i\/api\/graphql\//,
-    Instagram: /\/graphql(?:[/?]|$)|\/api\/v1\//,
-    Facebook: /\/api\/graphql\/|\/ajax\/bulk-route-definitions|\/video\/video_data/
-  }[platform];
+  const DATA_URL = site.dataUrl;
 
   const CHANNEL = "page-media-saver:media";
   const announced = new Set();
@@ -109,20 +100,19 @@
 
   // Instagram and Facebook render their first screens from JSON embedded in the
   // page, so read those blocks too, including ones added while scrolling.
-  if (platform !== "Twitter" && global.document) {
+  if (site.embeddedBootstrap && global.document) {
     const scanned = new WeakSet();
     const scanEmbedded = () => {
       const documents = [];
-      for (const script of global.document.querySelectorAll('script[type="application/json"]')) {
+      const selector = site.embeddedSelector || 'script[type="application/json"]';
+      const hint =
+        site.embeddedHint || /video_versions|image_versions2|progressive_urls|viewer_image|playable_url|browser_native/;
+      for (const script of global.document.querySelectorAll(selector)) {
         if (scanned.has(script)) {
           continue;
         }
         scanned.add(script);
-        if (
-          !/video_versions|image_versions2|progressive_urls|viewer_image|playable_url|browser_native/.test(
-            script.textContent
-          )
-        ) {
+        if (!hint.test(script.textContent)) {
           continue;
         }
         try {

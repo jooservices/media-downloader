@@ -173,6 +173,19 @@ test("addUrls queues each profile once, ignoring tracking parameters and letter 
   assert.equal(forced.created.length, 1, "--again queues it anew");
 });
 
+test("a Facebook profile is queued as its feed plus the photos, reels and videos tabs", async () => {
+  const { created } = await addUrls(["https://www.facebook.com/TieuHyOfficial/?utm_source=ig"]);
+  assert.deepEqual(
+    created.map(job => job.url),
+    [
+      "https://www.facebook.com/TieuHyOfficial/",
+      "https://www.facebook.com/TieuHyOfficial/photos/",
+      "https://www.facebook.com/TieuHyOfficial/reels/",
+      "https://www.facebook.com/TieuHyOfficial/videos/"
+    ]
+  );
+});
+
 test("addUrls reports a URL it cannot use instead of failing the whole batch", async () => {
   const { created, skipped } = await addUrls(["https://example.com/nope", "https://x.com/kate"]);
   assert.equal(created.length, 1);
