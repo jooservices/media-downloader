@@ -132,7 +132,7 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
   // Everything after the bridge starts is inside the try, so a failed setup step still closes the bridge.
   try {
     servers.push(await startBridgeServer());
-    servers.push(await startApiServer({ addUrls, listJobs, token: await ensureApiToken() }));
+    servers.push(await startApiServer({ addUrls, listJobs, port: API_PORT, token: await ensureApiToken() }));
     await writeJsonAtomic(DAEMON_FILE, { pid: process.pid, startedAt: new Date().toISOString(), inbox });
     const deps = await buildDeps(log);
     const recovered = await recoverInterrupted(deps);

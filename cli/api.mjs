@@ -3,7 +3,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 
-export const API_PORT = 38542;
+export const API_PORT = Number(process.env.PMS_API_PORT) || 38542;
 const MAX_BODY_BYTES = 8192;
 const JSON_TYPE = /^application\/json\b/i;
 const ALREADY_QUEUED = "already queued or done";
