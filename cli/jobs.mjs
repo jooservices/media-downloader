@@ -34,7 +34,7 @@ function describeLimit(limit) {
   return limit ? ` (limit ${limit} files)` : "";
 }
 
-export async function openJobInEdge(job) {
+export async function openJobInEdge(job, spawnProcess = spawn) {
   const saved = await readJson(EDGE_PROFILE_FILE);
   if (!saved?.profileDirectory && !saved?.profilePath) {
     throw new Error(INSTALL_HINT);
@@ -50,7 +50,7 @@ export async function openJobInEdge(job) {
   }
   // The marker lets the extension recognise this tab as the CLI's and close it when it is done with it.
   const pageUrl = `${job.url}${cliTabMarker(job.jobId)}`;
-  const browserProcess = spawn(executable, launchArgs(profile.browser, profile, pageUrl), {
+  const browserProcess = spawnProcess(executable, launchArgs(profile.browser, profile, pageUrl), {
     detached: true,
     stdio: "ignore",
     windowsHide: true

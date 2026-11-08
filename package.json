@@ -48,6 +48,7 @@
     "eslint-plugin-n": "^18.5.0",
     "eslint-plugin-sonarjs": "^4.2.2",
     "globals": "^17.14.0",
+    "playwright": "^1.55.1",
     "prettier": "^3.9.10",
     "simple-git-hooks": "^2.14.0"
   },

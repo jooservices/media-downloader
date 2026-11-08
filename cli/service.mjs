@@ -39,7 +39,7 @@ export function windowsStartupScript(launch = serviceLaunch()) {
   return `CreateObject("Wscript.Shell").Run ${vbs}, 0, False\n`;
 }
 
-function startQueue(launch) {
+export function startQueue(launch) {
   const child = spawn(launch.executable, [launch.script, "serve"], {
     detached: true,
     stdio: "ignore",
@@ -79,7 +79,7 @@ export function launchdPlist(launch = serviceLaunch()) {
 `;
 }
 
-function defaultRun(command, args) {
+export function defaultRun(command, args) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
     let errorText = "";
