@@ -30,6 +30,7 @@
     "test:coverage:unit": "c8 --check-coverage=false --reporter=text-summary --reporter=lcovonly --reports-dir=build/coverage/unit --temp-directory=build/coverage/tmp-unit npm run test:unit",
     "test:coverage:integration": "c8 --check-coverage=false --reporter=text-summary --reporter=lcovonly --reports-dir=build/coverage/integration --temp-directory=build/coverage/tmp-integration npm run test:integration",
     "build": "node tools/build.mjs",
+    "sync-edge": "node tools/sync-edge.mjs",
     "audit": "npm audit --audit-level=high",
     "ci": "npm run validate && npm run lint && npm run test:coverage",
     "prepare": "simple-git-hooks"

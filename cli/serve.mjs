@@ -10,7 +10,7 @@ import {
   LOGS_DIR,
   TERMINAL_STATES,
   listJobs,
-  normalizeProfileUrl,
+  accountPages,
   readJson,
   sleep,
   updateJob,
@@ -18,8 +18,10 @@ import {
 } from "./store.mjs";
 import { ensureConfigFile, loadConfig } from "./config.mjs";
 import { createJob, openJobInEdge } from "./jobs.mjs";
+import { API_PORT, startApiServer } from "./api.mjs";
 import { startBridgeServer } from "./bridge-server.mjs";
-import { edgeDownloadsDir, moveFinishedFiles } from "./mover.mjs";
+import { resolvedProfile } from "./browsers.mjs";
+import { edgeDownloadsDir, firefoxDownloadDir, moveFinishedFiles } from "./mover.mjs";
 import { createSupervisor, recoverInterrupted } from "./supervisor.mjs";
 
 const TICK_MS = 2000;
@@ -61,19 +63,21 @@ export async function addUrls(urls, { limit = null, force = false } = {}) {
   const created = [];
   const skipped = [];
   for (const raw of urls) {
-    let url;
+    let pages;
     try {
-      ({ url } = normalizeProfileUrl(raw));
+      pages = accountPages(raw);
     } catch (error) {
       skipped.push({ raw, reason: error?.message || String(error) });
       continue;
     }
-    if (!force && known.some(existing => sameUrl(existing, url))) {
-      skipped.push({ raw, reason: "already queued or done" });
-      continue;
+    for (const url of pages) {
+      if (!force && known.some(existing => sameUrl(existing, url))) {
+        skipped.push({ raw: url, reason: "already queued or done" });
+        continue;
+      }
+      created.push(await createJob(url, limit));
+      known.push(url);
     }
-    created.push(await createJob(url, limit));
-    known.push(url);
   }
   return { created, skipped };
 }
@@ -87,8 +91,7 @@ export async function readUrlFile(file) {
 }
 
 async function buildDeps(log) {
-  const profile = await readJson(EDGE_PROFILE_FILE);
-  const userData = path.join(process.env.LOCALAPPDATA || "", "Microsoft", "Edge", "User Data");
+  const profile = resolvedProfile((await readJson(EDGE_PROFILE_FILE)) || {}, process.platform, process.env);
   return {
     now: Date.now,
     random: Math.random,
@@ -99,7 +102,10 @@ async function buildDeps(log) {
     openJob: openJobInEdge,
     moveFiles: async destRoot =>
       moveFinishedFiles({
-        sourceRoot: await edgeDownloadsDir(userData, profile?.profileDirectory || "Default"),
+        sourceRoot:
+          profile.browser === "firefox"
+            ? await firefoxDownloadDir(profile.profilePath)
+            : await edgeDownloadsDir(profile.userData, profile.profileDirectory),
         destRoot
       })
   };
@@ -107,7 +113,7 @@ async function buildDeps(log) {
 
 const hasWork = jobs => jobs.some(job => !TERMINAL_STATES.has(job.status));
 
-export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null } = {}) {
+export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null, dueUrls = null } = {}) {
   const other = await runningServer();
   if (other) {
     throw new Error(`Another “serve” is already running (process ${other.pid}).`);
@@ -115,14 +121,15 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null 
   await ensureConfigFile();
   await loadConfig();
   const log = await createLogger();
-  let server = null;
+  const servers = [];
   let stopping = false;
   const stop = () => {
     stopping = true;
   };
   // Everything after the bridge starts is inside the try, so a failed setup step still closes the bridge.
   try {
-    server = await startBridgeServer();
+    servers.push(await startBridgeServer());
+    servers.push(await startApiServer({ addUrls, listJobs }));
     await writeJsonAtomic(DAEMON_FILE, { pid: process.pid, startedAt: new Date().toISOString(), inbox });
     const deps = await buildDeps(log);
     const recovered = await recoverInterrupted(deps);
@@ -132,13 +139,17 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null 
     const supervisor = createSupervisor(deps);
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
-    log(`Serving. Add URLs to ${inbox} or run “add <url>”; stop with Ctrl+C.`);
+    log(`Serving. POST http://127.0.0.1:${API_PORT}/downloads {"url":"https://..."} or add a URL to ${inbox}.`);
 
     const pass = async () => {
       const settings = await loadConfig().catch(() => null);
       const { created } = await addUrls(await readUrlFile(inbox), { limit: settings?.limit ?? limit });
-      if (created.length) {
-        log(`Queued ${created.length} new URL(s) from the inbox.`);
+      const rescans = dueUrls
+        ? await addUrls(await dueUrls(), { force: true, limit: settings?.limit ?? limit })
+        : { created: [] };
+      const queued = created.length + rescans.created.length;
+      if (queued) {
+        log(`Queued ${queued} URL(s) from the inbox.`);
       }
       await supervisor.tick();
     };
@@ -165,8 +176,8 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null 
   } finally {
     process.removeListener("SIGINT", stop);
     process.removeListener("SIGTERM", stop);
-    if (server) {
-      await new Promise(resolve => server.close(() => resolve()));
+    await Promise.all(servers.map(server => new Promise(resolve => server.close(() => resolve()))));
+    if (servers.length) {
       await writeJsonAtomic(DAEMON_FILE, { pid: null, stoppedAt: new Date().toISOString() });
     }
     log("Stopped.");

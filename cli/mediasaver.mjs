@@ -4,26 +4,20 @@ import { showStatus } from "./status.mjs";
 import { repairRootDownloads, finalizeRepairById } from "./repair.mjs";
 import { launchAndMonitor, startDownload, resumeJob } from "./jobs.mjs";
 import { addCommand, addUrls, moveCommand, runningServer, serve, DEFAULT_INBOX } from "./serve.mjs";
+import { installService, removeService } from "./service.mjs";
+import { addToWatch, watch } from "./watch.mjs";
 
 const USAGE = [
-  "Page Media Saver CLI",
+  "Page Media Saver",
   "",
-  "  node cli/mediasaver.mjs install",
-  "  node cli/mediasaver.mjs download <Instagram-Facebook-or-X-profile-or-post-URL> [--limit N | --unlimited]",
-  "  node cli/mediasaver.mjs add <url> [<url>...] [--again]      queue profiles for `serve`",
-  "  node cli/mediasaver.mjs serve [--inbox <file>] [--once]     work through the queue until stopped",
-  "  node cli/mediasaver.mjs move                                move finished files to downloadDir once",
-  "  node cli/mediasaver.mjs resume [job-id]",
-  "  node cli/mediasaver.mjs repair-root",
-  "  node cli/mediasaver.mjs finalize-repair <job-id>",
-  "  node cli/mediasaver.mjs status [job-id]",
-  "  node cli/mediasaver.mjs uninstall",
+  "  install [edge|chrome|firefox]     remember which browser has the extension",
+  "  download <profile-url>            save that account (stories, photos, reels)",
+  "  service install                   start the queue at sign-in and open the API",
+  "  status                            see the latest jobs",
   "",
-  "Downloads use the signed-in Edge profile and save to Downloads/<platform>/<account>.",
-  "`serve` reads %LOCALAPPDATA%\\PageMediaSaver\\config.json: workers per site, the pause between accounts",
-  "and downloadDir, the folder finished files are moved to. See the README, “Configuration”.",
-  "The CLI runs a local loopback bridge while it monitors the job; keep the CLI process open until completion.",
-  "Instagram/Facebook grids and X timelines are supported by automatic scrolling; direct post URLs scan that post once.",
+  "Also: add, serve, move, resume, repair-root, uninstall, help.",
+  "A Facebook link also scans Photos, Reels and Videos. Files go to <download folder>/<Site>/<account>.",
+  "Works with Edge, Chrome and Firefox on Windows, macOS and Linux. Load the unpacked extension first.",
   ""
 ].join("\n");
 
@@ -32,7 +26,7 @@ const printUsage = () => process.stdout.write(USAGE);
 async function downloadCommand(args) {
   const { url, limit } = parseDownloadArgs(args);
   if (!url) {
-    throw new Error("Provide an Instagram/Facebook/X profile URL or supported media post URL.");
+    throw new Error("Add a profile link, for example: download https://www.instagram.com/name/");
   }
   // While `serve` owns the bridge, a second process cannot open it, so hand the URL to the queue.
   if (await runningServer()) {
@@ -47,6 +41,16 @@ async function downloadCommand(args) {
   return startDownload(url, limit);
 }
 
+function serviceCommand(args) {
+  if (args[0] === "remove") {
+    return removeService();
+  }
+  if (!args[0] || args[0] === "install") {
+    return installService();
+  }
+  throw new Error("Use: service install    or    service remove");
+}
+
 function serveCommand(args) {
   const at = args.indexOf("--inbox");
   const inbox = at >= 0 ? args[at + 1] : DEFAULT_INBOX;
@@ -58,12 +62,14 @@ function serveCommand(args) {
 
 const COMMANDS = {
   add: addCommand,
+  watch: args => (args[0] === "add" ? addToWatch(args.slice(1)) : watch()),
   serve: serveCommand,
+  service: serviceCommand,
   move: moveCommand,
   help: printUsage,
   "--help": printUsage,
   "-h": printUsage,
-  install: () => installBridge(),
+  install: args => installBridge(args[0]),
   uninstall: () => uninstallBridge(),
   status: args => showStatus(args[0]),
   resume: args => resumeJob(args[0]),

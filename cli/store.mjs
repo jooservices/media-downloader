@@ -10,7 +10,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 
 // Rules shared with the extension live in lib/ so the CLI and Edge never disagree.
-export const { normalizeProfileUrl, cliTabMarker, isSignInPage } = require("../lib/urls.js");
+export const { normalizeProfileUrl, accountPages, cliTabMarker, isSignInPage } = require("../lib/urls.js");
 export const { cleanPart: cleanPathPart } = require("../lib/paths.js");
 export const EXTENSION_ROOT = path.resolve(HERE, "..");
 // %LOCALAPPDATA% on Windows; the home folder elsewhere, so `help` and the "Windows only" messages still work.

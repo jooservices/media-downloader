@@ -1,13 +1,15 @@
 // Moves finished downloads out of Edge's Downloads folder into the folder the user chose.
 // A browser extension may only save inside the browser's own Downloads folder, so the CLI
 // relocates the files afterwards. Nothing is deleted until its copy has been checked.
-import { copyFile, lstat, mkdir, open, readdir, realpath, rmdir, stat, unlink } from "node:fs/promises";
+import { copyFile, lstat, mkdir, open, readFile, readdir, realpath, rmdir, stat, unlink } from "node:fs/promises";
 import { constants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { readJson } from "./store.mjs";
 
-export const SITE_FOLDERS = ["Instagram", "Facebook", "Twitter"];
+const require = createRequire(import.meta.url);
+export const SITE_FOLDERS = require("../lib/sites.js").names();
 const UNFINISHED = /\.(crdownload|tmp|part|download)$/i;
 const DEFAULT_SETTLE_MS = 15_000;
 const COMPARE_CHUNK = 1024 * 1024;
@@ -31,7 +33,21 @@ export async function edgeDownloadsDir(userDataDir, profileDirectory) {
     }
   }
   if (unreadable) {
-    throw new Error(`Cannot tell where Edge saves downloads: ${unreadable.message}`);
+    throw new Error(`Cannot tell where the browser saves downloads: ${unreadable.message}`);
+  }
+  return path.join(os.homedir(), "Downloads");
+}
+
+// Firefox stores the chosen folder in prefs.js. Otherwise it uses the normal Downloads folder.
+export async function firefoxDownloadDir(profilePath) {
+  try {
+    const text = await readFile(path.join(profilePath, "prefs.js"), "utf8");
+    const match = text.match(/user_pref\("browser\.download\.dir", "(.*)"\);/);
+    if (match) {
+      return JSON.parse(`"${match[1]}"`);
+    }
+  } catch {
+    /* no prefs file, or no custom folder */
   }
   return path.join(os.homedir(), "Downloads");
 }

@@ -6,6 +6,15 @@ All notable changes to this project are documented in this file. Format follows 
 
 ### Added
 
+- One profile link is the whole account. An Instagram profile opens its current stories and highlight reels as well as the grid. A Facebook profile is also scanned on its Photos, Reels and Videos tabs
+- `watch` rescans the accounts in `%LOCALAPPDATA%\PageMediaSaver\watch.txt` every 6 hours (`watch add <url>` remembers them). Files already saved are skipped
+- After a pass, the CLI reports the account folder and how many files were new versus already saved
+- `npm run sync-edge` copies the extension and CLI into the unpacked Edge folder and bumps that copy's version so Edge can reload it
+- The CLI runs on Windows, macOS and Linux with Edge, Chrome or Firefox. `install`, `install chrome` or `install firefox` remembers which profile has the extension loaded
+- A site is one record in `lib/sites.js` (hosts, URL shapes, sign-in, download labels). The scanners look that record up instead of branching on the site name
+- TikTok profiles (`/@name`) and single video or photo posts can be saved while you are signed in. The largest file the page lists is kept; cover images are not
+- `service install` starts the queue at sign-in. While it runs, `POST http://127.0.0.1:38542/downloads` with `{"url":"https://..."}` queues that account. The API listens on loopback only
+- Instagram stories: `/stories/<username>/` and `/stories/<username>/<id>/` can be scanned on their own. Only the largest photo or video the story data lists is saved
 - A dashboard (the extension's options page, opened on first install and from the popup): paste profile links, see each profile's progress, pause, stop, retry or remove, and change workers per site, the pause between profiles, retries and files per profile. English and Vietnamese
 - The extension runs its own download queue, so no Node.js or command line is needed for normal use
 - Sign-in check before anything starts: the extension looks at the names of each site's session cookies and holds that site's queue with a clear message and a button to open its sign-in page; a sign-in wall met mid-run does the same and keeps the link. Needs the new `cookies` and `alarms` permissions (cookie values are never read)

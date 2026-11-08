@@ -15,7 +15,7 @@
 [![Last commit](https://img.shields.io/github/last-commit/jooservices/media-downloader/develop)](https://github.com/jooservices/media-downloader/commits/develop)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Page Media Saver: a Manifest V3 Edge/Chromium extension that saves the full-size photos and videos of the Instagram, Facebook and X profiles you add, using the account you are already signed in to. Nothing is sent to a server.
+Page Media Saver: a Manifest V3 Edge/Chromium extension that saves the full-size photos and videos of the Instagram, Facebook, X, and TikTok profiles you add, using the account you are already signed in to. Nothing is sent to a server.
 
 ## Getting started
 
@@ -23,7 +23,7 @@ You need Microsoft Edge (or Chrome). **Nothing else has to be installed**: no No
 
 1. Install the extension (see [Install](#install-in-microsoft-edge) below). The dashboard opens by itself.
 2. Sign in to the sites you want to use in the same browser. The dashboard shows who is signed in and, if a site you added needs it, offers a button to open its sign-in page. Nothing starts on a site until you are signed in to it.
-3. Paste profile links (X, Instagram, Facebook), one per line, and press **Add to the list**.
+3. Paste profile links (X, Instagram, Facebook, TikTok), one per line, and press **Add to the list**.
 4. Watch the list. It works through the profiles one by one, per site, and closes each tab it opens when it is done. **Pause all**, **Stop**, **Try again** and **Remove** are one click away.
 5. Open **Settings** in the dashboard to change how many profiles run at once per site, the pause between profiles, the number of tries and the number of files per profile.
 
@@ -41,9 +41,9 @@ The `serve`/`add` command-line queue described further down is an optional extra
 
 ## Requirements
 
-- Microsoft Edge or another Chromium browser (Manifest V3)
+- Microsoft Edge, Chrome, or Firefox 128 or newer
 - Node.js `>= 22` only for the optional CLI and for development
-- Windows for the CLI's Edge integration; the tests and the other tools run anywhere
+- The CLI runs on Windows, macOS and Linux. `install` uses whichever of those browsers already has the extension loaded; `install chrome` or `install firefox` picks one
 
 ## Development
 
@@ -63,7 +63,7 @@ Until the extension is published in a browser store, a one-time manual install i
 
 1. Download `media-downloader-<version>.zip` from the [latest release](https://github.com/jooservices/media-downloader/releases/latest) and extract it to a permanent folder (do not delete the folder afterwards).
 2. Open `edge://extensions` and turn on **Developer mode**.
-3. Select **Load unpacked** and choose the extracted folder. Allow the extension to access Instagram, Facebook, and X when Edge asks. The dashboard opens.
+3. Select **Load unpacked** and choose the extracted folder. Allow the extension to access Instagram, Facebook, X, and TikTok when Edge asks. The dashboard opens.
 
 When it is published as an unlisted or public store listing, installing becomes one click on its page and updates arrive by themselves; no Developer mode is involved.
 
@@ -97,7 +97,21 @@ node .\cli\mediasaver.mjs add <url> [<url>...]  # from another window, at any ti
 
 Each job is retried a few times when Edge does not answer or the page is closed (`maxAttempts`). Jobs left running by a crashed or stopped `serve` are recovered when it starts again. While `serve` is running, `download <url>` hands its URL to the queue instead of competing for the bridge. `status` shows every job and its state. Logs are written to `%LOCALAPPDATA%\PageMediaSaver\logs\`.
 
-`serve` keeps going only while the computer is awake, Edge is available and you are still signed in to the sites.
+`serve` keeps going only while the computer is awake, the browser is available and you are still signed in to the sites.
+
+`service install` registers that queue to start when you sign in (the Windows Startup folder, a systemd user service, or a macOS launch agent) and starts it now. Run it from the project folder, or pass the full path to `mediasaver.mjs`. `service remove` unregisters it. It is not a Session 0 Windows service: the download has to open the signed-in browser on the desktop.
+
+While the queue is running, this is enough to request a download. Nothing else on the network can call it.
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:38542/downloads -ContentType application/json -Body '{"url":"https://www.instagram.com/name/"}'
+```
+
+The reply lists the jobs that were queued. A Facebook profile still adds Photos, Reels and Videos. `GET http://127.0.0.1:38542/jobs` shows the latest jobs. A link that already ran is skipped unless the body also has `"again": true`.
+
+`watch` is `serve` for a fixed list of accounts (`watch add <url>` writes them to `%LOCALAPPDATA%\PageMediaSaver\watch.txt`). Every 6 hours an account whose last scan has finished is queued again, so new stories, highlights, reels and photos are picked up. Anything already saved is skipped. A Facebook profile link is queued as the profile plus its Photos, Reels and Videos tabs. An Instagram profile scan also opens the current story tray and highlight reels. When a job ends, the CLI prints the account folder and how many files were new versus already saved.
+
+On this machine the unpacked extension lives in `C:\Claude\PageMediaSaver`. `npm run sync-edge` copies the current tree there and bumps that copy's version. Reload Page Media Saver in `edge://extensions` afterwards. The git version is left unchanged.
 
 ## Configuration
 
@@ -179,7 +193,7 @@ A scan stops after it has started a limited number of files (photos and videos t
 - `alarms`: wake the extension every half minute so the profile list keeps moving while you use the browser for something else.
 - `cookies`: check whether you are signed in to each site. Only the **names** of the session cookies are looked at; their values are never read, stored or sent anywhere.
 - `http://127.0.0.1/*`: communicate with the CLI's loopback-only bridge while a job is running.
-- Instagram, Facebook, and X site access: inject the content script on profile/timeline pages opened by the CLI, without requiring a popup click.
+- Instagram, Facebook, X, and TikTok site access: inject the content script on profile pages opened by the CLI, without requiring a popup click.
 
 No account password, cookie, or page contents are transmitted to an external service. Media bytes are downloaded by Edge from platform hosts after the page's supported download action runs.
 
