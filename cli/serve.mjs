@@ -24,6 +24,7 @@ import { API_PORT, startApiServer } from "./api.mjs";
 import { startBridgeServer } from "./bridge-server.mjs";
 import { resolvedProfile } from "./browsers.mjs";
 import { edgeDownloadsDir, firefoxDownloadDir, moveFinishedFiles } from "./mover.mjs";
+import { PRUNE_EVERY_MS, prune } from "./prune.mjs";
 import { createSupervisor, recoverInterrupted } from "./supervisor.mjs";
 
 const TICK_MS = 2000;
@@ -145,7 +146,15 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
       `Serving. POST http://127.0.0.1:${API_PORT}/downloads {"url":"https://..."} with the token from ${API_TOKEN_FILE}, or add a URL to ${inbox}.`
     );
 
+    let lastPrune = 0;
     const pass = async () => {
+      if (Date.now() - lastPrune >= PRUNE_EVERY_MS) {
+        lastPrune = Date.now();
+        const removed = await prune();
+        if (removed.jobs || removed.logs) {
+          log(`Removed ${removed.jobs} old job(s) and ${removed.logs} old log(s).`);
+        }
+      }
       const settings = await loadConfig().catch(() => null);
       const { created } = await addUrls(await readUrlFile(inbox), { limit: settings?.limit ?? limit });
       const rescans = dueUrls
