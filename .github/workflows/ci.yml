@@ -225,7 +225,7 @@ jobs:
           - name: macOS arm64
             os: macos-latest
           - name: macOS x64
-            os: macos-13
+            os: macos-15-intel
           - name: Windows x64
             os: windows-latest
     steps:
