@@ -1069,7 +1069,7 @@
           "url": {
             "type": "string",
             "format": "uri",
-            "pattern": "^https://"
+            "pattern": "^[hH][tT][tT][pP][sS]://"
           },
           "again": {
             "type": "boolean"
@@ -1084,7 +1084,7 @@
           "url": {
             "type": "string",
             "format": "uri",
-            "pattern": "^https://"
+            "pattern": "^[hH][tT][tT][pP][sS]://"
           }
         },
         "additionalProperties": false

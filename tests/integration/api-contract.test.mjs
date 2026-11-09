@@ -11,6 +11,7 @@ import { createMcpServer, localApi, TOOLS } from "../../cli/mcp.mjs";
 const TOKEN = "contract-test-token";
 const ID = "abcdefab-cdef-4abc-8def-abcdefabcdef";
 const PROFILE_URL = "https://www.instagram.com/alice/";
+const UPPERCASE_SCHEME_URL = "HTTPS://www.instagram.com/alice/";
 const inputJob = { jobId: ID, status: "queued", platform: "Instagram", account: "alice", url: PROFILE_URL };
 
 function dependencies() {
@@ -60,6 +61,15 @@ function dependencies() {
       notify: { url: webhookUrl, format: "json", events: ["problem"] }
     })
   };
+}
+
+function prepareScenarioState(name, watched) {
+  if (name === "watch_account") {
+    watched.splice(0);
+  }
+  if (name === "unwatch_account") {
+    watched.push(PROFILE_URL);
+  }
 }
 
 async function withAdapters(run) {
@@ -546,6 +556,10 @@ test("every REST operation is reachable through an MCP tool", () => {
   );
   const idSchema = TOOLS.find(tool => tool.name === "get_job").inputSchema.properties.id;
   assert.match(ID.toUpperCase(), new RegExp(idSchema.pattern));
+  const urlPattern = new RegExp(
+    TOOLS.find(tool => tool.name === "download_account").inputSchema.properties.url.pattern
+  );
+  assert.match(UPPERCASE_SCHEME_URL, urlPattern);
   for (const name of ["get_watched", "unwatch_account"]) {
     const platformSchema = TOOLS.find(tool => tool.name === name).inputSchema.properties.platform;
     assert.match("Instagram", new RegExp(platformSchema.pattern), `${name} accepts REST case normalization`);
@@ -569,8 +583,16 @@ test("the same REST and MCP scenarios produce equal data and mapped errors", () 
         ["download_account", { url: PROFILE_URL }]
       ],
       [
+        ["POST", "/v1/jobs", { url: UPPERCASE_SCHEME_URL }],
+        ["download_account", { url: UPPERCASE_SCHEME_URL }]
+      ],
+      [
         ["POST", "/v1/watches", { url: PROFILE_URL }],
         ["watch_account", { url: PROFILE_URL }]
+      ],
+      [
+        ["POST", "/v1/watches", { url: UPPERCASE_SCHEME_URL }],
+        ["watch_account", { url: UPPERCASE_SCHEME_URL }]
       ],
       [["GET", "/v1/watches"], ["list_watched"]],
       [
@@ -587,13 +609,9 @@ test("the same REST and MCP scenarios produce equal data and mapped errors", () 
       ]
     ];
     for (const [[method, endpoint, body], [name, args]] of cases) {
+      prepareScenarioState(name, watched);
       const rest = await direct(method, endpoint, body);
-      if (name === "watch_account") {
-        watched.splice(0);
-      }
-      if (name === "unwatch_account") {
-        watched.push(PROFILE_URL);
-      }
+      prepareScenarioState(name, watched);
       const agent = await tool(name, args);
       assert.equal(agent.status, rest.status, `${name} status`);
       if (rest.status === 204) {

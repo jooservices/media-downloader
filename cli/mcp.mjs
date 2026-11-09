@@ -14,7 +14,7 @@ export const SUPPORTED_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const URL_SCHEMA = {
   type: "string",
   format: "uri",
-  pattern: "^https://",
+  pattern: "^[hH][tT][tT][pP][sS]://",
   description: "An https profile link from Instagram, Facebook, X, or TikTok."
 };
 
