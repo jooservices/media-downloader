@@ -2,7 +2,7 @@
 
 ## Shutdown and restart
 
-`serve` handles Ctrl+C (`SIGINT`), `SIGTERM`, and Windows Ctrl+Break (`SIGBREAK`). It stops accepting new bridge and REST connections, finishes the current queue pass, marks any still-running jobs `incomplete` with automatic retry disabled, closes the servers, and closes SQLite. Jobs not acknowledged by the extension remain queued and are eligible to run after restart.
+`serve` handles Ctrl+C (`SIGINT`), `SIGTERM`, and Windows Ctrl+Break (`SIGBREAK`). It stops accepting new bridge and REST connections, finishes the current queue pass, marks every still-running job `incomplete` with automatic retry disabled in bounded batches, closes the servers, and closes SQLite. Shutdown read or write failures are reported and cause a nonzero stop instead of being treated as clean. Jobs not acknowledged by the extension remain queued and are eligible to run after restart.
 
 After an unclean process exit, a job that was `running` is changed to `incomplete` and marked `noRetry`. The extension may have saved files immediately before the process died, so the queue leaves the job visible for review instead of replaying a possibly active scan. Use `add <url> --again` when you have checked that a retry is appropriate. This favours at-most-once execution for interrupted scans; a job is retained in SQLite and is never silently discarded.
 

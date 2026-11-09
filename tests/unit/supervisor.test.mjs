@@ -384,6 +384,28 @@ test("on start, jobs left running by a dead process are ended and unanswered one
   assert.equal(env.job("4").status, "complete");
 });
 
+test("restart recovery preserves a completion received after its running page was read", async () => {
+  const job = queued("1", "Twitter", "a", { status: "running", started: 1 });
+  let completed = false;
+  const recovered = await recoverInterrupted({
+    listJobs: async () => (job.status === "running" ? [structuredClone(job)] : []),
+    updateJob: async (_jobId, mutate) => {
+      if (!completed) {
+        job.status = "complete";
+        job.message = "The extension finished the scan.";
+        completed = true;
+      }
+      await mutate(job);
+      return job;
+    }
+  });
+
+  assert.equal(recovered, 0);
+  assert.equal(job.status, "complete");
+  assert.equal(job.message, "The extension finished the scan.");
+  assert.equal(job.noRetry, undefined);
+});
+
 test("an invalid config is rejected at start but the previous one is kept while running", async () => {
   let current = { delaySeconds: { min: 0, max: 0 } };
   const logs = [];

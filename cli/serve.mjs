@@ -78,15 +78,54 @@ function installShutdownSignals(stop) {
 }
 
 async function parkRunningJobs() {
-  for (const job of await Promise.resolve()
-    .then(() => queueJobs().runningJobs())
-    .catch(() => [])) {
-    await updateJob(job.jobId, current => {
-      current.status = "incomplete";
-      current.noRetry = true;
-      current.message = "The queue stopped while this scan was active; review it before retrying.";
-    }).catch(() => {});
+  for (;;) {
+    const running = await queueJobs().runningJobs();
+    if (!running.length) {
+      return;
+    }
+    for (const job of running) {
+      await updateJob(job.jobId, current => {
+        if (current.status !== "running") {
+          return;
+        }
+        current.status = "incomplete";
+        current.noRetry = true;
+        current.message = "The queue stopped while this scan was active; review it before retrying.";
+      });
+    }
   }
+}
+
+async function finishServe({ removeShutdownSignals, closeServers, servers, log }) {
+  removeShutdownSignals?.();
+  let shutdownError = null;
+  try {
+    await closeServers();
+  } catch (error) {
+    shutdownError = error;
+  }
+  try {
+    await parkRunningJobs();
+  } catch (error) {
+    shutdownError ??= error;
+    log(`Could not park running jobs during shutdown: ${error?.message || error}`);
+  }
+  if (servers.length) {
+    try {
+      await writeJsonAtomic(DAEMON_FILE, { pid: null, stoppedAt: new Date().toISOString() });
+    } catch (error) {
+      shutdownError ??= error;
+      log(`Could not record shutdown: ${error?.message || error}`);
+    }
+  }
+  try {
+    closeJobStore();
+  } catch (error) {
+    shutdownError ??= error;
+    log(`Could not close the SQLite job store: ${error?.message || error}`);
+  }
+  log(shutdownError ? "Stopped with shutdown errors." : "Stopped.");
+  return shutdownError;
 }
 
 function isProcessAlive(pid) {
@@ -221,6 +260,7 @@ export async function serve({
     stopping = true;
     void closeServers();
   };
+  let serveError = null;
   // Everything after the bridge starts is inside the try, so a failed setup step still closes the bridge.
   try {
     servers.push(await startBridgeServer());
@@ -302,15 +342,15 @@ export async function serve({
       }
       await sleep(TICK_MS);
     }
-  } finally {
-    removeShutdownSignals?.();
-    await closeServers();
-    await parkRunningJobs();
-    if (servers.length) {
-      await writeJsonAtomic(DAEMON_FILE, { pid: null, stoppedAt: new Date().toISOString() });
-    }
-    closeJobStore();
-    log("Stopped.");
+  } catch (error) {
+    serveError = error;
+  }
+  const shutdownError = await finishServe({ removeShutdownSignals, closeServers, servers, log });
+  if (serveError) {
+    throw serveError;
+  }
+  if (shutdownError) {
+    throw shutdownError;
   }
 }
 

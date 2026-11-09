@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import net from "node:net";
 import os from "node:os";
@@ -43,6 +43,20 @@ const INBOX = path.join(home, "inbox.txt");
 const PROFILE = path.join(home, "browser-profile");
 const SOURCE = path.join(home, "browser-downloads");
 const MEDIA = path.join(home, "Media");
+
+function runSqlite(sql) {
+  execFileSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      "import { DatabaseSync } from 'node:sqlite'; const db = new DatabaseSync(process.argv[1]); db.exec(process.argv[2]); db.close();",
+      store.JOBS_DB_FILE,
+      sql
+    ],
+    { stdio: "ignore" }
+  );
+}
 
 after(() => {
   store.closeJobStore();
@@ -541,6 +555,55 @@ test("SIGTERM stops accepting work, closes the database, and records a clean sto
   await done;
   assert.equal((await store.readJson(store.DAEMON_FILE)).pid, null);
   assert.equal(store.jobs().integrityCheck()[0], "ok", "the SQLite store reopens cleanly after shutdown");
+});
+
+test("shutdown parks more than one bounded page of running jobs", async t => {
+  await installBridge();
+  await noBrowser();
+  capture(t);
+  const nextHandler = interrupterFor("SIGTERM");
+  const done = serve({ inbox: INBOX });
+  const stop = await nextHandler();
+  const now = new Date().toISOString();
+  for (let n = 1; n <= 501; n++) {
+    await store.writeJob({
+      jobId: id(n),
+      url: ALICE,
+      platform: "Instagram",
+      account: "alice",
+      status: "running",
+      createdAt: now,
+      updatedAt: now
+    });
+  }
+  stop();
+  await done;
+
+  assert.equal(store.jobs().runningJobs().length, 0);
+  const parked = (await store.listJobs({ status: "incomplete", limit: 600 })).filter(job => job.noRetry);
+  assert.equal(parked.length, 501);
+  assert.ok(parked.every(job => /queue stopped/.test(job.message)));
+  assert.equal(store.jobs().integrityCheck()[0], "ok");
+});
+
+test("shutdown reports a failed job update and does not claim a clean stop", async t => {
+  await installBridge();
+  await noBrowser();
+  const lines = capture(t);
+  const nextHandler = interrupterFor("SIGTERM");
+  const done = serve({ inbox: INBOX });
+  const stop = await nextHandler();
+  await putJob(1, ALICE, "running");
+  runSqlite(
+    "CREATE TRIGGER fail_job_update BEFORE UPDATE ON jobs BEGIN SELECT RAISE(ABORT, 'forced shutdown write failure'); END;"
+  );
+
+  stop();
+  await assert.rejects(done, /forced shutdown write failure/);
+  assert.match(lines.join(""), /Could not park running jobs during shutdown/);
+  assert.match(lines.join(""), /Stopped with shutdown errors/);
+  runSqlite("DROP TRIGGER fail_job_update");
+  assert.equal((await store.readJob(id(1))).status, "running");
 });
 
 test("watch add needs URLs, appends the profile pages and lists them", async t => {
