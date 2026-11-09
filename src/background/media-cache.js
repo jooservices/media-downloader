@@ -149,15 +149,16 @@ async function downloadCachedMedia({ platform, account, ids, limit }) {
   const diag = cacheDiagnostics(mediaCache, platform, wantedIds, wantedAccount, entries.length);
   const items = entries.map(entry => cachedMediaItem(entry, account));
   // A cache request must not wait for a download slot: the page's message channel can
-  // close while a different tab is draining downloads. Only send work that fits now.
-  const state = await reconcileDownloads();
-  const availableSlots = Math.max(0, MAX_ACTIVE_DOWNLOADS - Object.keys(state.pending).length);
+  // close while a different tab is draining downloads. Read the persisted pending
+  // set directly; the scan's drain step reconciles completed downloads before retrying.
+  const { pendingDownloads = {} } = await chrome.storage.local.get({ pendingDownloads: {} });
+  const availableSlots = Math.max(0, MAX_ACTIVE_DOWNLOADS - Object.keys(pendingDownloads).length);
   const hasLimit = Number.isInteger(limit) && limit >= 0;
   const freshLimit = hasLimit ? Math.min(limit, availableSlots) : availableSlots;
   const selected = [];
   let freshCount = 0;
   for (const item of items) {
-    const alreadyStarted = Object.hasOwn(state.pending, item.key) || (await ledgerHas(item.key));
+    const alreadyStarted = Object.hasOwn(pendingDownloads, item.key) || (await ledgerHas(item.key));
     if (alreadyStarted) {
       if (!hasLimit) {
         selected.push(item);

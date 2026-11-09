@@ -183,6 +183,7 @@ test("a cached-media request returns promptly when all download slots are busy",
       url: `https://pbs.twimg.com/media/pending${index}.jpg`
     }))
   });
+  env.inContext("chrome.downloads.search = async () => new Promise(() => {})");
 
   const request = saveCached(env, { platform: "Twitter", account: "alice", limit: 8 });
   const returnedQuickly = await Promise.race([
@@ -195,7 +196,12 @@ test("a cached-media request returns promptly when all download slots are busy",
   assert.equal(result.started, 0);
   assert.equal(env.started.length, 8);
 
+  env.setGlobal("__downloads", env.downloads);
+  env.inContext(
+    "chrome.downloads.search = async query => (__downloads.has(query.id) ? [__downloads.get(query.id)] : [])"
+  );
   env.downloads.set(1, { id: 1, state: "complete" });
+  await env.send({ type: "DOWNLOAD_STATUS", platform: "Twitter", account: "alice" });
   assert.equal((await saveCached(env, { platform: "Twitter", account: "alice", limit: 8 })).started, 1);
   assert.equal(env.started.length, 9);
 });
