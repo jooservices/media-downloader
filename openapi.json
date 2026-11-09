@@ -49,13 +49,13 @@
           "200": {
             "description": "Headers for the corresponding GET response"
           },
-          "401": {
-            "$ref": "#/components/responses/Problem"
-          },
           "403": {
             "$ref": "#/components/responses/Problem"
           },
-          "404": {
+          "405": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
             "$ref": "#/components/responses/Problem"
           }
         }
@@ -124,7 +124,10 @@
           "403": {
             "$ref": "#/components/responses/Problem"
           },
-          "404": {
+          "405": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
             "$ref": "#/components/responses/Problem"
           }
         }
@@ -193,7 +196,10 @@
           "403": {
             "$ref": "#/components/responses/Problem"
           },
-          "404": {
+          "405": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
             "$ref": "#/components/responses/Problem"
           }
         }
@@ -262,7 +268,10 @@
           "403": {
             "$ref": "#/components/responses/Problem"
           },
-          "404": {
+          "405": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
             "$ref": "#/components/responses/Problem"
           }
         }
@@ -416,13 +425,19 @@
           "200": {
             "description": "Headers for the corresponding GET response"
           },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
           "401": {
             "$ref": "#/components/responses/Problem"
           },
           "403": {
             "$ref": "#/components/responses/Problem"
           },
-          "404": {
+          "405": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
             "$ref": "#/components/responses/Problem"
           }
         }
@@ -529,6 +544,12 @@
             "$ref": "#/components/responses/Problem"
           },
           "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "405": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
             "$ref": "#/components/responses/Problem"
           }
         }
@@ -664,6 +685,12 @@
           },
           "404": {
             "$ref": "#/components/responses/Problem"
+          },
+          "405": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
+            "$ref": "#/components/responses/Problem"
           }
         }
       },
@@ -776,6 +803,12 @@
             "$ref": "#/components/responses/Problem"
           },
           "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "405": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
             "$ref": "#/components/responses/Problem"
           }
         }

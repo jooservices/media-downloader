@@ -21,7 +21,7 @@ const URL_SCHEMA = {
 const JOB_ID_SCHEMA = {
   type: "string",
   format: "uuid",
-  pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+  pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
   description: "The UUID id of a job, as returned by download_account or list_jobs."
 };
 
@@ -224,17 +224,17 @@ const textResult = (value, isError = false) => ({
 
 function validateObject(value, schema, name) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return `${name} must be an object.`;
+    return `422 Unprocessable Content: ${name} must be an object.`;
   }
   if (schema.additionalProperties === false) {
     const extra = Object.keys(value).find(key => !Object.hasOwn(schema.properties || {}, key));
     if (extra) {
-      return `${name}.${extra} is not allowed.`;
+      return `422 Unprocessable Content: ${name}.${extra} is not allowed.`;
     }
   }
   for (const key of schema.required || []) {
     if (!Object.hasOwn(value, key)) {
-      return `Missing required argument: ${key}.`;
+      return `422 Unprocessable Content: Missing required argument: ${key}.`;
     }
   }
   for (const [key, item] of Object.entries(value)) {
@@ -249,10 +249,10 @@ function validateObject(value, schema, name) {
 function validateScalar(value, schema, name) {
   const typeIssue = validateType(value, schema, name);
   if (typeIssue) {
-    return typeIssue;
+    return `422 Unprocessable Content: ${typeIssue}`;
   }
   if (schema.enum && !schema.enum.includes(value)) {
-    return `${name} must be one of: ${schema.enum.join(", ")}.`;
+    return `422 Unprocessable Content: ${name} must be one of: ${schema.enum.join(", ")}.`;
   }
   return validateScalarConstraints(value, schema, name);
 }
@@ -268,30 +268,32 @@ function validateType(value, schema, name) {
 
 function validateScalarConstraints(value, schema, name) {
   if (schema.minimum !== undefined && value < schema.minimum) {
-    return `${name} must be at least ${schema.minimum}.`;
+    return `422 Unprocessable Content: ${name} must be at least ${schema.minimum}.`;
   }
   if (schema.maximum !== undefined && value > schema.maximum) {
-    return `${name} must be at most ${schema.maximum}.`;
+    return `422 Unprocessable Content: ${name} must be at most ${schema.maximum}.`;
   }
   if (schema.minLength !== undefined && value.length < schema.minLength) {
-    return `${name} must not be empty.`;
+    return `422 Unprocessable Content: ${name} must not be empty.`;
   }
   if (schema.format === "uri") {
     try {
       new URL(value);
     } catch {
-      return `${name} must be a valid URL.`;
+      return `422 Unprocessable Content: ${name} must be a valid URL.`;
     }
   }
   if (schema.pattern && !new RegExp(schema.pattern, schema.format === "uuid" ? "i" : "").test(value)) {
-    return schema.format === "uuid" ? `${name} must be a UUID.` : `${name} must be an https link.`;
+    return schema.format === "uuid"
+      ? `400 Bad Request: ${name} must be a UUID.`
+      : `422 Unprocessable Content: ${name} must be an https link.`;
   }
   return null;
 }
 
 function validateValue(value, schema, name) {
   if (!schema) {
-    return `${name} is not allowed.`;
+    return `422 Unprocessable Content: ${name} is not allowed.`;
   }
   return schema.type === "object" ? validateObject(value, schema, name) : validateScalar(value, schema, name);
 }

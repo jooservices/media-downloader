@@ -8,7 +8,7 @@ import { API_OPERATIONS, startApiServer } from "../../cli/api.mjs";
 import { createMcpServer, localApi, TOOLS } from "../../cli/mcp.mjs";
 
 const TOKEN = "contract-test-token";
-const ID = "11111111-1111-4111-8111-111111111111";
+const ID = "abcdefab-cdef-4abc-8def-abcdefabcdef";
 const PROFILE_URL = "https://www.instagram.com/alice/";
 const inputJob = { jobId: ID, status: "queued", platform: "Instagram", account: "alice", url: PROFILE_URL };
 
@@ -113,7 +113,10 @@ async function withAdapters(run) {
     const result = reply.result;
     if (result.isError) {
       const match = /^(\d+) ([^:]+): (.*)$/.exec(result.content[0].text);
-      return { status: observed.status, body: { title: match?.[2], detail: match?.[3] } };
+      return {
+        status: match ? Number(match[1]) : null,
+        body: match ? { title: match[2], detail: match[3] } : { detail: result.content[0].text }
+      };
     }
     if (result.content[0].text === "Done.") {
       return { status: observed.status, body: null };
@@ -210,6 +213,12 @@ function matchesType(type, value) {
 }
 
 function validateStringSchema(schema, value, label) {
+  if (schema.minLength !== undefined) {
+    assert.ok(value.length >= schema.minLength, `${label} minLength`);
+  }
+  if (schema.maxLength !== undefined) {
+    assert.ok(value.length <= schema.maxLength, `${label} maxLength`);
+  }
   if (schema.pattern) {
     assert.match(value, new RegExp(schema.pattern), `${label} pattern`);
   }
@@ -250,11 +259,52 @@ function validateNumberSchema(schema, value, label) {
   }
 }
 
+function validateArraySchema(contract, schema, value, label) {
+  if (schema.minItems !== undefined) {
+    assert.ok(value.length >= schema.minItems, `${label} minItems`);
+  }
+  if (schema.maxItems !== undefined) {
+    assert.ok(value.length <= schema.maxItems, `${label} maxItems`);
+  }
+  if (schema.uniqueItems) {
+    assert.equal(new Set(value.map(item => JSON.stringify(item))).size, value.length, `${label} uniqueItems`);
+  }
+  if (schema.items) {
+    value.forEach((item, index) => validateSchema(contract, schema.items, item, `${label}[${index}]`));
+  }
+}
+
+function validateCompositions(contract, schema, value, label) {
+  if (schema.allOf) {
+    schema.allOf.forEach(item => validateSchema(contract, item, value, label));
+  }
+  for (const keyword of ["anyOf", "oneOf"]) {
+    if (schema[keyword]) {
+      const matches = schema[keyword].filter(item => {
+        try {
+          validateSchema(contract, item, value, label);
+          return true;
+        } catch {
+          return false;
+        }
+      }).length;
+      assert.equal(matches > 0, true, `${label} ${keyword}`);
+      if (keyword === "oneOf") {
+        assert.equal(matches, 1, `${label} oneOf`);
+      }
+    }
+  }
+}
+
 function validateSchema(contract, schema, value, label) {
   if (schema.$ref) {
     const name = schema.$ref.split("/").at(-1);
     validateSchema(contract, contract.components.schemas[name], value, label);
     return;
+  }
+  validateCompositions(contract, schema, value, label);
+  if (schema.not) {
+    assert.throws(() => validateSchema(contract, schema.not, value, label), `${label} not`);
   }
   if (schema.type) {
     const types = Array.isArray(schema.type) ? schema.type : [schema.type];
@@ -275,8 +325,8 @@ function validateSchema(contract, schema, value, label) {
   if (typeof value === "number") {
     validateNumberSchema(schema, value, label);
   }
-  if (Array.isArray(value) && schema.items) {
-    value.forEach((item, index) => validateSchema(contract, schema.items, item, `${label}[${index}]`));
+  if (Array.isArray(value)) {
+    validateArraySchema(contract, schema, value, label);
   }
   if (value && typeof value === "object" && !Array.isArray(value)) {
     validateObjectSchema(contract, schema, value, label);
@@ -323,6 +373,9 @@ async function assertDocumentedResponse(contract, response, method, route) {
   const mediaDefinition = Object.entries(media).find(([type]) => response.contentType.startsWith(type));
   assert.ok(mediaDefinition, `${method} ${route} content type matches OpenAPI`);
   validateSchema(contract, mediaDefinition[1].schema, response.body, `${method} ${route} response`);
+  if (mediaDefinition[0] === "application/problem+json") {
+    assert.equal(response.body.status, response.status, `${method} ${route} problem status matches HTTP status`);
+  }
 }
 
 test("live REST responses match OpenAPI statuses, headers, media types, and schemas", async () => {
@@ -344,6 +397,11 @@ test("live REST responses match OpenAPI statuses, headers, media types, and sche
     ];
     for (const [method, endpoint, body] of requests) {
       const route = endpoint.replace(ID, "{id}").replace("instagram/alice", "{platform}/{account}");
+      if (body !== undefined) {
+        const operation = contract.paths[route][method.toLowerCase()];
+        const requestSchema = operation.requestBody.content["application/json"].schema;
+        validateSchema(contract, requestSchema, body, `${method} ${route} request`);
+      }
       const response = await direct(method, endpoint, body);
       await assertDocumentedResponse(contract, response, method, route);
       if (response.status === 201) {
@@ -360,8 +418,27 @@ test("live REST responses match OpenAPI statuses, headers, media types, and sche
         const head = await direct("HEAD", routePath(route));
         await assertDocumentedResponse(contract, head, "HEAD", route);
         assert.ok(head.contentType, `${route} HEAD content type`);
+        assert.deepEqual(Object.keys(pathItem.head.responses).sort(), Object.keys(pathItem.get.responses).sort());
       }
     }
+    const invalidRequests = [
+      ["/v1/jobs", { again: true }, 422],
+      ["/v1/jobs", { url: "http://www.instagram.com/alice/" }, 422],
+      ["/v1/jobs", { url: PROFILE_URL, extra: true }, 422],
+      ["/v1/jobs", { url: PROFILE_URL, again: "yes" }, 422],
+      ["/v1/watches", { url: PROFILE_URL, extra: true }, 422]
+    ];
+    for (const [endpoint, body, expectedStatus] of invalidRequests) {
+      const operation = contract.paths[endpoint].post;
+      const requestSchema = operation.requestBody.content["application/json"].schema;
+      assert.throws(() => validateSchema(contract, requestSchema, body, `${endpoint} invalid request`));
+      const response = await direct("POST", endpoint, body);
+      assert.equal(response.status, expectedStatus, `${endpoint} ${JSON.stringify(body)}`);
+      await assertDocumentedResponse(contract, response, "POST", endpoint);
+    }
+    const headFailure = await direct("HEAD", "/v1/jobs?limit=0");
+    assert.equal(headFailure.status, 400);
+    await assertDocumentedResponse(contract, headFailure, "HEAD", "/v1/jobs");
     const failures = [
       ["GET", "/v1/jobs?limit=0", undefined, 400],
       ["GET", "/v1/jobs/55555555-5555-4555-8555-555555555555", undefined, 404],
@@ -385,12 +462,21 @@ test("the OpenAPI document and REST route registry have exact operation parity",
   const contract = JSON.parse(await readFile(new URL("../../openapi.json", import.meta.url), "utf8"));
   const documented = Object.entries(contract.paths).flatMap(([route, pathItem]) =>
     Object.keys(pathItem)
-      .filter(method => ["get", "post", "delete"].includes(method))
+      .filter(method =>
+        ["get", "post", "delete", "put", "patch", "options", "head", "trace", "connect"].includes(method)
+      )
       .map(method => ({ method: method.toUpperCase(), path: route }))
   );
+  const expectedDocumented = [
+    ...API_OPERATIONS,
+    ...Object.entries(contract.paths).flatMap(([route, pathItem]) => [
+      { method: "OPTIONS", path: route },
+      ...(pathItem.get ? [{ method: "HEAD", path: route }] : [])
+    ])
+  ];
   assert.deepEqual(
     documented.sort((a, b) => `${a.path}:${a.method}`.localeCompare(`${b.path}:${b.method}`)),
-    [...API_OPERATIONS].sort((a, b) => `${a.path}:${a.method}`.localeCompare(`${b.path}:${b.method}`))
+    expectedDocumented.sort((a, b) => `${a.path}:${a.method}`.localeCompare(`${b.path}:${b.method}`))
   );
   for (const [route, pathItem] of Object.entries(contract.paths)) {
     assert.ok(pathItem.options?.responses["204"], `${route} documents HTTP OPTIONS`);
@@ -405,6 +491,11 @@ test("the OpenAPI document and REST route registry have exact operation parity",
       expectedResponses(operation),
       `${operation.method} ${operation.path} response statuses`
     );
+  }
+  for (const pathItem of Object.values(contract.paths)) {
+    if (pathItem.head && pathItem.get) {
+      assert.deepEqual(Object.keys(pathItem.head.responses).sort(), Object.keys(pathItem.get.responses).sort());
+    }
   }
   API_OPERATIONS.forEach(operation => assertSuccessContract(contract, operation));
   assert.equal(
@@ -450,6 +541,8 @@ test("every REST operation is reachable through an MCP tool", () => {
     mapped.sort((a, b) => `${a.path}:${a.method}`.localeCompare(`${b.path}:${b.method}`)),
     [...API_OPERATIONS].sort((a, b) => `${a.path}:${a.method}`.localeCompare(`${b.path}:${b.method}`))
   );
+  const idSchema = TOOLS.find(tool => tool.name === "get_job").inputSchema.properties.id;
+  assert.match(ID.toUpperCase(), new RegExp(idSchema.pattern));
 });
 
 test("the same REST and MCP scenarios produce equal data and mapped errors", () =>
@@ -513,6 +606,27 @@ test("the same REST and MCP scenarios produce equal data and mapped errors", () 
       assert.equal(agent.status, rest.status, `${url} status`);
       assert.equal(agent.body.title, rest.body.title, `${url} title`);
       assert.equal(agent.body.detail, rest.body.detail, `${url} detail`);
+    }
+    const invalidInputs = [
+      [{}, {}],
+      [[], []],
+      [{ url: 23 }, { url: 23 }],
+      [{ url: "http://www.instagram.com/alice/" }, { url: "http://www.instagram.com/alice/" }],
+      [
+        { url: PROFILE_URL, extra: true },
+        { url: PROFILE_URL, extra: true }
+      ],
+      [
+        { url: PROFILE_URL, again: "yes" },
+        { url: PROFILE_URL, again: "yes" }
+      ]
+    ];
+    for (const [body, args] of invalidInputs) {
+      const rest = await direct("POST", "/v1/jobs", body);
+      const agent = await tool("download_account", args);
+      assert.equal(agent.status, rest.status, `invalid MCP arguments ${JSON.stringify(args)}`);
+      assert.equal(agent.body.title, rest.body.title, `invalid MCP arguments ${JSON.stringify(args)} title`);
+      assert.match(agent.body.detail, /.+/, `invalid MCP arguments ${JSON.stringify(args)} detail`);
     }
     const hugeUrl = `https://x.com/${"a".repeat(9000)}`;
     const oversizedRest = await direct("POST", "/v1/jobs", { url: hugeUrl });
