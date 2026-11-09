@@ -283,8 +283,8 @@ function validateScalarConstraints(value, schema, name) {
       return `${name} must be a valid URL.`;
     }
   }
-  if (schema.pattern && !new RegExp(schema.pattern).test(value)) {
-    return `${name} must be an https link.`;
+  if (schema.pattern && !new RegExp(schema.pattern, schema.format === "uuid" ? "i" : "").test(value)) {
+    return schema.format === "uuid" ? `${name} must be a UUID.` : `${name} must be an https link.`;
   }
   return null;
 }

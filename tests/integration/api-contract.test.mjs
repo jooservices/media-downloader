@@ -18,7 +18,13 @@ function dependencies() {
   return {
     jobs,
     watched,
-    addUrls: async urls => {
+    addUrls: async (urls, options) => {
+      if (urls[0].includes("known") && !options.force) {
+        return { created: [], skipped: [{ raw: urls[0], reason: "already queued or done" }] };
+      }
+      if (urls[0].includes("nope")) {
+        return { created: [], skipped: [{ raw: urls[0], reason: "Use an Instagram/Facebook/X profile URL." }] };
+      }
       const made = { ...inputJob, url: urls[0] };
       jobs.unshift(made);
       return { created: [made], skipped: [] };
@@ -42,7 +48,14 @@ function dependencies() {
       }
     },
     status: async () => ({ jobs: { queued: jobs.length }, extension: { version: "test", at: null }, pid: 42 }),
-    config: async () => ({ workers: { instagram: 1 }, delaySeconds: { min: 15, max: 60 }, maxAttempts: 3 })
+    config: async () => ({
+      workers: { instagram: 1 },
+      delaySeconds: { min: 15, max: 60 },
+      maxAttempts: 3,
+      limit: null,
+      downloadDir: null,
+      notify: null
+    })
   };
 }
 
@@ -53,36 +66,63 @@ async function withAdapters(run) {
   const deps = dependencies();
   const server = await startApiServer({ ...deps, port: 0, token: TOKEN });
   const base = `http://127.0.0.1:${server.address().port}`;
-  const direct = async (method, endpoint, body) => {
+  const direct = async (method, endpoint, body, options = {}) => {
+    let requestBody;
+    if (body !== undefined) {
+      requestBody = typeof body === "string" ? body : JSON.stringify(body);
+    }
     const response = await fetch(`${base}${endpoint}`, {
       method,
-      headers: { Authorization: `Bearer ${TOKEN}`, ...(body ? { "Content-Type": "application/json" } : {}) },
-      body: body ? JSON.stringify(body) : undefined
+      headers: {
+        ...(options.auth === false ? {} : { Authorization: `Bearer ${TOKEN}` }),
+        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+        ...options.headers
+      },
+      body: requestBody
     });
     const contentType = response.headers.get("content-type") || "";
+    let responseBody = null;
+    if (response.status !== 204 && method !== "HEAD") {
+      responseBody = /json/i.test(contentType) ? await response.json() : await response.text();
+    }
     return {
       status: response.status,
-      body: /json/i.test(contentType) ? await response.json() : await response.text(),
-      contentType
+      body: responseBody,
+      contentType,
+      headers: response.headers
     };
   };
-  const mcp = createMcpServer({ fetchApi: localApi({ port: server.address().port, tokenFile }) });
+  let observed;
+  const actualFetch = localApi({ port: server.address().port, tokenFile });
+  const mcp = createMcpServer({
+    fetchApi: async (...args) => {
+      const response = await actualFetch(...args);
+      observed = {
+        status: response.status,
+        headers: response.headers,
+        body: await response
+          .clone()
+          .json()
+          .catch(() => response.clone().text())
+      };
+      return response;
+    }
+  });
   const tool = async (name, args = {}) => {
     const reply = await mcp.handle({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } });
     const result = reply.result;
     if (result.isError) {
       const match = /^(\d+) ([^:]+): (.*)$/.exec(result.content[0].text);
-      return { status: Number(match?.[1] || 0), body: { title: match?.[2], detail: match?.[3] } };
+      return { status: observed.status, body: { title: match?.[2], detail: match?.[3] } };
     }
     if (result.content[0].text === "Done.") {
-      const status = name === "cancel_job" || name === "unwatch_account" ? 204 : 0;
-      return { status, body: null };
+      return { status: observed.status, body: null };
     }
     const text = result.content[0].text;
     try {
-      return { status: name === "download_account" || name === "watch_account" ? 201 : 200, body: JSON.parse(text) };
+      return { status: observed.status, body: JSON.parse(text) };
     } catch {
-      return { status: 200, body: text };
+      return { status: observed.status, body: text };
     }
   };
   try {
@@ -151,6 +191,195 @@ function expectedResponses(operation) {
   }
   return [...statuses].sort();
 }
+
+function matchesType(type, value) {
+  switch (type) {
+    case "null":
+      return value === null;
+    case "array":
+      return Array.isArray(value);
+    case "object":
+      return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+    case "integer":
+      return Number.isInteger(value);
+    case "number":
+      return typeof value === "number" && Number.isFinite(value);
+    default:
+      return typeof value === type;
+  }
+}
+
+function validateStringSchema(schema, value, label) {
+  if (schema.pattern) {
+    assert.match(value, new RegExp(schema.pattern), `${label} pattern`);
+  }
+  if (schema.format === "uri") {
+    assert.doesNotThrow(() => new URL(value), `${label} uri`);
+  }
+  if (schema.format === "uuid") {
+    assert.match(value, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, `${label} uuid`);
+  }
+  if (schema.format === "date-time") {
+    assert.ok(Number.isFinite(Date.parse(value)), `${label} date-time`);
+  }
+}
+
+function validateObjectSchema(contract, schema, value, label) {
+  for (const key of schema.required || []) {
+    assert.ok(Object.hasOwn(value, key), `${label}.${key} required`);
+  }
+  for (const [key, child] of Object.entries(value)) {
+    let childSchema = schema.properties?.[key];
+    if (!childSchema && schema.additionalProperties && typeof schema.additionalProperties === "object") {
+      childSchema = schema.additionalProperties;
+    }
+    if (childSchema) {
+      validateSchema(contract, childSchema, child, `${label}.${key}`);
+    } else if (schema.additionalProperties === false) {
+      assert.fail(`${label}.${key} is not allowed`);
+    }
+  }
+}
+
+function validateNumberSchema(schema, value, label) {
+  if (schema.minimum !== undefined) {
+    assert.ok(value >= schema.minimum, `${label} minimum`);
+  }
+  if (schema.maximum !== undefined) {
+    assert.ok(value <= schema.maximum, `${label} maximum`);
+  }
+}
+
+function validateSchema(contract, schema, value, label) {
+  if (schema.$ref) {
+    const name = schema.$ref.split("/").at(-1);
+    validateSchema(contract, contract.components.schemas[name], value, label);
+    return;
+  }
+  if (schema.type) {
+    const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+    assert.ok(
+      types.some(type => matchesType(type, value)),
+      `${label} expected ${types.join(" or ")}, received ${JSON.stringify(value)}`
+    );
+  }
+  if (schema.const !== undefined) {
+    assert.equal(value, schema.const, `${label} const`);
+  }
+  if (schema.enum) {
+    assert.ok(schema.enum.includes(value), `${label} enum`);
+  }
+  if (typeof value === "string") {
+    validateStringSchema(schema, value, label);
+  }
+  if (typeof value === "number") {
+    validateNumberSchema(schema, value, label);
+  }
+  if (Array.isArray(value) && schema.items) {
+    value.forEach((item, index) => validateSchema(contract, schema.items, item, `${label}[${index}]`));
+  }
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    validateObjectSchema(contract, schema, value, label);
+  }
+}
+
+function routePath(route, id = ID) {
+  return route.replace("{id}", id).replace("{platform}", "instagram").replace("{account}", "alice");
+}
+
+async function assertDocumentedResponse(contract, response, method, route) {
+  const pathItem = contract.paths[route];
+  const operation = pathItem[method.toLowerCase()];
+  assert.ok(operation, `${method} ${route} is documented`);
+  let definition = operation.responses[String(response.status)];
+  assert.ok(definition, `${method} ${route} status ${response.status} is documented`);
+  if (definition.$ref) {
+    definition = contract.components.responses[definition.$ref.split("/").at(-1)];
+  }
+  for (const [name, headerDefinition] of Object.entries(definition.headers || {})) {
+    const actual = response.headers.get(name.toLowerCase());
+    assert.notEqual(actual, null, `${method} ${route} ${name} header`);
+    if (headerDefinition.schema) {
+      validateSchema(contract, headerDefinition.schema, actual, `${method} ${route} ${name} header`);
+    }
+  }
+  if (method === "OPTIONS") {
+    assert.equal(response.status, 204);
+    assert.ok(response.headers.get("allow"), `${route} Allow header`);
+    assert.equal(response.body, null);
+    return;
+  }
+  if (method === "HEAD" || response.status === 204) {
+    assert.equal(response.body, null, `${method} ${route} has no body`);
+    return;
+  }
+  const media = definition.content;
+  assert.ok(media, `${method} ${route} response content is documented`);
+  assert.ok(
+    Object.hasOwn(media, response.contentType.split(";")[0]) ||
+      Object.keys(media).includes(response.contentType.split("; charset")[0]),
+    `${method} ${route} content type ${response.contentType}`
+  );
+  const mediaDefinition = Object.entries(media).find(([type]) => response.contentType.startsWith(type));
+  assert.ok(mediaDefinition, `${method} ${route} content type matches OpenAPI`);
+  validateSchema(contract, mediaDefinition[1].schema, response.body, `${method} ${route} response`);
+}
+
+test("live REST responses match OpenAPI statuses, headers, media types, and schemas", async () => {
+  const contract = JSON.parse(await readFile(new URL("../../openapi.json", import.meta.url), "utf8"));
+  await withAdapters(async ({ direct }) => {
+    const requests = [
+      ["GET", "/v1/config"],
+      ["GET", "/v1/status"],
+      ["GET", "/v1/metrics"],
+      ["GET", "/v1/health"],
+      ["GET", "/v1/jobs"],
+      ["POST", "/v1/jobs", { url: PROFILE_URL }],
+      ["GET", `/v1/jobs/${ID}`],
+      ["DELETE", `/v1/jobs/${ID}`],
+      ["GET", "/v1/watches"],
+      ["POST", "/v1/watches", { url: PROFILE_URL }],
+      ["GET", "/v1/watches/instagram/alice"],
+      ["DELETE", "/v1/watches/instagram/alice"]
+    ];
+    for (const [method, endpoint, body] of requests) {
+      const route = endpoint.replace(ID, "{id}").replace("instagram/alice", "{platform}/{account}");
+      const response = await direct(method, endpoint, body);
+      await assertDocumentedResponse(contract, response, method, route);
+      if (response.status === 201) {
+        assert.ok(response.headers.get("location"), `${method} ${route} Location header`);
+      }
+      if (method === "GET" && route === "/v1/metrics") {
+        assert.match(response.contentType, /^text\/plain; version=0\.0\.4/);
+      }
+    }
+    for (const [route, pathItem] of Object.entries(contract.paths)) {
+      const options = await direct("OPTIONS", routePath(route));
+      await assertDocumentedResponse(contract, options, "OPTIONS", route);
+      if (pathItem.get) {
+        const head = await direct("HEAD", routePath(route));
+        await assertDocumentedResponse(contract, head, "HEAD", route);
+        assert.ok(head.contentType, `${route} HEAD content type`);
+      }
+    }
+    const failures = [
+      ["GET", "/v1/jobs?limit=0", undefined, 400],
+      ["GET", "/v1/jobs/55555555-5555-4555-8555-555555555555", undefined, 404],
+      ["POST", "/v1/jobs", { url: "https://www.instagram.com/known/" }, 409],
+      ["POST", "/v1/jobs", { url: "https://x.com/nope" }, 422],
+      ["POST", "/v1/jobs", `{"url":"https://x.com/${"a".repeat(9000)}"}`, 413]
+    ];
+    for (const [method, endpoint, body, expectedStatus] of failures) {
+      const response = await direct(method, endpoint, body);
+      assert.equal(response.status, expectedStatus, `${method} ${endpoint}`);
+      const route = endpoint.split("?")[0].replace(/\/v1\/jobs\/[0-9a-f-]{36}$/i, "/v1/jobs/{id}");
+      await assertDocumentedResponse(contract, response, method, route);
+    }
+    const unauthorized = await direct("GET", "/v1/jobs", undefined, { auth: false });
+    assert.equal(unauthorized.status, 401);
+    await assertDocumentedResponse(contract, unauthorized, "GET", "/v1/jobs");
+  });
+});
 
 test("the OpenAPI document and REST route registry have exact operation parity", async () => {
   const contract = JSON.parse(await readFile(new URL("../../openapi.json", import.meta.url), "utf8"));
@@ -228,11 +457,12 @@ test("the same REST and MCP scenarios produce equal data and mapped errors", () 
     const cases = [
       [["GET", "/v1/config"], ["get_config"]],
       [["GET", "/v1/status"], ["get_status"]],
+      [["GET", "/v1/metrics"], ["get_metrics"]],
       [["GET", "/v1/health"], ["queue_health"]],
       [["GET", "/v1/jobs"], ["list_jobs"]],
       [
-        ["GET", `/v1/jobs/${ID}`],
-        ["get_job", { id: ID }]
+        ["GET", `/v1/jobs/${ID.toUpperCase()}`],
+        ["get_job", { id: ID.toUpperCase() }]
       ],
       [
         ["POST", "/v1/jobs", { url: PROFILE_URL }],
@@ -248,8 +478,8 @@ test("the same REST and MCP scenarios produce equal data and mapped errors", () 
         ["get_watched", { platform: "instagram", account: "alice" }]
       ],
       [
-        ["DELETE", `/v1/jobs/${ID}`],
-        ["cancel_job", { id: ID }]
+        ["DELETE", `/v1/jobs/${ID.toUpperCase()}`],
+        ["cancel_job", { id: ID.toUpperCase() }]
       ],
       [
         ["DELETE", "/v1/watches/instagram/alice"],
@@ -276,4 +506,19 @@ test("the same REST and MCP scenarios produce equal data and mapped errors", () 
     assert.equal(mcpError.status, restError.status);
     assert.equal(mcpError.body.title, restError.body.title);
     assert.equal(mcpError.body.detail, restError.body.detail);
+
+    for (const url of ["https://www.instagram.com/known/", "https://x.com/nope"]) {
+      const rest = await direct("POST", "/v1/jobs", { url });
+      const agent = await tool("download_account", { url });
+      assert.equal(agent.status, rest.status, `${url} status`);
+      assert.equal(agent.body.title, rest.body.title, `${url} title`);
+      assert.equal(agent.body.detail, rest.body.detail, `${url} detail`);
+    }
+    const hugeUrl = `https://x.com/${"a".repeat(9000)}`;
+    const oversizedRest = await direct("POST", "/v1/jobs", { url: hugeUrl });
+    const oversizedMcp = await tool("download_account", { url: hugeUrl });
+    assert.equal(oversizedRest.status, 413);
+    assert.equal(oversizedMcp.status, oversizedRest.status);
+    assert.equal(oversizedMcp.body.title, oversizedRest.body.title);
+    assert.equal(oversizedMcp.body.detail, oversizedRest.body.detail);
   }));

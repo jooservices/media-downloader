@@ -211,8 +211,10 @@ test("POST validates the body: 400 for bad JSON, 413 for a huge one, 415 for ano
     assert.equal((await call("POST", "/v1/watches", { body: { url: ALICE, extra: true } })).status, 422);
     const huge = await call("POST", "/v1/jobs", {
       body: JSON.stringify({ url: `https://x.com/${"a".repeat(9000)}` })
-    }).catch(error => ({ status: error.code }));
-    assert.ok(huge.status === 413 || huge.status === "ECONNRESET" || huge.status === "EPIPE", `got ${huge.status}`);
+    });
+    assert.equal(huge.status, 413);
+    assert.equal(huge.body.status, 413);
+    assert.match(huge.headers["content-type"], /^application\/problem\+json/);
     const text = await call("POST", "/v1/jobs", {
       body: '{"url":"https://x.com/a"}',
       headers: { "content-type": "text/plain" }

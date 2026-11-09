@@ -101,17 +101,27 @@ function readBody(request) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
+    let tooLarge = false;
     request.on("data", chunk => {
+      if (tooLarge) {
+        return;
+      }
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
-        request.destroy();
-        reject(Object.assign(new Error("The request body is too large."), { status: 413 }));
+        tooLarge = true;
+        chunks.length = 0;
         return;
       }
       chunks.push(chunk);
     });
     request.on("error", reject);
-    request.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    request.on("end", () => {
+      if (tooLarge) {
+        reject(Object.assign(new Error("The request body is too large."), { status: 413 }));
+      } else {
+        resolve(Buffer.concat(chunks).toString("utf8"));
+      }
+    });
   });
 }
 
