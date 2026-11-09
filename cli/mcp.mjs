@@ -279,7 +279,14 @@ export function createMcpServer({ fetchApi }) {
 export function localApi({ port = API_PORT, tokenFile = API_TOKEN_FILE, fetchImpl = fetch } = {}) {
   return async (method, path, body) => {
     const token = (await readFile(tokenFile, "utf8")).trim();
-    return fetchImpl(`http://127.0.0.1:${port}${path}`, {
+    const configuredBind = process.env.PMS_API_HOST;
+    let host = "127.0.0.1";
+    if (configuredBind === "::1") {
+      host = "[::1]";
+    } else if (configuredBind === "localhost") {
+      host = "localhost";
+    }
+    return fetchImpl(`http://${host}:${port}${path}`, {
       method,
       headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
       body: body ? JSON.stringify(body) : undefined

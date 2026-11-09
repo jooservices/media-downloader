@@ -281,11 +281,40 @@ test("a method the resource does not offer is 405 with Allow; OPTIONS lists the 
     assert.equal((await call("DELETE", "/v1/jobs")).status, 405);
     const health = await call("POST", "/v1/health", { body: {} });
     assert.equal(health.status, 405);
+    assert.equal(health.headers.allow, "OPTIONS, HEAD, GET");
+    const healthWithoutType = await call("POST", "/v1/health");
+    assert.equal(healthWithoutType.status, 405);
+    assert.equal(healthWithoutType.headers.allow, "OPTIONS, HEAD, GET");
+    const putWithQuery = await call("PUT", "/v1/jobs?limit=1");
+    assert.equal(putWithQuery.status, 405);
+    assert.equal(putWithQuery.headers.allow, "OPTIONS, HEAD, GET, POST");
     const options = await call("OPTIONS", "/v1/jobs");
     assert.equal(options.status, 204);
     assert.equal(options.headers.allow, "OPTIONS, HEAD, GET, POST");
     assert.equal(options.headers["access-control-allow-origin"], undefined, "no CORS");
   }));
+
+test("an IPv6 loopback bind accepts its bracketed Host header", async () => {
+  const { deps } = backend();
+  const server = await startApiServer({ port: 0, bind: "::1", token: TOKEN, ...deps });
+  const { port } = server.address();
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const req = request(
+        { hostname: "::1", port, path: "/v1/health", headers: { host: `[::1]:${port}` } },
+        response => {
+          response.resume();
+          response.on("end", () => resolve(response.statusCode));
+        }
+      );
+      req.on("error", reject);
+      req.end();
+    });
+    assert.equal(result, 200);
+  } finally {
+    await new Promise(resolve => server.close(() => resolve()));
+  }
+});
 
 test("watches: create (201 + Location), conflict, list, get, delete", () =>
   withServer({}, async ({ call, state }) => {

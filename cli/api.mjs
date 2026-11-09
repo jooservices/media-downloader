@@ -492,15 +492,7 @@ function admit(request, response, open, deps) {
       return false;
     }
   }
-  if (rateLimited(request, response, deps, token && !open ? "authenticated" : "accepted")) {
-    return false;
-  }
-  if (request.method === "POST" && !isJsonContentType(request.headers["content-type"] || "")) {
-    // JSON only: a web page cannot send this type to another origin without a CORS preflight, which is never answered.
-    problem(response, 415, "Content-Type must be application/json.");
-    return false;
-  }
-  return true;
+  return !rateLimited(request, response, deps, token && !open ? "authenticated" : "accepted");
 }
 
 function validateQuery(request, response, url) {
@@ -524,9 +516,6 @@ async function dispatchRoute(request, response, deps, url, candidate, match) {
   if (!admit(request, response, candidate.open, deps)) {
     return;
   }
-  if (!validateQuery(request, response, url)) {
-    return;
-  }
   const allowed = METHODS.filter(method => candidate[method]);
   const allow = ["OPTIONS", ...(candidate.GET ? ["HEAD"] : []), ...allowed].join(", ");
   if (request.method === "OPTIONS") {
@@ -536,6 +525,14 @@ async function dispatchRoute(request, response, deps, url, candidate, match) {
   const handler = candidate[request.method === "HEAD" ? "GET" : request.method];
   if (!handler || !(METHODS.includes(request.method) || request.method === "HEAD")) {
     problem(response, 405, `Use one of: ${allow}.`, { Allow: allow });
+    return;
+  }
+  if (!validateQuery(request, response, url)) {
+    return;
+  }
+  if (request.method === "POST" && !isJsonContentType(request.headers["content-type"] || "")) {
+    // JSON only: a web page cannot send this type to another origin without a CORS preflight, which is never answered.
+    problem(response, 415, "Content-Type must be application/json.");
     return;
   }
   const hasBody = Number(request.headers["content-length"]) > 0 || Boolean(request.headers["transfer-encoding"]);
@@ -596,8 +593,8 @@ export function startApiServer({
   if (!LOOPBACK.has(bind) && !token) {
     return Promise.reject(new Error("The API can listen beyond this computer only with an API token."));
   }
-  let loopbackHost = `127.0.0.1:${port}`;
-  const allowedHosts = () => [...(LOOPBACK.has(bind) ? [loopbackHost] : []), ...extraHosts];
+  let loopbackHosts = [];
+  const allowedHosts = () => [...loopbackHosts, ...extraHosts];
   const limiter = createLimiter();
   const server = createApiServer({
     addUrls,
@@ -615,7 +612,14 @@ export function startApiServer({
       reject(error?.code === "EADDRINUSE" ? new Error(`Download API port ${port} is already in use.`) : error);
     });
     server.listen(port, bind, () => {
-      loopbackHost = `127.0.0.1:${server.address().port}`;
+      const address = server.address();
+      if (LOOPBACK.has(bind) && address && typeof address === "object") {
+        const host = address.family === "IPv6" ? `[${address.address}]` : address.address;
+        loopbackHosts = [`${host}:${address.port}`];
+        if (bind === "localhost") {
+          loopbackHosts.push(`localhost:${address.port}`);
+        }
+      }
       resolve(server);
     });
   });

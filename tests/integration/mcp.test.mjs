@@ -37,6 +37,34 @@ test("initialize agrees on a protocol version and announces tools only", async (
   assert.equal(none.result.protocolVersion, SUPPORTED_VERSIONS[0]);
 });
 
+test("the local MCP client follows an IPv6 API bind", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "pms-mcp-ipv6-"));
+  const tokenFile = path.join(home, "api-token");
+  await writeFile(tokenFile, "tok-123\n");
+  const previousBind = process.env.PMS_API_HOST;
+  const calls = [];
+  process.env.PMS_API_HOST = "::1";
+  try {
+    const fetchApi = localApi({
+      port: 1234,
+      tokenFile,
+      fetchImpl: async (...args) => {
+        calls.push(args);
+        return new Response(null);
+      }
+    });
+    await fetchApi("GET", "/v1/health");
+    assert.equal(calls[0][0], "http://[::1]:1234/v1/health");
+  } finally {
+    if (previousBind === undefined) {
+      delete process.env.PMS_API_HOST;
+    } else {
+      process.env.PMS_API_HOST = previousBind;
+    }
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("notifications get no reply, ping is answered, bad messages are errors", async () => {
   const server = createMcpServer({ fetchApi: fakeQueue(json(200, {})).fetchApi });
   assert.equal(await server.handle({ jsonrpc: "2.0", method: "notifications/initialized" }), null);
