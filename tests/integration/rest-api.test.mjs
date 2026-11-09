@@ -131,9 +131,12 @@ test("health needs no token; everything else answers 401 with WWW-Authenticate",
     assert.equal(short.status, 401);
   }));
 
-test("a request for another host is refused, and unknown resources are 404 problems", () =>
+test("a request for another host or Origin is refused, and unknown resources are 404 problems", () =>
   withServer({}, async ({ call }) => {
     assert.equal((await call("GET", "/v1/health", { host: "evil.example" })).status, 403);
+    const origin = await call("GET", "/v1/health", { headers: { origin: "https://attacker.example" } });
+    assert.equal(origin.status, 403);
+    assert.equal(origin.headers["access-control-allow-origin"], undefined);
     const missing = await call("GET", "/v1/nothing");
     assert.equal(missing.status, 404);
     assert.equal(missing.body.title, "Not Found");
@@ -165,6 +168,8 @@ test("GET /v1/jobs lists jobs as a page, filters by status and links the next pa
       assert.equal(bad.status, 400, query);
       assert.match(bad.headers["content-type"], /problem\+json/);
     }
+    assert.equal((await call("GET", "/v1/jobs?limit=1&limit=2")).status, 400);
+    assert.equal((await call("GET", "/v1/jobs?unknown=yes")).status, 400);
   }));
 
 test("GET /v1/jobs/{id} returns one job or a 404; HEAD has no body", () =>
@@ -195,6 +200,18 @@ test("POST /v1/jobs creates a job: 201 with Location; a known account is a 409 u
     const refused = await call("POST", "/v1/jobs", { body: { url: "https://x.com/nope" } });
     assert.equal(refused.status, 422);
     assert.equal(refused.body.detail, "Use an Instagram/Facebook/X profile URL.");
+    for (const url of [
+      "https://attacker.example/name",
+      "https://127.0.0.1/private",
+      "http://x.com/name",
+      "https://x.com/",
+      "https://user:pass@x.com/name",
+      "https://x.com:8443/name"
+    ]) {
+      assert.equal((await call("POST", "/v1/jobs", { body: { url } })).status, 422, url);
+    }
+    assert.equal((await call("POST", "/v1/jobs", { body: { url: ALICE, extra: true } })).status, 422);
+    assert.equal((await call("POST", "/v1/jobs", { body: { url: ALICE, again: "yes" } })).status, 422);
   }));
 
 test("POST validates the body: 400 for bad JSON, 413 for a huge one, 415 for another type, 422 for wrong values", () =>
@@ -209,7 +226,7 @@ test("POST validates the body: 400 for bad JSON, 413 for a huge one, 415 for ano
     const huge = await call("POST", "/v1/jobs", {
       body: JSON.stringify({ url: `https://x.com/${"a".repeat(9000)}` })
     }).catch(error => ({ status: error.code }));
-    assert.ok(huge.status === 413 || huge.status === "ECONNRESET" || huge.status === "EPIPE", `got ${huge.status}`);
+    assert.equal(huge.status, 413);
     const text = await call("POST", "/v1/jobs", {
       body: '{"url":"https://x.com/a"}',
       headers: { "content-type": "text/plain" }
@@ -252,7 +269,9 @@ test("watches: create (201 + Location), conflict, list, get, delete", () =>
     assert.equal(created.headers.location, "/v1/watches/instagram/alice");
     assert.deepEqual(created.body.pages, [ALICE]);
     assert.equal((await call("POST", "/v1/watches", { body: { url: ALICE } })).status, 409);
-    assert.equal((await call("POST", "/v1/watches", { body: { url: "https://x.com/bad" } })).status, 422);
+    const rejected = await call("POST", "/v1/watches", { body: { url: "https://x.com/bad" } });
+    assert.equal(rejected.status, 500);
+    assert.equal(rejected.body.detail, "The request failed.", "backend error details stay private");
     assert.equal((await call("POST", "/v1/watches", { body: "nope" })).status, 400);
     assert.equal((await call("POST", "/v1/watches", { body: {} })).status, 422);
 
@@ -368,6 +387,16 @@ test("status and metrics still answer when the queue offers no details", () =>
     assert.doesNotMatch(metrics.text, /pms_jobs\{/);
   }));
 
+test("the API limits request bursts with a problem response", () =>
+  withServer({ rateLimit: 2 }, async ({ call }) => {
+    assert.equal((await call("GET", "/v1/health", { auth: false })).status, 200);
+    assert.equal((await call("GET", "/v1/health", { auth: false })).status, 200);
+    const limited = await call("GET", "/v1/health", { auth: false });
+    assert.equal(limited.status, 429);
+    assert.equal(limited.headers["retry-after"], "60");
+    assert.match(limited.headers["content-type"], /problem\+json/);
+  }));
+
 test("beyond this computer the API needs a token, and only the hosts it was told about", async () => {
   const deps = { addUrls: async () => ({}), listJobs: async () => [] };
   await assert.rejects(startApiServer({ port: 0, bind: "0.0.0.0", ...deps }), /only with an API token/);
@@ -389,7 +418,7 @@ test("beyond this computer the API needs a token, and only the hosts it was told
         req.on("error", reject);
         req.end();
       });
-    assert.equal(await ask(`127.0.0.1:${port}`), 200);
+    assert.equal(await ask(`127.0.0.1:${port}`), 403, "a remote bind does not implicitly trust loopback Host values");
     assert.equal(await ask("api.internal:38542"), 200);
     assert.equal(await ask("evil.example"), 403);
   } finally {

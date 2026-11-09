@@ -1,7 +1,7 @@
 // Where the CLI keeps its files, and how it reads and writes them.
 import { createRequire } from "node:module";
 import { createJobStore } from "./jobstore.mjs";
-import { mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { randomBytes, randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -126,6 +126,9 @@ export async function ensureApiToken() {
   try {
     const existing = (await readFile(API_TOKEN_FILE, "utf8")).trim();
     if (existing) {
+      if (process.platform !== "win32") {
+        await chmod(API_TOKEN_FILE, 0o600);
+      }
       return existing;
     }
   } catch (error) {
@@ -141,6 +144,27 @@ export async function ensureApiToken() {
 `,
     { encoding: "utf8", mode: 0o600 }
   );
+  return token;
+}
+
+// Replace the bearer secret atomically so a running server can be restarted with the new value.
+export async function rotateApiToken() {
+  const token = randomBytes(32).toString("hex");
+  await mkdir(APP_DIR, { recursive: true });
+  const temporary = `${API_TOKEN_FILE}.${process.pid}.${randomUUID()}.tmp`;
+  await writeFile(temporary, `${token}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  try {
+    if (process.platform !== "win32") {
+      await chmod(temporary, 0o600);
+    }
+    await rename(temporary, API_TOKEN_FILE);
+    if (process.platform !== "win32") {
+      await chmod(API_TOKEN_FILE, 0o600);
+    }
+  } catch (error) {
+    await unlink(temporary).catch(() => {});
+    throw error;
+  }
   return token;
 }
 
