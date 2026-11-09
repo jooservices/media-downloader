@@ -388,7 +388,7 @@ test("beyond this computer the API needs a token, and only the hosts it was told
     port: 0,
     bind: "0.0.0.0",
     token: TOKEN,
-    extraHosts: ["api.internal:38542"],
+    extraHosts: ["api.internal:41742"],
     ...deps
   });
   const { port } = server.address();
@@ -403,7 +403,7 @@ test("beyond this computer the API needs a token, and only the hosts it was told
         req.end();
       });
     assert.equal(await ask(`127.0.0.1:${port}`), 200);
-    assert.equal(await ask("api.internal:38542"), 200);
+    assert.equal(await ask("api.internal:41742"), 200);
     assert.equal(await ask("evil.example"), 403);
   } finally {
     await new Promise(resolve => server.close(() => resolve()));

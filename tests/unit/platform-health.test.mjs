@@ -53,6 +53,19 @@ test("a later successful job clears old hook and selector diagnostics", () => {
   assert.match(item.reason, /found media/);
 });
 
+test("a zero-media completion does not clear diagnostics before a media-backed recovery", () => {
+  const history = [job(1, { started: 0, status: "error", message: "Selector failed to find media" })];
+  history.push(job(2, { started: 0 }));
+  let item = platformHealth(history).find(entry => entry.platform === "Instagram");
+  assert.equal(item.state, "broken");
+  assert.match(item.reason, /Selector failed/);
+
+  history.push(job(3, { started: 1 }));
+  item = platformHealth(history).find(entry => entry.platform === "Instagram");
+  assert.equal(item.state, "ok");
+  assert.match(item.reason, /found media/);
+});
+
 test("media found honours explicit count and otherwise combines discovered media counters", () => {
   assert.equal(mediaFound({ mediaFound: 4, started: 0 }), 4);
   assert.equal(mediaFound({ started: 1, skipped: 2, videoStarted: 1, videoSkipped: 1 }), 5);
