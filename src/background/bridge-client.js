@@ -182,6 +182,15 @@ async function flushPendingCliRateLimit(tabId, jobId) {
   }
 }
 
+function flushPendingQueueRateLimit(tabId) {
+  return serializeCliRateLimit(async () => {
+    const status = await takePendingCliRateLimit(tabId);
+    if (status) {
+      await queueEngine.rateLimitSignal(tabId, status);
+    }
+  });
+}
+
 // Forgets the tab's job and returns its id, or null when the tab had none.
 function takeCliJob(tabId) {
   if (!Number.isInteger(tabId)) {
@@ -244,16 +253,16 @@ async function handleAutoProgress(message, sender) {
   return handleBridgeProgress(message, sender);
 }
 
-async function handlePlatformRateLimit(message, sender) {
+function handlePlatformRateLimit(message, sender) {
   const status = Number(message?.status);
   const tabId = sender?.tab?.id;
   if (![420, 429].includes(status) || !Number.isInteger(tabId)) {
     return null;
   }
-  if (await queueEngine.rateLimitSignal(tabId, status)) {
-    return { ok: true };
-  }
   return serializeCliRateLimit(async () => {
+    if (await queueEngine.rateLimitSignal(tabId, status)) {
+      return { ok: true };
+    }
     const jobId = (await readCliJobs())[String(tabId)];
     if (!jobId) {
       await savePendingCliRateLimit(tabId, status);

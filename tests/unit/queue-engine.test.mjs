@@ -97,6 +97,36 @@ test("a real page rate-limit signal becomes the terminal job outcome and pauses 
   assert.equal(env.storage.rateLimitBackoffs.platforms.Twitter.level, 1);
 });
 
+test("a rate-limit signal arriving before an extension tab is associated reaches back-off state", async () => {
+  const env = start({
+    tabResponder: () => ({ ok: true, state: { running: true } }),
+    storage: { queueSettings: { workers: { x: 2 }, delaySeconds: { min: 0, max: 0 }, maxAttempts: 3 } }
+  });
+  env.inContext(`chrome.tabs.create = options => new Promise(resolve => {
+    globalThis.__resolveQueueTab = () => resolve({ id: 100, url: options.url });
+  })`);
+  await ask(env, { type: "QUEUE_ADD", urls: ["https://x.com/alice"] });
+  await settle();
+  const tab = { tab: { id: 100, url: PAGE.pageUrl } };
+
+  assert.deepEqual(plain(await ask(env, { type: "PLATFORM_RATE_LIMIT", status: 429 }, tab)), { ok: true });
+  assert.deepEqual(plain(env.storage.pendingCliRateLimits), { 100: 429 });
+  env.inContext("globalThis.__resolveQueueTab()");
+  await env.inContext("queueEngine.tick()");
+
+  const job = await only(env);
+  assert.equal(job.tabId, 100);
+  assert.equal(job.rateLimitStatus, 429);
+  const jobId = job.jobId;
+  await ask(env, { type: "CLI_PAGE_READY", ...PAGE }, tab);
+  await ask(env, { type: "AUTO_DONE", state: { jobId, status: "complete", message: "Scan complete." } }, tab);
+  await env.inContext("queueEngine.tick()");
+
+  assert.equal((await only(env)).status, "incomplete");
+  assert.equal(env.storage.rateLimitBackoffs.platforms.Twitter.level, 1);
+  assert.deepEqual(plain(env.storage.pendingCliRateLimits), {});
+});
+
 test("a page that cannot start the scan fails the job", async () => {
   const env = start({ tabResponder: () => ({ ok: false, error: "no grid" }) });
   await ask(env, { type: "QUEUE_ADD", urls: ["https://x.com/alice"] });

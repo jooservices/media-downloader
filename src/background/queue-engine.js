@@ -24,6 +24,7 @@ function createQueueEngine({ store, settings, login, tabs, now, random, log }) {
       await store.updateJob(job.jobId, current => {
         current.tabId = tab.id;
       });
+      await flushPendingQueueRateLimit(tab.id);
     }
   });
 
