@@ -140,14 +140,40 @@ test("a good reply is the JSON text; 204 is Done; a problem reply is an error th
   assert.equal(plain.result.content[0].text, "502 Error: The request failed.");
 });
 
+test("tool arguments are validated against each published schema before making a request", async () => {
+  const queue = fakeQueue(json(200, {}));
+  const server = createMcpServer({ fetchApi: queue.fetchApi });
+  const invalidCalls = [
+    ["download_account", { url: "https://www.instagram.com/a/", again: "true" }],
+    ["download_account", { url: "https://www.instagram.com/a/", unexpected: 1 }],
+    ["list_jobs", { limit: "5" }],
+    ["list_jobs", { limit: 0 }],
+    ["list_jobs", { status: "invalid" }],
+    ["get_job", { id: JOB_ID, extra: false }],
+    ["list_watched", { page: 1 }],
+    ["unwatch_account", { platform: "twitter", account: "a", extra: true }],
+    ["watch_account", { url: 4 }],
+    ["queue_health", ["unexpected"]]
+  ];
+  for (const [name, args] of invalidCalls) {
+    const result = await call(server, name, args);
+    assert.equal(result.result.isError, true, name);
+    assert.match(result.result.content[0].text, /Invalid tool arguments/);
+  }
+  assert.equal(queue.calls.length, 0, "invalid inputs never reach the REST API");
+  const valid = await call(server, "list_jobs", { status: "running", limit: 5, offset: 0 });
+  assert.equal(valid.result.isError, false);
+  assert.equal(queue.calls.length, 1);
+});
+
 test("missing arguments, unknown tools and an unreachable queue are reported, not thrown", async () => {
   const queue = fakeQueue(json(200, {}));
   const server = createMcpServer({ fetchApi: queue.fetchApi });
   const missing = await call(server, "get_job", {});
   assert.equal(missing.result.isError, true);
-  assert.match(missing.result.content[0].text, /Missing required argument: id/);
+  assert.match(missing.result.content[0].text, /arguments\.id is required/);
   const blank = await call(server, "unwatch_account", { platform: "twitter" });
-  assert.match(blank.result.content[0].text, /account/);
+  assert.match(blank.result.content[0].text, /arguments\.account is required/);
   assert.equal(queue.calls.length, 0, "nothing is sent for an incomplete call");
   const unknown = await call(server, "format_disk", {});
   assert.equal(unknown.error.code, -32602);
@@ -161,13 +187,22 @@ test("missing arguments, unknown tools and an unreachable queue are reported, no
   });
   const offline = await call(down, "queue_health");
   assert.equal(offline.result.isError, true);
-  assert.match(offline.result.content[0].text, /not reachable \(connect ECONNREFUSED\).*serve/);
+  assert.match(offline.result.content[0].text, /not reachable.*serve/);
+  assert.doesNotMatch(offline.result.content[0].text, /ECONNREFUSED/);
   const silent = createMcpServer({
     fetchApi: async () => {
       throw new Error("");
     }
   });
-  assert.match((await call(silent, "queue_health")).result.content[0].text, /no answer/);
+  assert.match((await call(silent, "queue_health")).result.content[0].text, /not reachable/);
+  const secretFailure = createMcpServer({
+    fetchApi: async () => {
+      throw new Error("/private/api-token SECRET");
+    }
+  });
+  const hidden = await call(secretFailure, "queue_health");
+  assert.doesNotMatch(hidden.result.content[0].text, /private|api-token|SECRET/);
+  assert.match(hidden.result.content[0].text, /Check that its local API token is available/);
 });
 
 async function converse(fetchApi, lines) {

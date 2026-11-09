@@ -442,7 +442,9 @@ function validateQuery(request, response, url) {
     return false;
   }
   const supportedQuery =
-    request.method === "GET" && url.pathname === `${API_BASE}/jobs` ? ["limit", "offset", "status"] : [];
+    ["GET", "HEAD"].includes(request.method) && url.pathname === `${API_BASE}/jobs`
+      ? ["limit", "offset", "status"]
+      : [];
   if ([...url.searchParams.keys()].some(key => !supportedQuery.includes(key))) {
     problem(response, 400, "The request contains an unsupported query parameter.");
     return false;

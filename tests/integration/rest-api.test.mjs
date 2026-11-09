@@ -172,6 +172,16 @@ test("GET /v1/jobs lists jobs as a page, filters by status and links the next pa
     assert.equal((await call("GET", "/v1/jobs?unknown=yes")).status, 400);
   }));
 
+test("HEAD /v1/jobs accepts the same filtered and paginated queries as GET", () =>
+  withServer({}, async ({ call }) => {
+    const get = await call("GET", "/v1/jobs?status=complete&limit=1&offset=0");
+    const head = await call("HEAD", "/v1/jobs?status=complete&limit=1&offset=0");
+    assert.equal(get.status, 200);
+    assert.equal(head.status, get.status);
+    assert.equal(head.text, "");
+    assert.equal(head.headers.link, get.headers.link);
+  }));
+
 test("GET /v1/jobs/{id} returns one job or a 404; HEAD has no body", () =>
   withServer({}, async ({ call }) => {
     const one = await call("GET", `/v1/jobs/${ID_B}`);

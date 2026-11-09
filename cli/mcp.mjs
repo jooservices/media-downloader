@@ -151,6 +151,55 @@ const textResult = (value, isError = false) => ({
   isError
 });
 
+function validateObject(value, schema, name) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return `${name} must be an object`;
+  }
+  const properties = schema.properties ?? {};
+  if (schema.additionalProperties === false && Object.keys(value).some(key => !Object.hasOwn(properties, key))) {
+    return `${name} contains an unsupported property`;
+  }
+  for (const key of schema.required ?? []) {
+    if (!Object.hasOwn(value, key)) {
+      return `${name}.${key} is required`;
+    }
+  }
+  for (const [key, item] of Object.entries(value)) {
+    if (properties[key]) {
+      const error = validateSchema(item, properties[key], `${name}.${key}`);
+      if (error) {
+        return error;
+      }
+    }
+  }
+  return null;
+}
+
+function validateSchema(value, schema, name = "arguments") {
+  if (schema.type === "object") {
+    return validateObject(value, schema, name);
+  }
+  if (schema.type === "string" && typeof value !== "string") {
+    return `${name} must be a string`;
+  }
+  if (schema.type === "boolean" && typeof value !== "boolean") {
+    return `${name} must be a boolean`;
+  }
+  if (schema.type === "integer" && !Number.isInteger(value)) {
+    return `${name} must be an integer`;
+  }
+  if (schema.enum && !schema.enum.includes(value)) {
+    return `${name} must be one of the allowed values`;
+  }
+  if (schema.minimum !== undefined && value < schema.minimum) {
+    return `${name} is below the minimum`;
+  }
+  if (schema.maximum !== undefined && value > schema.maximum) {
+    return `${name} is above the maximum`;
+  }
+  return null;
+}
+
 // Turns a REST reply into the text a model should read. Problem documents keep their detail.
 async function describeReply(response) {
   if (response.status === 204) {
@@ -170,17 +219,22 @@ export function createMcpServer({ fetchApi }) {
       return { error: rpcError(null, -32602, `Unknown tool: ${params?.name}`).error };
     }
     const args = params.arguments ?? {};
-    const missing = (tool.inputSchema.required ?? []).filter(key => typeof args[key] !== "string" || !args[key]);
-    if (missing.length) {
-      return { result: textResult(`Missing required argument: ${missing.join(", ")}.`, true) };
+    const invalid = validateSchema(args, tool.inputSchema);
+    if (invalid) {
+      return { result: textResult(`Invalid tool arguments: ${invalid}.`, true) };
+    }
+    const blankRequired = (tool.inputSchema.required ?? []).filter(key => typeof args[key] === "string" && !args[key]);
+    if (blankRequired.length) {
+      return { result: textResult(`Invalid tool arguments: ${blankRequired.join(", ")} must not be empty.`, true) };
     }
     try {
       const [method, path, body] = tool.request(args);
       return { result: await describeReply(await fetchApi(method, path, body)) };
-    } catch (error) {
+    } catch {
+      // Backend exception details may contain local paths or secrets.
       return {
         result: textResult(
-          `The download queue is not reachable (${error?.message || "no answer"}). Start it with: node cli/mediasaver.mjs serve`,
+          "The download queue is not reachable. Check that its local API token is available and start it with: node cli/mediasaver.mjs serve",
           true
         )
       };

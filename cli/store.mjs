@@ -125,10 +125,11 @@ export async function getActiveJob() {
 export async function ensureApiToken() {
   try {
     const existing = (await readFile(API_TOKEN_FILE, "utf8")).trim();
+    if (process.platform !== "win32") {
+      // writeFile's mode only applies on creation; an empty pre-existing file may be permissive.
+      await chmod(API_TOKEN_FILE, 0o600);
+    }
     if (existing) {
-      if (process.platform !== "win32") {
-        await chmod(API_TOKEN_FILE, 0o600);
-      }
       return existing;
     }
   } catch (error) {
