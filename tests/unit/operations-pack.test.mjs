@@ -27,6 +27,13 @@ test("runbook covers installation, service lifecycle, recovery, troubleshooting,
     "0 media found",
     "NAS or UNC download directory unavailable",
     "\\\\nas01\\media",
+    "installer persists `PMS_DATA_DIR`",
+    "systemctl --user show page-media-saver.service -p Environment",
+    "EnvironmentVariables",
+    "PageMediaSaver.vbs",
+    "docker compose stop media-downloader",
+    "docker compose stop login",
+    "Never run `browser login` alongside a queue process",
     "Incident checklist"
   ]) {
     assert.ok(runbook.includes(required), `runbook should include ${required}`);
@@ -60,6 +67,7 @@ test("Prometheus rules and Grafana dashboard are valid and use exposed metrics",
 
 test("Compose healthcheck calls the API's real unauthenticated health route", async () => {
   const compose = parse(await read("docker-compose.yml"));
+  const service = compose.services["media-downloader"];
   const check = compose.services["media-downloader"].healthcheck;
   assert.deepEqual(check.test.slice(0, 3), ["CMD", "node", "-e"]);
   assert.ok(check.test[3].includes("/v1/health"));
@@ -67,4 +75,10 @@ test("Compose healthcheck calls the API's real unauthenticated health route", as
 
   const apiSource = await read("cli/api.mjs");
   assert.match(apiSource, /pattern: new RegExp\(`\^\$\{API_BASE\}\/health\$`\),\s*open: true/);
+  assert.equal(service.environment.PMS_API_HOST, "0.0.0.0");
+  assert.ok(service.environment.PMS_API_ALLOWED_HOSTS.split(",").includes("media-downloader:38542"));
+  assert.equal(service.ports[0], "127.0.0.1:38542:38542");
+  const runbook = await read("docs/runbook.md");
+  assert.ok(runbook.includes('targets: ["media-downloader:38542"]'));
+  assert.ok(runbook.includes("credentials_file: /run/secrets/media-downloader-api-token"));
 });

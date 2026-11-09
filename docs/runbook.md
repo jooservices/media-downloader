@@ -8,7 +8,7 @@ This runbook covers the optional CLI queue and its browser-owned mode. The brows
 
 1. Install Node.js 22.13 or newer and a supported Chromium browser (Chrome or Edge). On Linux, install the browser's OS libraries as well.
 2. Check out or extract this project to a permanent directory. From that directory run `npm ci` only when installing from source; runtime has no npm package dependencies.
-3. Set the queue data directory (`PMS_DATA_DIR`) and download directory (`PMS_DOWNLOAD_DIR`) if the defaults are not suitable. The download directory must be writable by the account that runs the queue. For a NAS, mount it before starting the queue and use its mounted path.
+3. Set the queue data directory (`PMS_DATA_DIR`) and download directory (`PMS_DOWNLOAD_DIR`) in the environment before installing the service if the defaults are not suitable. `service install` saves these two values into its generated launcher/unit/plist and uses them for the immediate start too. The download directory must be writable by the account that runs the queue. For a NAS, mount it before starting the queue and use its mounted path. If either variable is unset, that setting uses its normal default.
 4. Create and sign in to the queue-owned browser profile:
 
    ```sh
@@ -28,11 +28,21 @@ docker compose up -d
 docker compose ps
 ```
 
-The service stores queue state in `./data`, downloads media under `./media`, and publishes the API only on host loopback. To sign in, run `docker compose --profile login up`, connect a VNC client to `127.0.0.1:5900`, finish sign-in, then stop the login container. The login profile shares the persistent browser profile with the service.
+The service stores queue state in `./data`, downloads media under `./media`, and publishes the API only on host loopback. The API also listens on the Compose network so a Prometheus container in the same Compose network can scrape it; requests there require the API token. The login service and queue use the same browser profile, so only one may run at a time. For first sign-in, run:
+
+```sh
+docker compose stop media-downloader
+docker compose --profile login up -d login
+# Connect a VNC client to 127.0.0.1:5900 and finish sign-in.
+docker compose stop login
+docker compose up -d media-downloader
+```
+
+Wait for the login container to become ready before connecting. Do not start the queue until the login container is stopped.
 
 ## Run as a service
 
-Run as the same non-root desktop account that owns the browser profile and can write the media destination. `node cli/mediasaver.mjs service install` installs the platform's user-level start-at-login entry and starts the queue. `node cli/mediasaver.mjs service remove` removes it.
+Run as the same non-root desktop account that owns the browser profile and can write the media destination. `node cli/mediasaver.mjs service install` installs the platform's user-level start-at-login entry and starts the queue. The installer persists `PMS_DATA_DIR` and `PMS_DOWNLOAD_DIR` from its environment. Set them before running `service install`, and rerun install after changing either value. `node cli/mediasaver.mjs service remove` removes the entry.
 
 ### Linux systemd user service
 
@@ -47,6 +57,8 @@ journalctl --user -u page-media-saver.service -f
 
 The unit uses `Restart=on-failure` and a 10-second restart delay. Remove it with `node cli/mediasaver.mjs service remove`.
 
+Check that configured values were persisted with `systemctl --user cat page-media-saver.service`; the unit contains `Environment=` lines for each configured directory. Confirm the loaded unit matches with `systemctl --user show page-media-saver.service -p Environment`.
+
 ### macOS launchd
 
 The installer writes `~/Library/LaunchAgents/dev.jooservices.page-media-saver.plist` and loads it in the current user's GUI domain. Check or restart it with:
@@ -58,9 +70,22 @@ launchctl kickstart -k "gui/$(id -u)/dev.jooservices.page-media-saver"
 
 Keep the user session available for the owned browser. Remove it with `node cli/mediasaver.mjs service remove`.
 
+Inspect the persisted values with `plutil -p ~/Library/LaunchAgents/dev.jooservices.page-media-saver.plist`; they appear under `EnvironmentVariables`. Confirm the agent is loaded with the `launchctl print` command above.
+
 ### Windows Task Scheduler or Startup
 
 `node cli/mediasaver.mjs service install` writes a hidden launcher to the current user's Startup folder. For a Task Scheduler entry, create an **At log on** task for the account that owns the browser profile. Set **Run only when user is logged on**, **Start in** to the project directory, and the action to `node.exe` with arguments `"C:\path\to\media-downloader\cli\mediasaver.mjs" serve`. This allows the browser to open in the signed-in desktop session. A Session 0 Windows service is not supported because it cannot use that desktop browser. Remove the Startup entry using `node cli/mediasaver.mjs service remove`, or delete the scheduled task in Task Scheduler.
+
+The generated Startup VBS launcher writes configured directory values into the child process environment. Inspect `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\PageMediaSaver.vbs` to verify them. A manually created Task Scheduler action does not use that launcher: use a `.cmd` launcher that sets both variables before invoking Node, and point the task action at that file. For example:
+
+```bat
+@echo off
+set "PMS_DATA_DIR=C:\PageMediaSaver"
+set "PMS_DOWNLOAD_DIR=\\nas01\media"
+"C:\Program Files\nodejs\node.exe" "C:\path\to\media-downloader\cli\mediasaver.mjs" serve
+```
+
+Verify the task action path and confirm the service is writing under the expected data directory.
 
 ## Upgrade and rollback
 
@@ -87,19 +112,20 @@ To restore, stop the service, restore the complete data directory and media dest
 - Docker: `docker compose logs -f media-downloader`.
 - `GET /v1/health` is an unauthenticated liveness check. `GET /v1/status` and `GET /v1/metrics` require `Authorization: Bearer <api-token>`; the token is in `<PMS_DATA_DIR>/api-token` (in Compose, `./data/api-token`). The health check proves the API responds, not that the extension is connected or a platform session is valid.
 
-Prometheus can scrape the protected metrics endpoint using a token file mounted read-only from the data directory. Keep the token file outside this repository and restrict its permissions:
+For the Compose deployment, place Prometheus on the same Compose network as `media-downloader`; the API listens on that private network, requires its bearer token, and accepts the service DNS Host header. The host port remains published only on loopback. Mount `./data/api-token` read-only into the Prometheus container as `/run/secrets/media-downloader-api-token`, with file permissions restricted to the Prometheus process. Configure this scrape job:
 
 ```yaml
 scrape_configs:
   - job_name: media-downloader
     metrics_path: /v1/metrics
     static_configs:
-      - targets: ["media-downloader.example.net:38542"]
+      - targets: ["media-downloader:38542"]
     authorization:
       type: Bearer
       credentials_file: /run/secrets/media-downloader-api-token
-    # Use https in production when scraping across hosts.
 ```
+
+The scrape target and Host allowlist are configured together in `docker-compose.yml` (`PMS_API_ALLOWED_HOSTS` includes `media-downloader:38542`). Do not publish port 38542 on a non-loopback host interface. For Prometheus on a different host, use a TLS authenticated reverse proxy over a private network and set its exact `host:port` in `PMS_API_ALLOWED_HOSTS`; retain bearer-token auth and restrict the firewall to the scraper.
 
 Load [`../deploy/prometheus-alerts.yml`](../deploy/prometheus-alerts.yml) as a Prometheus rule file. Import [`../deploy/grafana-dashboard.json`](../deploy/grafana-dashboard.json) into Grafana and select the Prometheus datasource. Configure authenticated TLS or a private trusted network before exposing the API beyond loopback.
 
@@ -135,7 +161,7 @@ If the popup or job says it must reload/update, close the queue-owned browser, r
 
 ### Platform login expired
 
-The API health check can remain green while a platform login has expired. Run `node cli/mediasaver.mjs browser login`, sign in to the affected platform in the queue-owned browser, close the login window, and retry the failed job with `node cli/mediasaver.mjs add <profile-url> --again`. Do not copy cookies or passwords into config or logs.
+The API health check can remain green while a platform login has expired. Stop the queue service first so it closes the managed browser and releases its profile. Run `node cli/mediasaver.mjs browser login`, sign in to the affected platform in the queue-owned browser, close the login window, then restart the queue service and retry the failed job with `node cli/mediasaver.mjs add <profile-url> --again`. Never run `browser login` alongside a queue process using that profile. Do not copy cookies or passwords into config or logs.
 
 ### Bridge port in use
 
