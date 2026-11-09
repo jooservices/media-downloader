@@ -145,7 +145,7 @@ test("a checkpoint navigation leaves a challenge signal in the job outcome", asy
   assert.equal(job.status, "queued");
 });
 
-test("telling the extension the user signed in lets the held site start at once", async () => {
+test("telling the extension the user signed in does not bypass a login-wall back-off", async () => {
   const env = start();
   await ask(env, { type: "QUEUE_ADD", urls: ["https://www.instagram.com/c/"] });
   await env.inContext("queueEngine.tick()");
@@ -154,7 +154,7 @@ test("telling the extension the user signed in lets the held site start at once"
   await env.inContext("queueEngine.tick()");
   assert.equal(env.tabsCreated.length, 1);
   await ask(env, { type: "QUEUE_SIGNED_IN" });
-  assert.equal(env.tabsCreated.length, 2);
+  assert.equal(env.tabsCreated.length, 1);
 });
 
 test("closing the tab of a running scan fails the job so it can be retried", async () => {
@@ -237,6 +237,45 @@ test("the queue ticks on an alarm and recovers interrupted jobs when the browser
   await settle();
   await settle();
   assert.equal((await only(env)).status, "incomplete");
+});
+
+test("a new service worker restores the saved platform cooldown before opening queued jobs", async () => {
+  const env = start({
+    storage: {
+      queueSettings: { workers: { instagram: 3 }, delaySeconds: { min: 0, max: 0 }, maxAttempts: 3 },
+      queueJobs: {
+        first: {
+          jobId: "first",
+          platform: "Instagram",
+          account: "first",
+          url: "https://www.instagram.com/first/",
+          status: "queued",
+          createdAt: "2026-01-01T00:00:00Z",
+          attempts: 0
+        },
+        second: {
+          jobId: "second",
+          platform: "Instagram",
+          account: "second",
+          url: "https://www.instagram.com/second/",
+          status: "queued",
+          createdAt: "2026-01-01T00:00:01Z",
+          attempts: 0
+        }
+      }
+    }
+  });
+  await env.inContext("queueEngine.tick()");
+  assert.equal(env.tabsCreated.length, 2);
+  const failed = Object.values(env.storage.queueJobs).find(job => job.account === "first");
+  Object.assign(failed, { status: "error", message: "HTTP 429 Too Many Requests" });
+  await env.inContext("queueEngine.tick()");
+  assert.ok(env.storage.rateLimitBackoffs.platforms.Instagram.until > Date.now());
+
+  const restarted = start({ storage: env.storage });
+  await restarted.inContext("queueEngine.tick()");
+  assert.deepEqual(restarted.tabsCreated, []);
+  assert.equal(restarted.storage.rateLimitBackoffs.platforms.Instagram.level, 1);
 });
 
 test("a fresh install opens the dashboard; an update does not", async () => {

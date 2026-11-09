@@ -125,10 +125,65 @@ test("a clean completed run resets the back-off level", async () => {
   const env = setup({}, [queued("1", "TikTok", "failed", { status: "error", message: "checkpoint" })]);
   await env.tick();
   assert.equal(env.supervisor.platformStatus().tiktok.backoffLevel, 1);
+  env.advance(15 * 60_000);
   env.job("1").status = "complete";
   env.job("1").message = "";
+  env.job("1").updatedAt = "2026-01-01T00:15:00.001Z";
   await env.tick();
   assert.equal(env.supervisor.platformStatus().tiktok.backoffLevel, 0);
+});
+
+test("older completed jobs do not reset escalation and cooldown state survives supervisor recreation", async () => {
+  let saved = null;
+  const baseJobs = [
+    queued("1", "Instagram", "old", {
+      status: "complete",
+      updatedAt: "2025-12-31T23:00:00.000Z"
+    }),
+    queued("2", "Instagram", "failed", {
+      status: "error",
+      attempts: 1,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      message: "HTTP 429"
+    }),
+    queued("3", "Instagram", "waiting")
+  ];
+  const env = setup({ workers: { instagram: 3 } }, baseJobs);
+  const makeSupervisor = () =>
+    createSupervisor({
+      now: () => Date.parse("2026-01-01T00:00:00Z"),
+      random: () => 0,
+      log: () => {},
+      loadConfig: async () => parseConfig({ workers: { instagram: 3 }, delaySeconds: { min: 0, max: 0 } }),
+      listJobs: async () => [...env.store.values()],
+      updateJob: async (id, mutate) => mutate(env.store.get(id)),
+      loadBackoffState: async () => saved,
+      saveBackoffState: async state => {
+        saved = structuredClone(state);
+      },
+      openJob: async () => {},
+      moveFiles: async () => ({ moved: 0, failed: 0 })
+    });
+  const first = makeSupervisor();
+  await first.tick();
+  assert.equal(first.platformStatus().instagram.backoffLevel, 1);
+  assert.equal(saved.platforms.Instagram.level, 1);
+
+  const restarted = makeSupervisor();
+  await restarted.tick();
+  assert.equal(restarted.platformStatus().instagram.backoffLevel, 1);
+  assert.equal(restarted.platformStatus().instagram.backoffUntil, "2026-01-01T00:15:00.000Z");
+
+  Object.assign(env.job("2"), {
+    status: "error",
+    attempts: 2,
+    updatedAt: "2026-01-01T00:01:00.000Z",
+    message: "Please try again later"
+  });
+  const escalated = makeSupervisor();
+  await escalated.tick();
+  assert.equal(escalated.platformStatus().instagram.backoffLevel, 2);
+  assert.equal(escalated.platformStatus().instagram.backoffUntil, "2026-01-01T00:30:00.000Z");
 });
 
 test("counts the attempt and marks the job as opened", async () => {

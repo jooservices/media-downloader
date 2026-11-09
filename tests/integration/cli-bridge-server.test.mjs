@@ -5,6 +5,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test, { after, beforeEach } from "node:test";
+import { createRequire } from "node:module";
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -24,6 +25,9 @@ process.env.LOCALAPPDATA = home;
 process.env.PMS_BRIDGE_PORT = String(PORT);
 const store = await import("../../cli/store.mjs");
 const { handleBridgeMessage, startBridgeServer } = await import("../../cli/bridge-server.mjs");
+const require = createRequire(import.meta.url);
+const { createSupervisor } = require("../../lib/supervisor.js");
+const { parseConfig } = await import("../../cli/config.mjs");
 
 const ORIGIN = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
 const PAGE = "https://www.instagram.com/alice/";
@@ -134,6 +138,31 @@ test("a tagged tab on a sign-in page marks the job as needing login and closes",
   assert.equal(job.status, "error");
   assert.equal(job.needsLogin, true);
   assert.match(job.message, /Instagram asked to sign in/);
+});
+
+test("a sign-in redirect reaches platform status and starts back-off", async () => {
+  await putJob(1);
+  await handleBridgeMessage(
+    ready({ cliJobId: id(1), pageUrl: "https://www.instagram.com/accounts/login/" }),
+    new Set()
+  );
+  const supervisor = createSupervisor({
+    now: () => Date.parse("2026-01-01T00:00:00Z"),
+    random: () => 0,
+    log: () => {},
+    loadConfig: async () => parseConfig({ workers: { instagram: 3 }, delaySeconds: { min: 0, max: 0 } }),
+    listJobs: store.listJobs,
+    updateJob: store.updateJob,
+    openJob: async () => {},
+    moveFiles: async () => ({ moved: 0, failed: 0 })
+  });
+  await supervisor.tick();
+  assert.deepEqual(supervisor.platformStatus().instagram, {
+    configuredWorkers: 3,
+    effectiveWorkers: 1,
+    backoffUntil: "2026-01-01T00:15:00.000Z",
+    backoffLevel: 1
+  });
 });
 
 test("a tagged tab on a checkpoint page records a detectable challenge outcome", async () => {

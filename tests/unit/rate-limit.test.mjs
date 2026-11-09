@@ -13,6 +13,7 @@ test("classifies throttling, rate limits, challenges, checkpoints and login wall
     "Instagram checkpoint required",
     "Security challenge detected",
     "Login wall",
+    "Instagram asked to sign in. Sign in with Edge's profile; the queue continues by itself.",
     "Verify your identity",
     "Temporarily blocked due to unusual activity"
   ]) {

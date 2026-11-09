@@ -11,6 +11,8 @@ function createQueueEngine({ store, settings, login, tabs, now, random, log }) {
     random,
     log,
     loadConfig: settings.load,
+    loadBackoffState: async () => (await store.loadBackoffState?.()) ?? null,
+    saveBackoffState: state => store.saveBackoffState?.(state),
     listJobs: store.listJobs,
     updateJob: store.updateJob,
     isPaused: settings.isPaused,
