@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test, { after, beforeEach } from "node:test";
 import { createRequire } from "node:module";
+import { loadBackground } from "../helpers/background.mjs";
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -176,6 +177,49 @@ test("a platform HTTP rate-limit signal from the extension reaches the CLI job o
   assert.equal(job.status, "incomplete");
   assert.equal(job.rateLimitStatus, 429);
   assert.match(job.message, /HTTP 429/);
+});
+
+test("a buffered rate limit still reaches supervisor status when CLI scan startup fails", async () => {
+  await putJob(1, { attempts: 1, openedAt: "2026-01-01T00:00:00.000Z" });
+  const claimed = new Set();
+  const env = loadBackground({
+    fetchImpl: async (_url, init) => {
+      const message = JSON.parse(init.body);
+      const result = await handleBridgeMessage(message, claimed);
+      return { ok: true, status: 200, json: async () => result };
+    }
+  });
+  env.inContext(`
+    chrome.tabs.get = async id => ({ id, url: ${JSON.stringify(PAGE)} });
+    chrome.tabs.sendMessage = async () => ({ ok: false, error: "The page refused to start." });
+  `);
+  const sender = { tab: { id: 7, url: PAGE } };
+
+  await env.send({ type: "PLATFORM_RATE_LIMIT", status: 429 }, sender);
+  await env.send({ type: "CLI_PAGE_READY", pageUrl: PAGE, platform: "Instagram", account: "alice" }, sender);
+
+  const job = await read(1);
+  assert.equal(job.status, "error");
+  assert.equal(job.rateLimitStatus, 429);
+  assert.match(job.message, /refused to start/);
+
+  const supervisor = createSupervisor({
+    now: () => Date.parse("2026-01-01T00:00:00Z"),
+    random: () => 0,
+    log: () => {},
+    loadConfig: async () => parseConfig({ workers: { instagram: 3 }, delaySeconds: { min: 0, max: 0 } }),
+    listJobs: store.listJobs,
+    updateJob: store.updateJob,
+    openJob: async () => {},
+    moveFiles: async () => ({ moved: 0, failed: 0 })
+  });
+  await supervisor.tick();
+  assert.deepEqual(supervisor.platformStatus().instagram, {
+    configuredWorkers: 3,
+    effectiveWorkers: 1,
+    backoffUntil: "2026-01-01T00:15:00.000Z",
+    backoffLevel: 1
+  });
 });
 
 test("a tagged tab on a checkpoint page records a detectable challenge outcome", async () => {

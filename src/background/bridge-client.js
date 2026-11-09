@@ -58,6 +58,9 @@ async function handleBridgeResponse(message) {
   if (message?.type !== "START_JOB" || !message.job || !Number.isInteger(message.tabId)) {
     return;
   }
+  // Associate the tab before starting the scan: a 420/429 buffered before page readiness must
+  // still reach this job if the content script refuses or cannot start the scan.
+  await rememberCliJob(message.tabId, message.job.jobId);
   try {
     const tab = await chrome.tabs.get(message.tabId);
     if (!samePage(tab.url, message.job.url)) {
@@ -78,8 +81,6 @@ async function handleBridgeResponse(message) {
         jobId: message.job.jobId,
         error: response?.error || "The page could not start the automatic scan."
       });
-    } else if (response.state?.running) {
-      await rememberCliJob(message.tabId, message.job.jobId);
     }
   } catch (error) {
     await postBridgeMessage({

@@ -146,7 +146,26 @@ test("a rate-limit signal before page readiness is saved and attached when the C
   assert.equal(posted[1].status, 429);
 });
 
-test("a job with no repair list still starts, and a scan that is not running is not remembered", async () => {
+test("a buffered rate limit is attached before a CLI scan that fails to start", async () => {
+  const { fetchImpl, posted } = bridge(request =>
+    request.type === "PAGE_READY" ? { ok: true, type: "START_JOB", job: JOB, tabId: 7 } : { ok: true }
+  );
+  const env = loadBackground({ fetchImpl });
+  withTab(env, { pageReply: { ok: false, error: "The page refused to start." } });
+
+  await env.send({ type: "PLATFORM_RATE_LIMIT", status: 429 }, sender);
+  await env.send({ ...PAGE }, sender);
+
+  assert.deepEqual(
+    posted.map(message => message.type),
+    ["PAGE_READY", "JOB_RATE_LIMIT", "JOB_ERROR"]
+  );
+  assert.equal(posted[1].jobId, JOB.jobId);
+  assert.equal(posted[1].status, 429);
+  assert.equal(posted[2].error, "The page refused to start.");
+});
+
+test("a job with no repair list still starts, and its tab is associated before scan confirmation", async () => {
   const { fetchImpl } = bridge(() => ({
     ok: true,
     type: "START_JOB",
@@ -157,7 +176,7 @@ test("a job with no repair list still starts, and a scan that is not running is 
   const sent = withTab(env, { pageReply: { ok: true, state: { running: false } } });
   await env.send({ ...PAGE }, sender);
   assert.deepEqual(sent()[0].message.job.repairTargets, []);
-  assert.equal(env.storage.activeCliJobs, undefined);
+  assert.deepEqual(plain(env.storage.activeCliJobs), { 7: "job-2" });
 });
 
 test("a start answer is reported as a job error when the tab moved on, the page refuses, or messaging fails", async () => {
