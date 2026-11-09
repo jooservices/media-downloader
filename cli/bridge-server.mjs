@@ -243,8 +243,21 @@ async function handlePageReady(message, claimedJobs) {
   return { ok: true, type: "START_JOB", tabId: message.tabId, job: started };
 }
 
+async function resolveRateLimitJobId(message) {
+  if (
+    message?.type === "JOB_RATE_LIMIT" &&
+    !message.jobId &&
+    !message.state?.jobId &&
+    Number.isInteger(message.tabId)
+  ) {
+    const matching = (await listJobs()).find(job => job.tabId === message.tabId && job.openedAt);
+    return matching?.jobId || null;
+  }
+  return null;
+}
+
 async function handleJobUpdate(message) {
-  const jobId = message?.jobId || message?.state?.jobId;
+  const jobId = message?.jobId || message?.state?.jobId || (await resolveRateLimitJobId(message));
   if (!jobId || !JOB_UPDATES.has(message?.type)) {
     return { ok: false, error: "Unsupported bridge message." };
   }
@@ -260,8 +273,14 @@ async function handleJobUpdate(message) {
   }
   const job = await updateJob(jobId, current => {
     if (message.type === "JOB_RATE_LIMIT") {
-      if ([420, 429].includes(Number(message.status)) && !TERMINAL_STATES.has(current.status)) {
+      if ([420, 429].includes(Number(message.status))) {
         current.rateLimitStatus = Number(message.status);
+        current.rateLimitOutcomeId = `${current.openingId || current.openedAt || current.jobId}:rate-limit:${message.status}`;
+        if (current.status === "complete") {
+          current.status = "incomplete";
+          current.outcomeAt = new Date().toISOString();
+          current.message = `The platform returned HTTP ${message.status}; the scan was paused to protect the account.`;
+        }
       }
     } else if (message.type === "JOB_ERROR") {
       applyError(current, message.error);

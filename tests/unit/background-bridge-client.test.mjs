@@ -332,6 +332,19 @@ test("a finished job is reported, its tab forgotten and closed; an unidentified 
   assert.deepEqual(env.tabRemoves, [7], "no tab to close");
 });
 
+test("a late rate-limit signal uses the recently completed CLI tab association", async () => {
+  const { fetchImpl, posted } = bridge();
+  const env = loadBackground({ fetchImpl, storage: { activeCliJobs: { 7: "job-1" } } });
+  await env.send({ type: "AUTO_DONE", state: { jobId: "job-1" } }, sender);
+  await env.send({ type: "PLATFORM_RATE_LIMIT", status: 429 }, sender);
+  assert.deepEqual(
+    posted.map(message => message.type),
+    ["JOB_DONE", "JOB_RATE_LIMIT"]
+  );
+  assert.equal(posted[1].jobId, "job-1");
+  assert.equal(posted[1].status, 429);
+});
+
 test("a job the CLI cancelled stops its scan, is forgotten and has its tab closed", async () => {
   const { fetchImpl } = bridge(() => ({ ok: true, type: "STOP_JOB", close: true }));
   const env = loadBackground({ fetchImpl, storage: { activeCliJobs: { 7: "job-1" } } });

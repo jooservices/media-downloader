@@ -43,6 +43,8 @@ function createQueueEngine({ store, settings, login, tabs, now, random, log }) {
     for (const job of (await store.listJobs()).filter(tabIsSpent)) {
       await tabs.remove(job.tabId).catch(() => undefined);
       await store.updateJob(job.jobId, current => {
+        current.completedTabId = current.tabId;
+        current.completedTabAt = new Date(now()).toISOString();
         current.tabId = null;
       });
     }
@@ -132,16 +134,21 @@ function createQueueEngine({ store, settings, login, tabs, now, random, log }) {
   }
 
   async function rateLimitSignal(tabId, status) {
-    const job = await findByTab(tabId);
-    if (
-      !job ||
-      ![420, 429].includes(Number(status)) ||
-      (job.status !== "running" && !(job.status === "queued" && job.openedAt))
-    ) {
+    const jobs = await store.listJobs();
+    const job =
+      jobs.find(item => item.tabId === tabId) ||
+      jobs.find(item => item.completedTabId === tabId && now() - Date.parse(item.completedTabAt || 0) <= 60_000);
+    if (!job || ![420, 429].includes(Number(status)) || !job.openedAt) {
       return false;
     }
     await store.updateJob(job.jobId, current => {
       current.rateLimitStatus = Number(status);
+      current.rateLimitOutcomeId = `${current.openingId || current.completedTabAt || current.openedAt}:rate-limit:${status}`;
+      if (current.status === "complete") {
+        current.status = "incomplete";
+        current.outcomeAt = new Date(now()).toISOString();
+        current.message = `The platform returned HTTP ${status}; the scan was paused to protect the account.`;
+      }
     });
     return true;
   }

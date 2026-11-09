@@ -130,6 +130,11 @@ async function readCliJobs() {
   return activeCliJobs && typeof activeCliJobs === "object" ? activeCliJobs : {};
 }
 
+async function readRecentlyCompletedCliJobs() {
+  const { recentlyCompletedCliJobs } = await chrome.storage.local.get({ recentlyCompletedCliJobs: {} });
+  return recentlyCompletedCliJobs && typeof recentlyCompletedCliJobs === "object" ? recentlyCompletedCliJobs : {};
+}
+
 // Read-modify-write on the map runs one at a time: two tabs starting together must not overwrite each other.
 let cliJobsChain = Promise.resolve();
 let cliRateLimitChain = Promise.resolve();
@@ -265,6 +270,11 @@ function handlePlatformRateLimit(message, sender) {
     }
     const jobId = (await readCliJobs())[String(tabId)];
     if (!jobId) {
+      const completion = (await readRecentlyCompletedCliJobs())[String(tabId)];
+      if (completion && Date.now() - completion.at <= 60_000) {
+        await postBridgeMessage({ type: "JOB_RATE_LIMIT", jobId: completion.jobId, status });
+        return { ok: true };
+      }
       await savePendingCliRateLimit(tabId, status);
       return { ok: true };
     }
@@ -274,14 +284,16 @@ function handlePlatformRateLimit(message, sender) {
 
 function handleBridgeProgress(message, sender) {
   const finished = message.type === "AUTO_DONE";
-  if (finished) {
-    takeCliJob(sender?.tab?.id).catch(() => {});
-  }
-  return postBridgeMessage({
-    type: finished ? "JOB_DONE" : "JOB_PROGRESS",
-    jobId: message.state.jobId,
-    state: message.state
-  })
+  const remember = finished ? rememberRecentlyCompletedCliJob(sender?.tab?.id, message.state.jobId) : Promise.resolve();
+  return remember
+    .then(() => (finished ? takeCliJob(sender?.tab?.id) : null))
+    .then(() =>
+      postBridgeMessage({
+        type: finished ? "JOB_DONE" : "JOB_PROGRESS",
+        jobId: message.state.jobId,
+        state: message.state
+      })
+    )
     .then(async result => {
       bridgeLostSince = null;
       const tabId = sender?.tab?.id;
@@ -299,6 +311,20 @@ function handleBridgeProgress(message, sender) {
       noteBridgeFailure(sender?.tab?.id, !finished);
       return failureResponse(error);
     });
+}
+
+async function rememberRecentlyCompletedCliJob(tabId, jobId) {
+  if (!Number.isInteger(tabId) || !jobId) {
+    return;
+  }
+  const recent = await readRecentlyCompletedCliJobs();
+  recent[String(tabId)] = { jobId, at: Date.now() };
+  for (const [id, entry] of Object.entries(recent)) {
+    if (Date.now() - Number(entry?.at || 0) > 60_000) {
+      delete recent[id];
+    }
+  }
+  await chrome.storage.local.set({ recentlyCompletedCliJobs: recent });
 }
 
 chrome.tabs.onRemoved.addListener(async tabId => {

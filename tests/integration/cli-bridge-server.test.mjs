@@ -179,6 +179,21 @@ test("a platform HTTP rate-limit signal from the extension reaches the CLI job o
   assert.match(job.message, /HTTP 429/);
 });
 
+test("a late rate-limit signal resolves a completed CLI tab by tab id", async () => {
+  await putJob(1, { status: "running", tabId: 7, attempts: 1, openedAt: "2026-01-01T00:00:00.000Z" });
+  await handleBridgeMessage(
+    { type: "JOB_DONE", jobId: id(1), state: { status: "complete", message: "Scan complete." } },
+    new Set()
+  );
+  const completed = await read(1);
+  assert.equal(completed.status, "complete");
+
+  await handleBridgeMessage({ type: "JOB_RATE_LIMIT", tabId: 7, status: 429 }, new Set());
+  const job = await read(1);
+  assert.equal(job.status, "incomplete");
+  assert.equal(job.rateLimitStatus, 429);
+});
+
 test("a buffered rate limit still reaches supervisor status when CLI scan startup fails", async () => {
   await putJob(1, { attempts: 1, openedAt: "2026-01-01T00:00:00.000Z" });
   const claimed = new Set();

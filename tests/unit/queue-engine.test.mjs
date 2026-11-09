@@ -97,6 +97,26 @@ test("a real page rate-limit signal becomes the terminal job outcome and pauses 
   assert.equal(env.storage.rateLimitBackoffs.platforms.Twitter.level, 1);
 });
 
+test("a rate-limit signal racing after completion changes the outcome and pauses the platform", async () => {
+  const env = start({
+    tabResponder: () => ({ ok: true, state: { running: true } }),
+    storage: { queueSettings: { workers: { x: 2 }, delaySeconds: { min: 0, max: 0 }, maxAttempts: 3 } }
+  });
+  await ask(env, { type: "QUEUE_ADD", urls: ["https://x.com/alice"] });
+  await env.inContext("queueEngine.tick()");
+  const tab = { tab: { id: 100, url: PAGE.pageUrl } };
+  const jobId = (await only(env)).jobId;
+  await ask(env, { type: "CLI_PAGE_READY", ...PAGE }, tab);
+  await ask(env, { type: "AUTO_DONE", state: { jobId, status: "complete", message: "Scan complete." } }, tab);
+  assert.equal((await only(env)).status, "complete");
+
+  await ask(env, { type: "PLATFORM_RATE_LIMIT", status: 429 }, tab);
+  assert.equal((await only(env)).rateLimitStatus, 429);
+  await env.inContext("queueEngine.tick()");
+  assert.equal((await only(env)).status, "incomplete");
+  assert.equal(env.storage.rateLimitBackoffs.platforms.Twitter.level, 1, JSON.stringify(env.storage));
+});
+
 test("a rate-limit signal arriving before an extension tab is associated reaches back-off state", async () => {
   const env = start({
     tabResponder: () => ({ ok: true, state: { running: true } }),
