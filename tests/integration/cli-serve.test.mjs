@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -446,4 +447,38 @@ test("watch scans the listed pages that are due and leaves recently scanned ones
   assert.equal(jobs.filter(job => job.url === BOB).length, 1, "the recently scanned page is not queued again");
   assert.match(lines.join(""), /Queued 1 URL\(s\) from the inbox\./);
   assert.ok((await stat(store.DAEMON_FILE)).isFile());
+});
+
+test("serve tells the notification address about a job that ends in trouble", async t => {
+  await installBridge();
+  await noBrowser();
+  const received = [];
+  const hook = createServer((request, response) => {
+    const chunks = [];
+    request.on("data", chunk => chunks.push(chunk));
+    request.on("end", () => {
+      received.push(JSON.parse(Buffer.concat(chunks).toString()));
+      response.writeHead(204);
+      response.end();
+    });
+  });
+  await new Promise(resolve => hook.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => hook.close(resolve)));
+  await mkdir(store.APP_DIR, { recursive: true });
+  await store.writeJsonAtomic(store.CONFIG_FILE, {
+    maxAttempts: 1,
+    notify: { url: `http://127.0.0.1:${hook.address().port}/hook`, events: ["problem"] }
+  });
+  await writeFile(
+    INBOX,
+    `${ALICE}
+`
+  );
+  capture(t);
+  await serve({ inbox: INBOX, once: true });
+  assert.equal(received.length, 1);
+  assert.equal(received[0].event, "problem");
+  assert.equal(received[0].platform, "Instagram");
+  const [saved] = await store.listJobs();
+  assert.ok(saved.notifiedAt, "the job is marked, so it is announced only once");
 });

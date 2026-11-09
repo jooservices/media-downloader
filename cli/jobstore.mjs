@@ -20,6 +20,7 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS jobs_status ON jobs (status);
   CREATE INDEX IF NOT EXISTS jobs_url ON jobs (url COLLATE NOCASE, created_at);
   CREATE INDEX IF NOT EXISTS jobs_created ON jobs (created_at DESC);
+  CREATE INDEX IF NOT EXISTS jobs_updated ON jobs (updated_at);
   CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `;
 
@@ -146,6 +147,10 @@ export function createJobStore({ file, legacyDir = null }) {
       const paging = limit ? "LIMIT ? OFFSET ?" : "";
       const params = [...(status ? [status] : []), ...(limit ? [limit, offset] : [])];
       return rowsOf(db, `SELECT data FROM jobs ${where} ORDER BY created_at DESC, id ${paging}`, ...params).map(parse);
+    },
+    // Jobs saved after `iso`, oldest change first.
+    changedSince(iso) {
+      return rowsOf(db, "SELECT data FROM jobs WHERE updated_at > ? ORDER BY updated_at, id", String(iso)).map(parse);
     },
     // How many jobs are in each state, for status and metrics.
     counts() {

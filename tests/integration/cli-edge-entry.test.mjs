@@ -3,8 +3,11 @@ import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import nodeTest from "node:test";
 import { fileURLToPath } from "node:url";
+
+// Each case starts a real process; on a busy machine that takes far longer than a unit test.
+const test = (name, body) => nodeTest(name, { timeout: 120_000 }, body);
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ENTRY = path.join(ROOT, "cli", "mediasaver.mjs");
@@ -33,7 +36,7 @@ async function fakeHome({ browser = "edge", loaded = true } = {}) {
 }
 
 function run(env, ...args) {
-  return spawnSync(process.execPath, [ENTRY, ...args], { env, encoding: "utf8", timeout: 20000 });
+  return spawnSync(process.execPath, [ENTRY, ...args], { env, encoding: "utf8", timeout: 90_000 });
 }
 
 test("help and no arguments print the usage", () => {

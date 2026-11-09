@@ -95,7 +95,10 @@ test("the running serve answers the REST API: create, read, watch and cancel", a
       platform: "Twitter",
       account: "bob2",
       status: "running",
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      // Recent activity, so the queue does not take it for a job that was left behind and end it itself.
+      updatedAt: new Date().toISOString(),
+      openedAt: new Date().toISOString()
     });
     const cancelled = await call("DELETE", `/v1/jobs/${RUNNING}`);
     assert.equal(cancelled.status, 204);

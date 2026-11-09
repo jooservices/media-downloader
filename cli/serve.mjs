@@ -29,6 +29,7 @@ import { resolvedProfile } from "./browsers.mjs";
 import { edgeDownloadsDir, firefoxDownloadDir, moveFinishedFiles } from "./mover.mjs";
 import { addWatch, readWatchList, removeWatch, watchDue } from "./watchlist.mjs";
 
+import { createNotifier } from "./notify.mjs";
 import { PRUNE_EVERY_MS, prune } from "./prune.mjs";
 import { createSupervisor, recoverInterrupted } from "./supervisor.mjs";
 
@@ -179,6 +180,15 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
     process.once("SIGTERM", stop);
     log(`Serving. REST API at http://127.0.0.1:${API_PORT}/v1 (token in ${API_TOKEN_FILE}), or add a URL to ${inbox}.`);
 
+    const notifier = createNotifier({
+      loadConfig,
+      log,
+      changedSince: iso => queueJobs().changedSince(iso),
+      markNotified: jobId =>
+        updateJob(jobId, current => {
+          current.notifiedAt = new Date().toISOString();
+        })
+    });
     let lastPrune = 0;
     const pass = async () => {
       if (Date.now() - lastPrune >= PRUNE_EVERY_MS) {
@@ -198,6 +208,7 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
         log(`Queued ${queued} URL(s) from the inbox.`);
       }
       await supervisor.tick();
+      await notifier.tick();
     };
 
     // One bad pass (a file briefly locked, a disk hiccup) must not end an unattended run;
