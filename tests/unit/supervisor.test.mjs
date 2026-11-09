@@ -202,8 +202,12 @@ test("reaper keyset paging visits eligible rows beyond 500 while statuses change
   );
   const listJobs = async ({ status, limit, after }) =>
     [...jobs.values()]
-      .filter(job => job.status === status && (!after || job.jobId > after))
-      .sort((a, b) => a.jobId.localeCompare(b.jobId))
+      .filter(
+        job =>
+          job.status === status &&
+          (!after || job.createdAt < after.createdAt || (job.createdAt === after.createdAt && job.jobId > after.jobId))
+      )
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.jobId.localeCompare(b.jobId))
       .slice(0, limit);
   const supervisor = createSupervisor({
     now: () => clock,

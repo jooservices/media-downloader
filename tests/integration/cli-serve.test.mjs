@@ -562,7 +562,7 @@ test("watch scans the listed pages that are due and leaves recently scanned ones
   await noBrowser();
   await mkdir(store.APP_DIR, { recursive: true });
   await writeFile(watchModule.DEFAULT_WATCH, `${ALICE}\n${BOB}\n`);
-  await putJob(1, BOB, "complete", 0); // scanned a moment ago: not due for hours
+  await putJob(1, BOB, "incomplete", 1, { noRetry: true }); // a crash or stale scan stays parked for review
   const lines = capture(t);
   const nextHandler = interrupterFor("SIGINT");
   const done = watchModule.watch();
@@ -574,7 +574,8 @@ test("watch scans the listed pages that are due and leaves recently scanned ones
   await done;
   const jobs = await store.listJobs();
   assert.equal(jobs.filter(job => job.url === ALICE).length, 1, "the page that was never scanned is queued");
-  assert.equal(jobs.filter(job => job.url === BOB).length, 1, "the recently scanned page is not queued again");
+  assert.equal(jobs.filter(job => job.url === BOB).length, 1, "the parked watch page is not queued again");
+  assert.equal(jobs.find(job => job.url === BOB).noRetry, true, "the explicit review hold is preserved");
   assert.match(lines.join(""), /Queued 1 URL\(s\) from the inbox\./);
   assert.ok((await stat(store.DAEMON_FILE)).isFile());
 });

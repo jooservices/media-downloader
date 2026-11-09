@@ -215,11 +215,11 @@ export function createJobStore({ file, legacyDir = null }) {
         params.push(status);
       }
       if (after) {
-        clauses.push("id > ?");
-        params.push(after);
+        clauses.push("(created_at < ? OR (created_at = ? AND id > ?))");
+        params.push(after.createdAt, after.createdAt, after.jobId);
       }
       const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-      const ordering = after ? "id" : "created_at DESC, id";
+      const ordering = "created_at DESC, id";
       let paging = "";
       if (limit) {
         paging = after ? "LIMIT ?" : "LIMIT ? OFFSET ?";

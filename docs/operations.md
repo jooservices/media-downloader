@@ -6,6 +6,8 @@
 
 After an unclean process exit, a job that was `running` is changed to `incomplete` and marked `noRetry`. The extension may have saved files immediately before the process died, so the queue leaves the job visible for review instead of replaying a possibly active scan. Use `add <url> --again` when you have checked that a retry is appropriate. This favours at-most-once execution for interrupted scans; a job is retained in SQLite and is never silently discarded.
 
+Watched URLs follow the same review hold: a latest `incomplete` job marked `noRetry` is not automatically scanned again, even after the usual watch interval. After checking the interrupted scan, an explicit `--again` run can complete and resume normal watch scheduling.
+
 An acknowledged page that stops reporting progress for more than 15 minutes is also parked as `incomplete` with automatic retry disabled. A page that never acknowledges within 90 seconds can be retried after the configured attempt backoff. The boundaries are strict: exactly 90 seconds or 15 minutes has not expired yet.
 
 ## SQLite health

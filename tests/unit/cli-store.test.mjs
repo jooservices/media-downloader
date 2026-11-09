@@ -12,6 +12,7 @@ const store = await import("../../cli/store.mjs");
 const { sqliteCall } = await import("../../cli/jobstore.mjs");
 const config = await import("../../cli/config.mjs");
 const prune = await import("../../cli/prune.mjs");
+const { recoverInterrupted } = await import("../../cli/supervisor.mjs");
 const { DEFAULT_LIMIT, parseDownloadArgs } = await import("../../cli/args.mjs");
 
 after(() => {
@@ -319,6 +320,24 @@ test("the job store pages, filters, counts, updates one job at a time and delete
   jobs.write({ jobId: id(5), url: "https://X.com/Alice/" });
   assert.equal(jobs.hasUrl("https://x.com/alice/"), true, "URL existence uses the indexed case-insensitive key");
   assert.deepEqual(jobs.integrityCheck(), ["ok"]);
+});
+
+test("supervisor keyset recovery follows the same SQLite ordering across pages", async () => {
+  await reset();
+  for (let n = 1; n <= 501; n++) {
+    store.jobs().write({
+      jobId: id(n),
+      status: "queued",
+      createdAt: new Date(Date.UTC(2026, 0, n)).toISOString(),
+      openedAt: "2026-01-01T00:00:00.000Z"
+    });
+  }
+  const recovered = await recoverInterrupted({
+    listJobs: options => store.listJobs(options),
+    updateJob: (jobId, update) => store.updateJob(jobId, update)
+  });
+  assert.equal(recovered, 501);
+  assert.equal((await store.listJobs({ status: "queued" })).filter(job => job.openedAt).length, 0);
 });
 
 test("SQLite busy and locked errors retry with backoff, while other errors pass through", () => {
