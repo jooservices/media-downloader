@@ -121,6 +121,79 @@ test("rate-limit outcomes pause only that platform, apply exponential back-off, 
   assert.equal(env.supervisor.platformStatus().instagram.configuredWorkers, 3);
 });
 
+test("a repeated challenge on the same job gets a new back-off after cooldown and sign-in", async () => {
+  const env = setup({ workers: { instagram: 2 } }, [
+    queued("1", "Instagram", "challenged", {
+      status: "error",
+      attempts: 1,
+      openSequence: 1,
+      openingId: "first-opening",
+      needsLogin: true,
+      message: "Instagram asked to sign in."
+    })
+  ]);
+  await env.tick();
+  assert.equal(env.supervisor.platformStatus().instagram.backoffLevel, 1);
+  env.advance(15 * 60_000);
+  env.supervisor.clearSignIn("Instagram");
+  await env.tick();
+  assert.equal(env.job("1").status, "queued");
+  await env.tick();
+  env.job("1").status = "running";
+  assert.equal(env.job("1").openingId, "1767226500000-2");
+
+  Object.assign(env.job("1"), {
+    status: "error",
+    needsLogin: true,
+    message: "Instagram asked to sign in again."
+  });
+  await env.tick();
+  assert.equal(env.supervisor.platformStatus().instagram.backoffLevel, 2);
+  assert.equal(env.backoffs.filter(event => event.kind === "backoff-start").length, 2);
+});
+
+test("a repeated challenge has a distinct opening identity after supervisor recreation", async () => {
+  let clock = Date.parse("2026-01-01T00:00:00Z");
+  let saved = null;
+  const job = queued("1", "Instagram", "challenged", {
+    status: "error",
+    attempts: 1,
+    openSequence: 1,
+    openingId: "first-opening",
+    needsLogin: true,
+    message: "Instagram asked to sign in."
+  });
+  const create = () =>
+    createSupervisor({
+      now: () => clock,
+      random: () => 0,
+      log: () => {},
+      loadConfig: async () => parseConfig({ workers: { instagram: 2 }, delaySeconds: { min: 0, max: 0 } }),
+      listJobs: async () => [job],
+      updateJob: async (_id, mutate) => {
+        await mutate(job);
+        job.updatedAt = new Date(clock).toISOString();
+      },
+      loadBackoffState: async () => saved,
+      saveBackoffState: async state => {
+        saved = structuredClone(state);
+      },
+      openJob: async () => {}
+    });
+
+  await create().tick();
+  assert.equal(saved.platforms.Instagram.level, 1);
+  clock += 15 * 60_000;
+  await create().tick();
+  assert.equal(job.openingId, "1767226500000-2");
+  job.status = "running";
+  Object.assign(job, { status: "error", needsLogin: true, message: "Instagram asked to sign in again." });
+
+  await create().tick();
+  assert.equal(saved.platforms.Instagram.level, 2);
+  assert.equal(saved.platforms.Instagram.until, clock + 30 * 60_000);
+});
+
 test("a clean completed run resets the back-off level", async () => {
   const env = setup({}, [queued("1", "TikTok", "failed", { status: "error", message: "checkpoint" })]);
   await env.tick();

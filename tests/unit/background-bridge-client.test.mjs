@@ -125,6 +125,27 @@ test("a start answer scans the page the CLI chose, remembers the tab's job, and 
   assert.deepEqual(plain(env.storage.activeCliJobs), { 7: "job-1" });
 });
 
+test("a rate-limit signal before page readiness is saved and attached when the CLI job starts", async () => {
+  const { fetchImpl, posted } = bridge(request =>
+    request.type === "PAGE_READY" ? { ok: true, type: "START_JOB", job: JOB, tabId: 7 } : { ok: true }
+  );
+  const env = loadBackground({ fetchImpl });
+  withTab(env);
+
+  assert.deepEqual(plain(await env.send({ type: "PLATFORM_RATE_LIMIT", status: 429 }, sender)), { ok: true });
+  assert.deepEqual(env.storage.pendingCliRateLimits, { 7: 429 });
+  await env.send({ ...PAGE }, sender);
+
+  assert.deepEqual(plain(env.storage.activeCliJobs), { 7: "job-1" });
+  assert.deepEqual(plain(env.storage.pendingCliRateLimits), {});
+  assert.deepEqual(
+    posted.map(message => message.type),
+    ["PAGE_READY", "JOB_RATE_LIMIT"]
+  );
+  assert.equal(posted[1].jobId, "job-1");
+  assert.equal(posted[1].status, 429);
+});
+
 test("a job with no repair list still starts, and a scan that is not running is not remembered", async () => {
   const { fetchImpl } = bridge(() => ({
     ok: true,

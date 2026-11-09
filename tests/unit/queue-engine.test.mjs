@@ -82,11 +82,11 @@ test("a real page rate-limit signal becomes the terminal job outcome and pauses 
   await ask(env, { type: "QUEUE_ADD", urls: ["https://x.com/alice"] });
   await env.inContext("queueEngine.tick()");
   const tab = { tab: { id: 100, url: PAGE.pageUrl } };
+  const jobId = (await only(env)).jobId;
+  assert.deepEqual(plain(await ask(env, { type: "PLATFORM_RATE_LIMIT", status: 429 }, tab)), { ok: true });
   await ask(env, { type: "CLI_PAGE_READY", ...PAGE }, tab);
   assert.equal((await only(env)).status, "running");
   assert.equal((await only(env)).tabId, 100);
-  const jobId = (await only(env)).jobId;
-  assert.deepEqual(plain(await ask(env, { type: "PLATFORM_RATE_LIMIT", status: 429 }, tab)), { ok: true });
   assert.equal((await only(env)).rateLimitStatus, 429);
   await ask(env, { type: "AUTO_DONE", state: { jobId, status: "complete", message: "Scan complete." } }, tab);
   await env.inContext("queueEngine.tick()");

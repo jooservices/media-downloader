@@ -131,6 +131,7 @@ async function readCliJobs() {
 
 // Read-modify-write on the map runs one at a time: two tabs starting together must not overwrite each other.
 let cliJobsChain = Promise.resolve();
+let cliRateLimitChain = Promise.resolve();
 function updateCliJobs(change) {
   const run = cliJobsChain.then(async () => {
     const jobs = await readCliJobs();
@@ -142,10 +143,42 @@ function updateCliJobs(change) {
   return run;
 }
 
+function serializeCliRateLimit(operation) {
+  const result = cliRateLimitChain.then(operation);
+  cliRateLimitChain = result.catch(() => {});
+  return result;
+}
+
 function rememberCliJob(tabId, jobId) {
-  return updateCliJobs(jobs => {
-    jobs[String(tabId)] = jobId;
+  return serializeCliRateLimit(async () => {
+    await updateCliJobs(jobs => {
+      jobs[String(tabId)] = jobId;
+    });
+    await flushPendingCliRateLimit(tabId, jobId);
   });
+}
+
+async function savePendingCliRateLimit(tabId, status) {
+  const { pendingCliRateLimits = {} } = await chrome.storage.local.get({ pendingCliRateLimits: {} });
+  pendingCliRateLimits[String(tabId)] = status;
+  await chrome.storage.local.set({ pendingCliRateLimits });
+}
+
+async function takePendingCliRateLimit(tabId) {
+  const { pendingCliRateLimits = {} } = await chrome.storage.local.get({ pendingCliRateLimits: {} });
+  const status = pendingCliRateLimits[String(tabId)];
+  if (status) {
+    delete pendingCliRateLimits[String(tabId)];
+    await chrome.storage.local.set({ pendingCliRateLimits });
+  }
+  return status;
+}
+
+async function flushPendingCliRateLimit(tabId, jobId) {
+  const status = await takePendingCliRateLimit(tabId);
+  if (status) {
+    await postBridgeMessage({ type: "JOB_RATE_LIMIT", jobId, status });
+  }
 }
 
 // Forgets the tab's job and returns its id, or null when the tab had none.
@@ -219,11 +252,14 @@ async function handlePlatformRateLimit(message, sender) {
   if (await queueEngine.rateLimitSignal(tabId, status)) {
     return { ok: true };
   }
-  const jobId = (await readCliJobs())[String(tabId)];
-  if (!jobId) {
-    return null;
-  }
-  return postBridgeMessage({ type: "JOB_RATE_LIMIT", jobId, status });
+  return serializeCliRateLimit(async () => {
+    const jobId = (await readCliJobs())[String(tabId)];
+    if (!jobId) {
+      await savePendingCliRateLimit(tabId, status);
+      return { ok: true };
+    }
+    return postBridgeMessage({ type: "JOB_RATE_LIMIT", jobId, status });
+  });
 }
 
 function handleBridgeProgress(message, sender) {

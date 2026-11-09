@@ -20,13 +20,19 @@ function createQueueEngine({ store, settings, login, tabs, now, random, log }) {
     siteLabel: platform => PageMediaLib.login.SITE_LABEL[platform],
     openJob: async job => {
       const tab = await tabs.create({ url: job.url, active: false });
+      openingTabs.set(tab.id, job.jobId);
       await store.updateJob(job.jobId, current => {
         current.tabId = tab.id;
       });
     }
   });
 
-  const findByTab = async tabId => (await store.listJobs()).find(job => job.tabId === tabId);
+  const openingTabs = new Map();
+
+  const findByTab = async tabId => {
+    const jobs = await store.listJobs();
+    return jobs.find(job => job.tabId === tabId) || jobs.find(job => job.jobId === openingTabs.get(tabId));
+  };
 
   // A tab is dead weight once its job is over, or when its job went back to waiting for another try.
   const tabIsSpent = job =>
@@ -126,7 +132,11 @@ function createQueueEngine({ store, settings, login, tabs, now, random, log }) {
 
   async function rateLimitSignal(tabId, status) {
     const job = await findByTab(tabId);
-    if (!job || job.status !== "running" || ![420, 429].includes(Number(status))) {
+    if (
+      !job ||
+      ![420, 429].includes(Number(status)) ||
+      (job.status !== "running" && !(job.status === "queued" && job.openedAt))
+    ) {
       return false;
     }
     await store.updateJob(job.jobId, current => {
