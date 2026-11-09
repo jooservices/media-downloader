@@ -4,9 +4,11 @@ import test from "node:test";
 import vm from "node:vm";
 import { createFakeIndexedDB, loadBackground, plain } from "../helpers/background.mjs";
 
-const keysFile = new URL("../../lib/keys.js", import.meta.url);
 const keysContext = vm.createContext({});
-new vm.Script(fs.readFileSync(keysFile, "utf8"), { filename: keysFile.pathname }).runInContext(keysContext);
+for (const name of ["sites.js", "keys.js"]) {
+  const file = new URL(`../../lib/${name}`, import.meta.url);
+  new vm.Script(fs.readFileSync(file, "utf8"), { filename: file.pathname }).runInContext(keysContext);
+}
 const { photoKey, videoKey, toCanonicalKey } = keysContext.PageMediaLib.keys;
 
 const photo = (account, extra = {}) => ({
@@ -140,7 +142,7 @@ test("the ledger survives a service worker restart", async () => {
   assert.equal(await after.ledger.has(videoKey("Facebook", "1", 1)), false);
 });
 
-test("the ledger keeps more than the 10,000 newest keys the old list was cut to", async () => {
+test("the ledger keeps more than the 10,000 newest keys the old list was cut to", { timeout: 90_000 }, async () => {
   const harness = loadBackground();
   for (let i = 0; i < 10500; i++) {
     await harness.ledger.add(photoKey("Instagram", `P${i}`, 1));

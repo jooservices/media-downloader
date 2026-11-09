@@ -15,7 +15,7 @@
 [![Last commit](https://img.shields.io/github/last-commit/jooservices/media-downloader/develop)](https://github.com/jooservices/media-downloader/commits/develop)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Page Media Saver: a Manifest V3 Edge/Chromium extension that saves the full-size photos and videos of the Instagram, Facebook and X profiles you add, using the account you are already signed in to. Nothing is sent to a server.
+Page Media Saver: a Manifest V3 Edge/Chromium extension that saves the full-size photos and videos of the Instagram, Facebook, X, and TikTok profiles you add, using the account you are already signed in to. Nothing is sent to a server.
 
 ## Getting started
 
@@ -23,7 +23,7 @@ You need Microsoft Edge (or Chrome). **Nothing else has to be installed**: no No
 
 1. Install the extension (see [Install](#install-in-microsoft-edge) below). The dashboard opens by itself.
 2. Sign in to the sites you want to use in the same browser. The dashboard shows who is signed in and, if a site you added needs it, offers a button to open its sign-in page. Nothing starts on a site until you are signed in to it.
-3. Paste profile links (X, Instagram, Facebook), one per line, and press **Add to the list**.
+3. Paste profile links (X, Instagram, Facebook, TikTok), one per line, and press **Add to the list**.
 4. Watch the list. It works through the profiles one by one, per site, and closes each tab it opens when it is done. **Pause all**, **Stop**, **Try again** and **Remove** are one click away.
 5. Open **Settings** in the dashboard to change how many profiles run at once per site, the pause between profiles, the number of tries and the number of files per profile.
 
@@ -41,9 +41,9 @@ The `serve`/`add` command-line queue described further down is an optional extra
 
 ## Requirements
 
-- Microsoft Edge or another Chromium browser (Manifest V3)
-- Node.js `>= 22` only for the optional CLI and for development
-- Windows for the CLI's Edge integration; the tests and the other tools run anywhere
+- Microsoft Edge, Chrome, or Firefox 128 or newer
+- Node.js `>= 22.13` only for the optional CLI and for development
+- The CLI runs on Windows, macOS and Linux. `install` uses whichever of those browsers already has the extension loaded; `install chrome` or `install firefox` picks one
 
 ## Development
 
@@ -63,13 +63,13 @@ Until the extension is published in a browser store, a one-time manual install i
 
 1. Download `media-downloader-<version>.zip` from the [latest release](https://github.com/jooservices/media-downloader/releases/latest) and extract it to a permanent folder (do not delete the folder afterwards).
 2. Open `edge://extensions` and turn on **Developer mode**.
-3. Select **Load unpacked** and choose the extracted folder. Allow the extension to access Instagram, Facebook, and X when Edge asks. The dashboard opens.
+3. Select **Load unpacked** and choose the extracted folder. Allow the extension to access Instagram, Facebook, X, and TikTok when Edge asks. The dashboard opens.
 
 When it is published as an unlisted or public store listing, installing becomes one click on its page and updates arrive by themselves; no Developer mode is involved.
 
 ### Optional: the command line
 
-Only needed for scripts, `--limit` runs or saving to a network folder. It requires Node.js `>= 22`.
+Only needed for scripts, `--limit` runs or saving to a network folder. It requires Node.js `>= 22.13`.
 
 4. In PowerShell, from the extracted folder, run `node .\cli\mediasaver.mjs install`. This records the loaded extension ID and signed-in Edge profile for the current Windows user; it does not need administrator access.
 5. Run `node .\cli\mediasaver.mjs download <profile-or-post-URL>`. The CLI opens the URL in the existing Edge profile and runs a local bridge on `127.0.0.1:38541`. The extension accepts bridge requests only from its configured extension origin. It scrolls Instagram/Facebook grids and X profile timelines, including X's `/media` tab; a direct Instagram post/reel, Facebook video/reel, or X status URL is scanned once. It saves visible photos and eligible video downloads, skips duplicates, limits concurrent downloads, retries interrupted image downloads up to three times, and waits for native video downloads to settle. You can switch to another Edge tab while the job runs. Keep the CLI process open until the job completes. Use `node .\cli\mediasaver.mjs status` to check progress and `node .\cli\mediasaver.mjs resume` to reconnect to a queued or interrupted job.
@@ -97,7 +97,64 @@ node .\cli\mediasaver.mjs add <url> [<url>...]  # from another window, at any ti
 
 Each job is retried a few times when Edge does not answer or the page is closed (`maxAttempts`). Jobs left running by a crashed or stopped `serve` are recovered when it starts again. While `serve` is running, `download <url>` hands its URL to the queue instead of competing for the bridge. `status` shows every job and its state. Logs are written to `%LOCALAPPDATA%\PageMediaSaver\logs\`.
 
-`serve` keeps going only while the computer is awake, Edge is available and you are still signed in to the sites.
+`serve` keeps going only while the computer is awake, the browser is available and you are still signed in to the sites.
+
+`service install` registers that queue to start when you sign in (the Windows Startup folder, a systemd user service, or a macOS launch agent) and starts it now. Run it from the project folder, or pass the full path to `mediasaver.mjs`. `service remove` unregisters it. It is not a Session 0 Windows service: the download has to open the signed-in browser on the desktop.
+
+## Unattended runs: a browser owned by the queue
+
+Normally the queue opens jobs in the browser you use every day, so the computer must be awake and signed in. For a machine that runs around the clock, give the queue a browser of its own:
+
+```
+node cli/mediasaver.mjs browser setup    # private profile + a copy of the extension with a fixed id
+node cli/mediasaver.mjs browser login    # a window opens on each site's sign-in page: sign in once, then close it
+node cli/mediasaver.mjs service install  # the queue starts at sign-in and keeps its own headless browser
+```
+
+The queue starts that browser when a job needs it and opens every job in a window of its own (a tab behind another one is slowed down by the browser). It listens for the browser on 127.0.0.1 only. `browser status` says whether it is running; `browser setup --headed` keeps a visible window instead of a headless one. It uses Chrome or Edge, on Windows, macOS and Linux, on Intel, AMD and Apple silicon.
+
+### In a container
+
+`docker compose up -d` runs the queue with Chromium inside (amd64 and arm64). Data lives in `./data`, finished files in `./media`, and the API is on `http://127.0.0.1:38542/v1` (the token is `./data/api-token`). Sign in to the sites once with `docker compose --profile login up`, connect a VNC client to `127.0.0.1:5900`, sign in in the window that appears, then stop it. `GET /v1/status` and `GET /v1/metrics` (Prometheus text) show what the queue and the extension are doing.
+
+Settings for containers and servers: `PMS_DATA_DIR` (where everything is kept), `PMS_DOWNLOAD_DIR` (the download folder when `config.json` names none), `PMS_BROWSER` and `PMS_BROWSER_ARGS` (the browser to run and extra switches), `PMS_API_HOST` and `PMS_API_ALLOWED_HOSTS` (listen beyond this computer, which needs the token, and the Host names to accept).
+
+## REST API
+
+While `serve` runs it offers a REST API on `http://127.0.0.1:38542/v1`. It listens on loopback only, rejects any other Host header, sends no CORS headers, and every call except `GET /v1/health` needs the token that `serve` keeps in `api-token` (`Authorization: Bearer <token>`). Bodies are JSON (`Content-Type: application/json`); errors are RFC 9457 `application/problem+json` documents.
+
+| Resource                           | Methods                                                                                                                  |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `/v1/health`                       | `GET` → 200                                                                                                              |
+| `/v1/jobs`                         | `GET` → 200, a page of jobs (`?status=&limit=&offset=`, `Link: rel="next"`); `POST {"url", "again"?}` → 201 + `Location` |
+| `/v1/jobs/{id}`                    | `GET` → 200 · `DELETE` → 204 (cancels an active job, removes a finished one)                                             |
+| `/v1/watches`                      | `GET` → 200 · `POST {"url"}` → 201 + `Location`                                                                          |
+| `/v1/watches/{platform}/{account}` | `GET` → 200 · `DELETE` → 204                                                                                             |
+
+Other answers: 400 malformed JSON or query, 401 no/wrong token, 404 unknown resource, 405 wrong method (with `Allow`), 409 the account is already queued, done or watched (send `"again": true` to run it anew), 413 body too large, 415 not JSON, 422 a link that is not a supported profile.
+
+```powershell
+$token = (Get-Content "$env:LOCALAPPDATAPageMediaSaverapi-token").Trim()
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:38542/v1/jobs -Headers @{ Authorization = "Bearer $token" } -ContentType application/json -Body '{"url":"https://www.instagram.com/name/"}'
+```
+
+A Facebook profile still adds Photos, Reels and Videos, so `items` can hold several jobs.
+
+## MCP (for AI assistants)
+
+`node cli/mediasaver.mjs mcp` is an MCP server on stdin/stdout. It only calls the REST API above, so the queue (`serve`, or `service install`) must be running. Tools: `download_account`, `list_jobs`, `get_job`, `cancel_job`, `watch_account`, `list_watched`, `unwatch_account`, `queue_health`. In an MCP client's configuration:
+
+```json
+{
+  "mcpServers": {
+    "media-downloader": { "command": "node", "args": ["C:\path\to\media-downloader\cli\mediasaver.mjs", "mcp"] }
+  }
+}
+```
+
+`watch` is `serve` for a fixed list of accounts (`watch add <url>` writes them to `%LOCALAPPDATA%\PageMediaSaver\watch.txt`). About every 6 hours (each account waits up to 20% longer, by a fixed amount of its own, so they do not all wake together; an account whose last scans ended in trouble is visited at half, then a quarter, of that pace) an account whose last scan has finished is queued again, so new stories, highlights, reels and photos are picked up. Anything already saved is skipped. A Facebook profile link is queued as the profile plus its Photos, Reels and Videos tabs. An Instagram profile scan also opens the current story tray and highlight reels. When a job ends, the CLI prints the account folder and how many files were new versus already saved.
+
+On this machine the unpacked extension lives in `C:\Claude\PageMediaSaver`. `npm run sync-edge` copies the current tree there and bumps that copy's version. Reload Page Media Saver in `edge://extensions` afterwards. The git version is left unchanged.
 
 ## Configuration
 
@@ -118,6 +175,8 @@ Each job is retried a few times when Edge does not answer or the page is closed 
 | `delaySeconds` | A random pause (between `min` and `max`) before the next account on the same site is opened.                                                                                                                   |
 | `maxAttempts`  | How many times a job that failed for a transient reason is tried (1 to 20).                                                                                                                                    |
 | `downloadDir`  | Where finished files go, as `<downloadDir>\<Site>\<account>\`. A full path, local or a network share. Leave it out to keep files in the browser's Downloads folder. Cannot be a drive root or a system folder. |
+
+**Notifications.** Add `"notify": { "url": "https://ntfy.sh/your-topic" }` to `config.json` and the queue posts a message when a scan saves new files (`new-content`) or stops short, for example because a sign-in has expired or a site changed (`problem`). `format` is `json` (the default; a document with the event, account, counts and time) or `text` (a plain message with a `Title` header, which ntfy shows as is); `events` can list just one of the two kinds. The address must be https, or http on this computer. A job is announced once, and trouble on one site is repeated at most every 6 hours.
 
 **Download location.** A browser extension can only save inside the browser's own Downloads folder, so the CLI moves finished files afterwards (in the background while `serve` runs, or once with `node .\cli\mediasaver.mjs move`). A file is copied, checked against the original's size and only then removed. An existing file is never overwritten: an identical one is treated as a duplicate and a different one gets a `(1)` suffix. Files still being written, and anything outside the `Instagram`, `Facebook` and `Twitter` folders, are not touched. If a site folder in Downloads is a link to another location, it is left as it is. `downloadDir` must not be, contain or sit inside the Downloads folder.
 
@@ -149,7 +208,7 @@ src/
   content/     page scripts: page info, photo collectors, video sources, scan runner
   page/        runs in the page world: response parsers per platform, hook, bridge to the extension
   popup/       popup UI
-cli/        mediasaver.mjs (entry) · args · jobs · bridge-server · edge · repair · status · store
+cli/        mediasaver.mjs (entry) · serve · api (REST) · mcp · watch/watchlist · browser/managed (queue-owned browser) · jobs · bridge-server · edge · mover · prune · repair · status · store
 tests/      node --test; fixtures/ holds real captured site responses
 ```
 
@@ -179,7 +238,7 @@ A scan stops after it has started a limited number of files (photos and videos t
 - `alarms`: wake the extension every half minute so the profile list keeps moving while you use the browser for something else.
 - `cookies`: check whether you are signed in to each site. Only the **names** of the session cookies are looked at; their values are never read, stored or sent anywhere.
 - `http://127.0.0.1/*`: communicate with the CLI's loopback-only bridge while a job is running.
-- Instagram, Facebook, and X site access: inject the content script on profile/timeline pages opened by the CLI, without requiring a popup click.
+- Instagram, Facebook, X, and TikTok site access: inject the content script on profile pages opened by the CLI, without requiring a popup click.
 
 No account password, cookie, or page contents are transmitted to an external service. Media bytes are downloaded by Edge from platform hosts after the page's supported download action runs.
 

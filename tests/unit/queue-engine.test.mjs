@@ -113,7 +113,8 @@ test("the sign-in status is reported per site, from cookie names only", async ()
   assert.deepEqual(plain(Object.fromEntries(Object.entries(login).map(([site, info]) => [site, info.signedIn]))), {
     Twitter: true,
     Instagram: false,
-    Facebook: false
+    Facebook: false,
+    TikTok: false
   });
   assert.match(login.Instagram.signInUrl, /instagram\.com\/accounts\/login/);
 });

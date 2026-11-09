@@ -16,7 +16,8 @@ test("a site counts as signed in only when every session cookie it needs is pres
 });
 
 test("an unknown site, or no cookies at all, is never signed in", () => {
-  assert.equal(isSignedIn("TikTok", ["sessionid"]), false);
+  assert.equal(isSignedIn("TikTok", ["sessionid"]), true);
+  assert.equal(isSignedIn("Snapchat", ["sessionid"]), false);
   assert.equal(isSignedIn("Twitter", []), false);
   assert.equal(isSignedIn("Twitter", null), false);
   assert.equal(isSignedIn("Twitter", undefined), false);

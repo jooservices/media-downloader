@@ -14,7 +14,7 @@
     "url": "https://github.com/jooservices/media-downloader/issues"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13"
   },
   "scripts": {
     "validate": "node tools/validate.mjs",
@@ -30,9 +30,11 @@
     "test:coverage:unit": "c8 --check-coverage=false --reporter=text-summary --reporter=lcovonly --reports-dir=build/coverage/unit --temp-directory=build/coverage/tmp-unit npm run test:unit",
     "test:coverage:integration": "c8 --check-coverage=false --reporter=text-summary --reporter=lcovonly --reports-dir=build/coverage/integration --temp-directory=build/coverage/tmp-integration npm run test:integration",
     "build": "node tools/build.mjs",
+    "sync-edge": "node tools/sync-edge.mjs",
     "audit": "npm audit --audit-level=high",
     "ci": "npm run validate && npm run lint && npm run test:coverage",
-    "prepare": "simple-git-hooks"
+    "prepare": "simple-git-hooks",
+    "test:e2e": "node --test --test-reporter=spec --test-timeout=2400000 \"tests/e2e/*.e2e.mjs\""
   },
   "simple-git-hooks": {
     "commit-msg": "npx --no-install commitlint --config .github/commitlint.config.mjs --edit \"$1\"",
@@ -47,6 +49,7 @@
     "eslint-plugin-n": "^18.5.0",
     "eslint-plugin-sonarjs": "^4.2.2",
     "globals": "^17.14.0",
+    "playwright": "^1.55.1",
     "prettier": "^3.9.10",
     "simple-git-hooks": "^2.14.0"
   },

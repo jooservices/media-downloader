@@ -44,12 +44,20 @@ function createJobStore(area, newId = () => crypto.randomUUID(), now = () => Dat
         const known = new Set(Object.values(jobs).map(job => PageMediaLib.urls.comparableUrl(job.url)));
         const result = { created: [], skipped: [] };
         for (const raw of urls) {
-          const outcome = newJobFor(raw, limit, known, newId, now);
-          if (outcome.job) {
-            jobs[outcome.job.jobId] = outcome.job;
-            result.created.push(outcome.job);
-          } else {
-            result.skipped.push({ raw, reason: outcome.reason });
+          let pages;
+          try {
+            pages = PageMediaLib.urls.accountPages(String(raw).trim());
+          } catch {
+            pages = [raw];
+          }
+          for (const page of pages) {
+            const outcome = newJobFor(page, limit, known, newId, now);
+            if (outcome.job) {
+              jobs[outcome.job.jobId] = outcome.job;
+              result.created.push(outcome.job);
+            } else {
+              result.skipped.push({ raw: page, reason: outcome.reason });
+            }
           }
         }
         await writeAll(jobs);

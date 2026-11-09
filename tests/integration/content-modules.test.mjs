@@ -118,7 +118,7 @@ test("a scan of an empty profile finishes and reports to the background", async 
   }
   const state = page.context.PageMediaSaver.scan.state;
   assert.equal(state.running, false);
-  assert.ok(["complete", "paused"].includes(state.status), state.status);
+  assert.ok(["incomplete", "paused"].includes(state.status), state.status);
   assert.ok(page.sent.some(message => message.type === "AUTO_DONE" && message.state.jobId === "j3"));
 });
 
@@ -238,7 +238,63 @@ test("Facebook: a photo link's fbid is an id the cache is asked for", () => {
   ]);
 });
 
+test("Instagram: a stories tray is a one-page scan for that account, not one frame id", async () => {
+  const url = "https://www.instagram.com/stories/tieu_hy26/";
+  const page = loadContent({
+    url,
+    onSend: message =>
+      message.type === "DRAIN_DOWNLOADS" || message.type === "DOWNLOAD_STATUS"
+        ? { ok: true, pending: 0, failed: 0, retryable: 0 }
+        : { ok: true, started: 0, skipped: 0, failed: 0, pending: 0, cached: 0 }
+  });
+  assert.equal(page.context.PageMediaSaver.page.getAccount("Instagram"), "tieu_hy26");
+  assert.equal(page.context.PageMediaSaver.page.isMediaPostPage("Instagram"), true);
+  vm.runInContext(
+    "PageMediaDetection = { hasVisibleVideoPost: () => true, collectVideoContainers: () => [], isVideoPost: () => false }",
+    page.context
+  );
+  const started = await page.request({ type: "AUTO_START_CLI", job: { jobId: "story-1", url, limit: null } });
+  assert.equal(started.ok, true, started.error);
+  for (let i = 0; i < 40 && page.context.PageMediaSaver.scan.state.running; i++) {
+    await page.settle();
+  }
+  const request = page.sent.find(message => message.type === "DOWNLOAD_CACHED_MEDIA");
+  assert.equal(request.account, "tieu_hy26");
+  assert.equal(request.ids, undefined);
+});
+
+test("Instagram: a profile scan opens the story tray and saves that account's cached stories", async () => {
+  let firstLook = true;
+  const page = loadContent({
+    url: "https://www.instagram.com/disleft/",
+    onSend: message => {
+      if (message.type !== "DOWNLOAD_CACHED_MEDIA") {
+        return { ok: true };
+      }
+      const started = firstLook ? 2 : 0; // the tray's files are saved on the first look; later looks find nothing new
+      firstLook = false;
+      return { ok: true, started, skipped: 0, failed: 0, pending: 0, cached: 1 };
+    }
+  });
+  const link = {
+    href: "https://www.instagram.com/stories/disleft/",
+    clicked: 0,
+    click() {
+      this.clicked++;
+    }
+  };
+  page.context.document.querySelectorAll = selector => (selector === 'a[href*="/stories/"]' ? [link] : []);
+  page.context.history = { back() {} };
+  const started = await page.context.PageMediaSaver.videoSources.saveAccountStories("disleft");
+  assert.equal(link.clicked, 1);
+  assert.equal(started, 2);
+  const request = page.sent.find(message => message.type === "DOWNLOAD_CACHED_MEDIA");
+  assert.equal(request.account, "disleft");
+  assert.equal(request.platform, "Instagram");
+  assert.equal(request.ids, undefined);
+});
+
 test("Instagram: a profile scan opens photo posts as well as reels to load their full-size data", () => {
-  const source = fs.readFileSync(new URL("../../src/content/video-sources.js", import.meta.url), "utf8");
+  const source = fs.readFileSync(new URL("../../lib/sites.js", import.meta.url), "utf8");
   assert.match(source, /a\[href\*="\/reel\/"\], a\[href\*="\/p\/"\]/);
 });

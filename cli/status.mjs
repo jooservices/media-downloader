@@ -1,7 +1,12 @@
 // Printing a job and listing saved jobs.
-import { readJson, getActiveJob, jobFile, listJobs } from "./store.mjs";
+import { createRequire } from "node:module";
+import { getActiveJob, listJobs, readJob } from "./store.mjs";
+import { loadConfig } from "./config.mjs";
 
-export function printJob(job) {
+const require = createRequire(import.meta.url);
+const { saveSummary } = require("../lib/job-progress.js");
+
+export function printJob(job, downloadDir = null) {
   process.stdout.write(`Job: ${job.jobId}\n`);
   process.stdout.write(`Status: ${job.status}\n`);
   if (job.platform || job.account) {
@@ -18,20 +23,21 @@ export function printJob(job) {
   if (job.message) {
     process.stdout.write(`${job.message}\n`);
   }
+  process.stdout.write(`${saveSummary(job, downloadDir)}\n`);
 }
 
 export async function showStatus(jobId) {
   if (jobId) {
-    const job = await readJson(jobFile(jobId));
+    const job = await readJob(jobId);
     if (!job) {
       throw new Error(`No job was found with id ${jobId}.`);
     }
-    printJob(job);
+    printJob(job, (await loadConfig().catch(() => null))?.downloadDir);
     return;
   }
   const active = await getActiveJob();
   if (active) {
-    printJob(active);
+    printJob(active, (await loadConfig().catch(() => null))?.downloadDir);
     return;
   }
   const jobs = (await listJobs()).sort((a, b) =>

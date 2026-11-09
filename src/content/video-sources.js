@@ -10,6 +10,7 @@ globalThis.PageMediaSaver ??= {};
   const scanState = () => ns.scan.state;
 
   const MAX_NATIVE_VIDEOS_PER_SCAN = 12;
+  const MAX_HIGHLIGHTS = 40;
   const MENU_BUTTONS_TRIED = 2;
   const MAX_POSTS_OPENED_PER_PASS = 3;
   const POST_DATA_ATTEMPTS = 5;
@@ -31,16 +32,10 @@ globalThis.PageMediaSaver ??= {};
   }
 
   // The post id a link inside a video post points at, if it points at one.
+  const siteOf = platform => PageMediaLib.sites.get(platform);
+
   function tokenFromUrl(platform, url) {
-    if (platform === "Instagram") {
-      return url.pathname.match(/\/(?:p|reel|tv)\/([^/?#]+)/i)?.[1] ?? null;
-    }
-    if (platform === "Facebook") {
-      const queryId = url.searchParams.get("v") || url.searchParams.get("story_fbid") || url.searchParams.get("fbid");
-      const pathId = url.pathname.match(/\/(?:reel|videos?)\/([^/?#]+)(?:\/([^/?#]+))?/i);
-      return queryId || (pathId ? pathId[2] || pathId[1] : null);
-    }
-    return url.pathname.match(/\/status\/(\d+)/i)?.[1] ?? null;
+    return siteOf(platform)?.idFromUrl(url) ?? null;
   }
 
   // With no link to read an id from, the video's own address stands in for it.
@@ -76,44 +71,17 @@ globalThis.PageMediaSaver ??= {};
     return candidates.filter(button => {
       const label =
         `${button.getAttribute("aria-label") || ""} ${button.getAttribute("title") || ""} ${button.getAttribute("data-testid") || ""}`.toLowerCase();
-      if (platform === "Twitter" && button.getAttribute("data-testid") === "caret") {
+      const site = siteOf(platform);
+      if (site?.caretMenu && button.getAttribute("data-testid") === "caret") {
         return true;
       }
       if (/more|options|actions|tùy chọn|thêm|opciones|altre opzioni|plus d’options/i.test(label)) {
         return true;
       }
-      return platform === "Instagram" && /(?:^|\s)(?:share|share post|share reel)(?:\s|$)/i.test(label);
+      return Boolean(site?.shareMenu) && /(?:^|\s)(?:share|share post|share reel)(?:\s|$)/i.test(label);
     });
   }
 
-  // The menu entries that mean "download this video", per platform and language.
-  const DOWNLOAD_LABELS = {
-    Twitter: new Set(["download video", "tải video", "tải xuống video", "tải video xuống"]),
-    Instagram: new Set([
-      "download",
-      "download reel",
-      "save to device",
-      "tải xuống",
-      "tải reel",
-      "tải video",
-      "tải xuống video",
-      "tải video xuống",
-      "lưu vào thiết bị"
-    ]),
-    Facebook: new Set([
-      "download video",
-      "download reel",
-      "download",
-      "save to device",
-      "tải video",
-      "tải reel",
-      "tải xuống",
-      "tải xuống video",
-      "tải video xuống",
-      "lưu video",
-      "lưu vào thiết bị"
-    ])
-  };
   const MENU_ENTRIES = '[role="menuitem"], button, [role="button"]';
 
   const isVisible = node => node.getClientRects().length > 0;
@@ -138,7 +106,7 @@ globalThis.PageMediaSaver ??= {};
       .toLowerCase();
 
   function nativeDownloadMenuItem(platform) {
-    const allowed = DOWNLOAD_LABELS[platform] ?? DOWNLOAD_LABELS.Facebook;
+    const allowed = new Set(siteOf(platform)?.downloadLabels || []);
     const entry = openMenuEntries()
       .filter(node => isVisible(node) && node.getAttribute("aria-disabled") !== "true")
       .find(node => allowed.has(entryLabel(node)));
@@ -184,7 +152,11 @@ globalThis.PageMediaSaver ??= {};
 
   // Promoted, suggested and reposted X posts on a profile belong to someone else.
   function isForeignXPost(platform, owner, account) {
-    return platform === "Twitter" && !scanState().singlePage && owner.toLowerCase() !== String(account).toLowerCase();
+    return (
+      Boolean(siteOf(platform)?.skipForeignPosts) &&
+      !scanState().singlePage &&
+      owner.toLowerCase() !== String(account).toLowerCase()
+    );
   }
 
   async function collectNativeVideoDownloads(platform, account, budget = limitRemaining()) {
@@ -230,17 +202,7 @@ globalThis.PageMediaSaver ??= {};
     } catch {
       return [];
     }
-    if (platform === "Instagram") {
-      return [url.pathname.match(/\/(?:p|reel|reels|tv)\/([^/?#]+)/i)?.[1]].filter(Boolean);
-    }
-    if (platform === "Facebook") {
-      return [
-        url.searchParams.get("v"),
-        url.searchParams.get("fbid"),
-        url.pathname.match(/\/(?:reel|videos?)\/(?:[^/?#]+\/)?(\d+)/i)?.[1]
-      ].filter(Boolean);
-    }
-    return [url.pathname.match(/\/status\/(\d+)/i)?.[1]].filter(Boolean);
+    return siteOf(platform)?.idsFromUrl(url) || [];
   }
 
   function domVideoIds(platform) {
@@ -260,9 +222,12 @@ globalThis.PageMediaSaver ??= {};
   // is matched by account (no ids).
   function pageVideoIds(platform) {
     if (scanState().singlePage) {
-      return idsInHref(platform, location.href);
+      const ids = idsInHref(platform, location.href);
+      // A stories tray has no single frame id in the URL. The cache is filtered by the account instead.
+      const tray = siteOf(platform)?.storyTray?.(location.pathname);
+      return tray && !ids.length ? undefined : ids;
     }
-    return platform === "Twitter" ? undefined : domVideoIds(platform);
+    return siteOf(platform)?.matchByAccount ? undefined : domVideoIds(platform);
   }
 
   const openedGridPosts = new Set();
@@ -276,21 +241,31 @@ globalThis.PageMediaSaver ??= {};
     }
   }
 
-  const gridLinks = () =>
-    [...document.querySelectorAll('a[href*="/reel/"], a[href*="/p/"]')].filter(
+  const pageSite = () => PageMediaLib.sites.forHost(location.hostname);
+
+  const gridLinks = () => {
+    const selector = pageSite()?.gridLinks;
+    if (!selector) {
+      return [];
+    }
+    return [...document.querySelectorAll(selector)].filter(
       link => link.getClientRects().length && !link.closest('[role="dialog"]')
     );
+  };
 
-  const postIdOf = link => link.getAttribute("href").match(/\/(?:reel|p)\/([^/?#]+)/i)?.[1];
+  const postIdOf = link => {
+    const pattern = pageSite()?.postId;
+    return pattern ? link.getAttribute("href").match(pattern)?.[1] : null;
+  };
 
   // The opened post makes the page request its data; give the hook a few seconds to cache it, then save it.
-  async function saveOpenedPost(account, id, remaining) {
+  async function saveOpenedPost(platform, account, id, remaining) {
     for (let attempt = 0; attempt < POST_DATA_ATTEMPTS; attempt++) {
       await pause(900);
       const response = await chrome.runtime
         .sendMessage({
           type: "DOWNLOAD_CACHED_MEDIA",
-          platform: "Instagram",
+          platform,
           account,
           ids: [id],
           limit: Number.isFinite(remaining) ? remaining : null
@@ -340,7 +315,7 @@ globalThis.PageMediaSaver ??= {};
       opened++;
       const gridUrl = location.href;
       link.click();
-      started += await saveOpenedPost(account, id, budget - started);
+      started += await saveOpenedPost(pageSite()?.name, account, id, budget - started);
       await leavePost(gridUrl);
     }
     return started;
@@ -348,6 +323,8 @@ globalThis.PageMediaSaver ??= {};
 
   // Saves the photos and videos the platform already delivered to this page in its own
   // data responses first; the on-page menu flow only handles videos the cache missed.
+  let lastCacheDiag = null;
+
   async function collectPageMedia(platform, account) {
     const budget = limitRemaining();
     const ids = pageVideoIds(platform);
@@ -363,13 +340,109 @@ globalThis.PageMediaSaver ??= {};
           })
           .catch(() => null)
       : null;
+    lastCacheDiag = cached ? cached.diag : { asked, ids: ids ? ids.length : null, noReply: true };
     let cachedStarted = cached?.started || 0;
-    if (platform === "Instagram") {
+    if (siteOf(platform)?.opensGridPosts) {
       cachedStarted += await openGridPosts(account, budget - cachedStarted, cached?.coveredIds);
     }
     const videos = await collectNativeVideoDownloads(platform, account, budget - cachedStarted);
-    return { ...videos, videoDownloadsClicked: videos.videoDownloadsClicked + cachedStarted };
+    return {
+      ...videos,
+      videoDownloadsClicked: videos.videoDownloadsClicked + cachedStarted,
+      // Files the page delivered that were saved earlier count as seen, so a rescan with nothing new is not "empty".
+      videoDownloadsSkipped: (videos.videoDownloadsSkipped || 0) + (cached?.skipped || 0)
+    };
   }
 
-  ns.videoSources = { collectPageMedia, collectNativeVideoDownloads, domVideoIds, pageVideoIds, openGridPosts };
+  // The profile header links to the current story tray. Opening it makes Instagram
+  // deliver the story files; the scan then returns to the grid.
+  function storyLink(account) {
+    const needle = `/stories/${String(account || "").toLowerCase()}`;
+    for (const link of document.querySelectorAll('a[href*="/stories/"]')) {
+      try {
+        if (new URL(link.href, location.href).pathname.toLowerCase().startsWith(needle)) {
+          return link;
+        }
+      } catch {
+        /* a broken href is not the tray */
+      }
+    }
+    return null;
+  }
+
+  const openedHighlights = new Set();
+
+  function highlightLinks() {
+    return [...document.querySelectorAll('a[href*="/stories/highlights/"]')].filter(
+      link => link.getClientRects?.().length && !openedHighlights.has(link.href)
+    );
+  }
+
+  // Opens one story or highlight link, saves the account's cached files, then returns to the profile.
+  async function saveOpenedTray(link, account) {
+    const home = location.href;
+    link.click();
+    let started = 0;
+    // The tray's own files arrive a moment after the page's earlier ones, so stop only after two looks in a row
+    // find nothing new to save.
+    let quiet = 0;
+    for (let attempt = 0; attempt < 6 && limitRemaining() > 0 && quiet < 2; attempt++) {
+      await pause(700);
+      const remaining = limitRemaining();
+      const response = await chrome.runtime
+        .sendMessage({
+          type: "DOWNLOAD_CACHED_MEDIA",
+          platform: pageSite()?.name,
+          account,
+          limit: Number.isFinite(remaining) ? remaining : null
+        })
+        .catch(() => null);
+      started += response?.started || 0;
+      quiet = response?.started ? 0 : quiet + 1;
+    }
+    if (location.href !== home) {
+      history.back();
+      await pause(900);
+    }
+    return started;
+  }
+
+  async function saveAccountStories(account) {
+    if (limitRemaining() <= 0) {
+      return 0;
+    }
+    let started = 0;
+    // Stories can take minutes on an account with many highlights; say where the scan is so the job does not look stuck.
+    const report = text => {
+      scanState().message = text;
+      ns.scan.publishAutoState();
+    };
+    const tray = storyLink(account);
+    if (tray) {
+      report("Saving the current stories…");
+      started += await saveOpenedTray(tray, account);
+    }
+    let opened = 0;
+    const highlights = highlightLinks();
+    for (const link of highlights) {
+      if (opened >= MAX_HIGHLIGHTS || limitRemaining() <= 0 || ns.scan.stopRequested) {
+        break;
+      }
+      openedHighlights.add(link.href);
+      opened++;
+      report(`Saving highlights (${opened} of ${Math.min(highlights.length, MAX_HIGHLIGHTS)})…`);
+      started += await saveOpenedTray(link, account);
+    }
+    return started;
+  }
+
+  ns.videoSources = {
+    collectPageMedia,
+    cacheDiagnostics: () => lastCacheDiag,
+    collectNativeVideoDownloads,
+    domVideoIds,
+    pageVideoIds,
+    openGridPosts,
+    saveAccountStories
+  };
 })(globalThis.PageMediaSaver);

@@ -1,6 +1,8 @@
 // Starting, monitoring and resuming a download job.
+import { openInManagedBrowser } from "./managed.mjs";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import {
   QUEUE_FILE,
   EDGE_PROFILE_FILE,
@@ -8,21 +10,24 @@ import {
   TERMINAL_STATES,
   sleep,
   normalizeProfileUrl,
+  accountPages,
   cliTabMarker,
   writeJsonAtomic,
   readJson,
   getActiveJob,
-  jobFile
+  readJob,
+  writeJob
 } from "./store.mjs";
 import { DEFAULT_LIMIT } from "./args.mjs";
-import { edgeExecutable } from "./edge.mjs";
+import { browserLayout, launchArgs, resolvedProfile } from "./browsers.mjs";
 import { startBridgeServer } from "./bridge-server.mjs";
 import { printJob } from "./status.mjs";
+import { loadConfig } from "./config.mjs";
 import { finalizeRepairJob } from "./repair.mjs";
 
 const QUEUE_TIMEOUT_MS = 90_000;
 const POLL_INTERVAL_MS = 2000;
-const INSTALL_HINT = "Run the CLI install command after loading the extension in Edge.";
+const INSTALL_HINT = "Load the extension, then run install (or install chrome / install firefox / install edge).";
 
 function describeLimit(limit) {
   if (limit === null) {
@@ -31,33 +36,55 @@ function describeLimit(limit) {
   return limit ? ` (limit ${limit} files)` : "";
 }
 
-export async function openJobInEdge(job) {
-  const edge = edgeExecutable();
-  if (!edge) {
-    throw new Error("Microsoft Edge was not found in its standard Windows installation folders.");
-  }
-  const edgeProfile = await readJson(EDGE_PROFILE_FILE);
-  if (!edgeProfile?.profileDirectory) {
+// Extra command-line switches kept with the saved browser profile (for example a private profile folder for tests).
+function extraBrowserArgs(saved) {
+  return Array.isArray(saved?.extraArgs) ? saved.extraArgs.filter(arg => typeof arg === "string") : [];
+}
+
+export async function openJobInEdge(job, spawnProcess = spawn, managedOptions = {}) {
+  const saved = await readJson(EDGE_PROFILE_FILE);
+  if (!saved?.profileDirectory && !saved?.profilePath) {
     throw new Error(INSTALL_HINT);
+  }
+  const profile = resolvedProfile(saved, process.platform, process.env);
+  const executable =
+    (profile.executable && existsSync(profile.executable) && profile.executable) ||
+    browserLayout(process.platform, process.env)[profile.browser].executables.find(candidate => existsSync(candidate));
+  if (!executable) {
+    throw new Error(
+      `${profile.label} is not installed. Install it, load the extension, then run install ${profile.browser}.`
+    );
   }
   // The marker lets the extension recognise this tab as the CLI's and close it when it is done with it.
   const pageUrl = `${job.url}${cliTabMarker(job.jobId)}`;
-  const edgeProcess = spawn(edge, [`--profile-directory=${edgeProfile.profileDirectory}`, pageUrl], {
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true
-  });
-  edgeProcess.once("error", async error => {
+  // A managed browser stays running and is told to open a tab; any other profile gets a fresh launch.
+  if (Number.isInteger(saved.debugPort)) {
+    await openInManagedBrowser(
+      { executable, args: extraBrowserArgs(saved), port: saved.debugPort, url: pageUrl },
+      managedOptions
+    );
+    return;
+  }
+  const browserProcess = spawnProcess(
+    executable,
+    [...extraBrowserArgs(saved), ...launchArgs(profile.browser, profile, pageUrl)],
+    {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true
+    }
+  );
+  browserProcess.once("error", async error => {
     const failedJob = {
       ...job,
       status: "error",
-      message: `Could not open Edge: ${error.message}`,
+      message: `Could not open ${profile.label}: ${error.message}`,
       updatedAt: new Date().toISOString()
     };
-    await writeJsonAtomic(jobFile(job.jobId), failedJob).catch(() => {});
+    await writeJob(failedJob).catch(() => {});
     process.stderr.write(`${failedJob.message}\n`);
   });
-  edgeProcess.unref();
+  browserProcess.unref();
 }
 
 const progressLine = job =>
@@ -68,10 +95,10 @@ async function failUnacknowledgedJob(current) {
     ...current,
     status: "error",
     message:
-      "Edge did not acknowledge the job within 90 seconds. Reload Page Media Saver in edge://extensions, then resume this job.",
+      "The browser did not acknowledge the job within 90 seconds. Reload Page Media Saver on its extensions page, then resume this job.",
     updatedAt: new Date().toISOString()
   };
-  await writeJsonAtomic(jobFile(current.jobId), failedJob);
+  await writeJob(failedJob);
   printJob(failedJob);
   process.exitCode = 1;
 }
@@ -79,7 +106,7 @@ async function failUnacknowledgedJob(current) {
 async function finishJob(current) {
   const needsRepairCheck = current.status === "complete" && current.repairTargets?.length && !current.repairFinalized;
   const finalJob = needsRepairCheck ? await finalizeRepairJob(current) : current;
-  printJob(finalJob);
+  printJob(finalJob, (await loadConfig().catch(() => null))?.downloadDir);
   if (finalJob.status !== "complete") {
     process.exitCode = finalJob.status === "paused" ? 2 : 1;
   }
@@ -89,7 +116,7 @@ async function finishJob(current) {
 async function watchJob(job, queuedAt, isInterrupted) {
   let lastLine = "";
   while (!isInterrupted()) {
-    const current = await readJson(jobFile(job.jobId));
+    const current = await readJob(job.jobId);
     if (current?.status === "queued" && Date.now() - queuedAt >= QUEUE_TIMEOUT_MS) {
       await failUnacknowledgedJob(current);
       return true;
@@ -122,11 +149,9 @@ export async function launchAndMonitor(job, { openPage = true } = {}) {
       await openJobInEdge(job);
     }
     process.stdout.write(
-      `${openPage ? "Queued" : "Monitoring"} ${job.platform}/${job.account} in Edge${describeLimit(job.limit)}. Job ${job.jobId}.\n`
+      `${openPage ? "Opening" : "Watching"} ${job.platform}/${job.account}${describeLimit(job.limit)}. Job ${job.jobId}.\n`
     );
-    process.stdout.write(
-      "The profile tab can run in the background while you use other tabs. Keep this CLI process open until the job completes.\n"
-    );
+    process.stdout.write("You can use other tabs. Leave this window open until the job finishes.\n");
     process.once("SIGINT", stopMonitoring);
     const finished = await watchJob(job, queuedAt, () => interrupted);
     if (!finished) {
@@ -141,10 +166,8 @@ export async function launchAndMonitor(job, { openPage = true } = {}) {
 }
 
 async function requireInstalled() {
-  if (process.platform !== "win32") {
-    throw new Error("The Edge CLI bridge currently runs on Windows only.");
-  }
-  if (!(await readJson(EDGE_PROFILE_FILE))?.profileDirectory) {
+  const saved = await readJson(EDGE_PROFILE_FILE);
+  if (!saved?.profileDirectory && !saved?.profilePath) {
     throw new Error(INSTALL_HINT);
   }
   if (!(await readJson(BRIDGE_CONFIG_FILE))?.extensionOrigin) {
@@ -165,7 +188,7 @@ export async function createJob(rawUrl, limit = DEFAULT_LIMIT) {
     mediaPage,
     limit,
     status: "queued",
-    message: "Waiting for the Page Media Saver extension in Edge.",
+    message: "Waiting for the Page Media Saver extension.",
     createdAt: now,
     updatedAt: now,
     started: 0,
@@ -178,7 +201,7 @@ export async function createJob(rawUrl, limit = DEFAULT_LIMIT) {
     attempts: 0,
     openedAt: null
   };
-  await writeJsonAtomic(jobFile(jobId), job);
+  await writeJob(job);
   return job;
 }
 
@@ -190,14 +213,19 @@ export async function startDownload(rawUrl, limit = DEFAULT_LIMIT) {
       `Job ${active.jobId} is still ${active.status}. Use “status” to check it before starting another URL.`
     );
   }
-  const job = await createJob(rawUrl, limit);
-  await writeJsonAtomic(QUEUE_FILE, { jobId: job.jobId, updatedAt: job.createdAt });
-  return launchAndMonitor(job);
+  const pages = accountPages(rawUrl);
+  let last;
+  for (const url of pages) {
+    const job = await createJob(url, limit);
+    await writeJsonAtomic(QUEUE_FILE, { jobId: job.jobId, updatedAt: job.createdAt });
+    last = await launchAndMonitor(job);
+  }
+  return last;
 }
 
 export async function resumeJob(jobId) {
   const active = await getActiveJob();
-  const job = jobId ? await readJson(jobFile(jobId)) : active;
+  const job = jobId ? await readJob(jobId) : active;
   if (!job) {
     throw new Error("No job was found to resume. Run “status” to list saved jobs.");
   }
@@ -212,8 +240,8 @@ export async function resumeJob(jobId) {
   }
   job.status = "queued";
   job.updatedAt = new Date().toISOString();
-  job.message = "Resuming the saved profile scan in Edge.";
-  await writeJsonAtomic(jobFile(job.jobId), job);
+  job.message = "Resuming the saved profile scan.";
+  await writeJob(job);
   await writeJsonAtomic(QUEUE_FILE, { jobId: job.jobId, updatedAt: job.updatedAt });
   return launchAndMonitor(job);
 }

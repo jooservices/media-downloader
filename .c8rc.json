@@ -2,20 +2,12 @@
   "all": true,
   "src": ["lib", "src", "cli"],
   "include": ["lib/**/*.js", "src/**/*.js", "cli/**/*.mjs"],
-  "exclude": [
-    "cli/edge.mjs",
-    "cli/mediasaver.mjs",
-    "tests/**",
-    "tools/**",
-    "build/**",
-    "coverage/**",
-    "node_modules/**"
-  ],
+  "exclude": ["tests/**", "tools/**", "build/**", "coverage/**", "node_modules/**"],
   "reporter": ["text-summary", "lcov"],
   "reports-dir": "build/coverage",
   "check-coverage": true,
-  "lines": 60,
-  "branches": 70,
-  "functions": 70,
-  "statements": 60
+  "lines": 90,
+  "branches": 90,
+  "functions": 90,
+  "statements": 90
 }

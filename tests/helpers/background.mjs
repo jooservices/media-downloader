@@ -92,6 +92,7 @@ export function loadBackground({
   };
   const alarms = [];
   const optionsOpened = { count: 0 };
+  const runtimeReloads = { count: 0 };
   const tabsCreated = [];
   let nextTabId = 100;
   const storage = structuredClone(initialStorage);
@@ -108,6 +109,10 @@ export function loadBackground({
   const chrome = {
     runtime: {
       id: "test-extension-id",
+      getManifest: () => ({ version: "9.9.9" }),
+      reload: () => {
+        runtimeReloads.count++;
+      },
       onMessage: { addListener: listener => listeners.message.push(listener) },
       onStartup: { addListener: listener => listeners.startup.push(listener) },
       onInstalled: { addListener: listener => listeners.installed.push(listener) },
@@ -203,7 +208,12 @@ export function loadBackground({
     tabsCreated,
     alarms,
     optionsOpened,
+    runtimeReloads,
     inContext,
+    // Hands a value to the worker's global scope without building code from it.
+    setGlobal: (name, value) => {
+      context[name] = value;
+    },
     send: (message, sender = {}) => new Promise(resolve => listeners.message[0](message, sender, resolve)),
     determine: item =>
       new Promise((resolve, reject) => {

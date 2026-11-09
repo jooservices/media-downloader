@@ -109,7 +109,7 @@ saveButton.addEventListener("click", async () => {
 
   try {
     const tab = await getActivePage();
-    requireSupportedPage(tab, "Open an Instagram, Facebook, or X page first.");
+    requireSupportedPage(tab, "Open an Instagram, Facebook, X, or TikTok page first.");
 
     await ensureContentScript(tab);
     const result = await chrome.tabs.sendMessage(tab.id, { type: "COLLECT_VISIBLE_MEDIA" });
@@ -148,7 +148,7 @@ autoStartButton.addEventListener("click", async () => {
   setStatus("Starting automatic scroll and download…");
   try {
     const tab = await getActivePage();
-    requireSupportedPage(tab, "Automatic mode supports Instagram/Facebook grids and X profile timelines.");
+    requireSupportedPage(tab, "Automatic mode supports Instagram, Facebook, X, and TikTok profiles.");
     await saveLimit();
     await ensureContentScript(tab);
     const result = await chrome.tabs.sendMessage(tab.id, { type: "AUTO_START" });

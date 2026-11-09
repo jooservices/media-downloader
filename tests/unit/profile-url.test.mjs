@@ -5,7 +5,7 @@ import vm from "node:vm";
 
 const manifest = JSON.parse(fs.readFileSync(new URL("../../manifest.json", import.meta.url), "utf8"));
 const context = vm.createContext({ URL });
-for (const name of ["platforms", "urls"]) {
+for (const name of ["sites", "platforms", "urls"]) {
   const file = new URL(`../../lib/${name}.js`, import.meta.url);
   new vm.Script(fs.readFileSync(file, "utf8"), { filename: file.pathname }).runInContext(context);
 }
@@ -80,6 +80,45 @@ test("normalizes direct Instagram, Facebook, and X post URLs for one-page scans"
   assert.equal(twitter.url, "https://x.com/asagi2211/status/789/");
 });
 
+test("accepts an Instagram stories tray and one story frame", () => {
+  const tray = urls.normalizeProfileUrl("https://www.instagram.com/stories/tieu_hy26/?hl=en");
+  assert.equal(tray.platform, "Instagram");
+  assert.equal(tray.account, "tieu_hy26");
+  assert.equal(tray.mediaPage, true);
+  assert.equal(tray.url, "https://www.instagram.com/stories/tieu_hy26/");
+  const frame = urls.normalizeProfileUrl("https://www.instagram.com/stories/tucuynlin.031810/3345678901234567890/");
+  assert.equal(frame.account, "tucuynlin.031810");
+  assert.equal(frame.url, "https://www.instagram.com/stories/tucuynlin.031810/3345678901234567890/");
+  assert.equal(urls.comparableUrl(frame.url), urls.comparableUrl(`${frame.url}?igsh=1`));
+  assert.throws(() => urls.normalizeProfileUrl("https://www.instagram.com/stories/"), /profile URL|direct/);
+});
+
+test("a TikTok profile link is the account, and a video link is one post", () => {
+  const profile = urls.normalizeProfileUrl("https://www.tiktok.com/@unnie.93newg?lang=en");
+  assert.equal(profile.platform, "TikTok");
+  assert.equal(profile.account, "unnie.93newg");
+  assert.equal(profile.url, "https://www.tiktok.com/@unnie.93newg/");
+  assert.equal(profile.mediaPage, false);
+  const video = urls.normalizeProfileUrl("https://www.tiktok.com/@unnie.93newg/video/7123456789012345678/");
+  assert.equal(video.mediaPage, true);
+  assert.equal(video.account, "unnie.93newg");
+  assert.deepEqual(JSON.parse(JSON.stringify(urls.accountPages(profile.url))), [profile.url]);
+});
+
+test("a Facebook profile link also covers its photos, reels and videos tabs", () => {
+  const pages = value => JSON.parse(JSON.stringify(urls.accountPages(value)));
+  assert.deepEqual(pages("https://www.facebook.com/TieuHyOfficial/?utm_source=ig"), [
+    "https://www.facebook.com/TieuHyOfficial/",
+    "https://www.facebook.com/TieuHyOfficial/photos/",
+    "https://www.facebook.com/TieuHyOfficial/reels/",
+    "https://www.facebook.com/TieuHyOfficial/videos/"
+  ]);
+  assert.deepEqual(pages("https://www.instagram.com/disleft/"), ["https://www.instagram.com/disleft/"]);
+  assert.deepEqual(pages("https://www.facebook.com/TieuHyOfficial/photos"), [
+    "https://www.facebook.com/TieuHyOfficial/photos/"
+  ]);
+});
+
 test("rejects X home and other non-profile or non-post routes", () => {
   assert.throws(() => urls.normalizeProfileUrl("https://x.com/home"), /profile URL/);
   assert.throws(() => urls.normalizeProfileUrl("https://x.com/explore"), /profile URL/);
@@ -98,4 +137,25 @@ test("declares X host access for CLI timeline scanning", () => {
   const scripts = manifest.content_scripts.flatMap(entry => entry.matches);
   assert.ok(scripts.includes("https://*.x.com/*"));
   assert.ok(scripts.includes("https://*.twitter.com/*"));
+});
+
+test("a Facebook profile without a vanity name keeps its number, so two of them are two accounts", async () => {
+  const { normalizeProfileUrl, accountPages, samePage } = (await import("node:module")).createRequire(import.meta.url)(
+    "../../lib/urls.js"
+  );
+  const first = normalizeProfileUrl("https://www.facebook.com/profile.php?id=100012345&sk=photos&ref=x");
+  assert.equal(first.url, "https://www.facebook.com/profile.php?id=100012345");
+  assert.equal(first.account, "100012345");
+  assert.equal(first.platform, "Facebook");
+  assert.deepEqual(accountPages("https://facebook.com/profile.php?id=5"), ["https://facebook.com/profile.php?id=5"]);
+  assert.equal(
+    samePage("https://www.facebook.com/profile.php?id=5", "https://www.facebook.com/profile.php?id=5&sk=x"),
+    true
+  );
+  assert.equal(
+    samePage("https://www.facebook.com/profile.php?id=5", "https://www.facebook.com/profile.php?id=6"),
+    false
+  );
+  assert.throws(() => normalizeProfileUrl("https://www.facebook.com/profile.php"), /Use an Instagram/);
+  assert.throws(() => normalizeProfileUrl("https://www.facebook.com/profile.php?id=abc"), /Use an Instagram/);
 });

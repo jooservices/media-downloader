@@ -1,5 +1,5 @@
 ﻿import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -148,7 +148,7 @@ test("updates to one job file made at the same time are all applied", async () =
       })
     )
   );
-  const saved = JSON.parse(await readFile(store.jobFile(job.jobId), "utf8"));
+  const saved = await store.readJob(job.jobId);
   assert.equal(saved.counter, 25);
   assert.equal(Object.keys(saved).filter(key => key.startsWith("mark")).length, 25);
 });
@@ -171,6 +171,19 @@ test("addUrls queues each profile once, ignoring tracking parameters and letter 
 
   const forced = await addUrls(["https://www.instagram.com/iris/"], { force: true });
   assert.equal(forced.created.length, 1, "--again queues it anew");
+});
+
+test("a Facebook profile is queued as its feed plus the photos, reels and videos tabs", async () => {
+  const { created } = await addUrls(["https://www.facebook.com/TieuHyOfficial/?utm_source=ig"]);
+  assert.deepEqual(
+    created.map(job => job.url),
+    [
+      "https://www.facebook.com/TieuHyOfficial/",
+      "https://www.facebook.com/TieuHyOfficial/photos/",
+      "https://www.facebook.com/TieuHyOfficial/reels/",
+      "https://www.facebook.com/TieuHyOfficial/videos/"
+    ]
+  );
 });
 
 test("addUrls reports a URL it cannot use instead of failing the whole batch", async () => {

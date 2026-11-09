@@ -21,7 +21,8 @@ async function postBridgeMessage(message) {
     const response = await fetch(CLI_BRIDGE_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(message),
+      // The version lets the CLI tell this extension when a newer copy has been put on disk.
+      body: JSON.stringify({ ...message, version: chrome.runtime.getManifest().version }),
       cache: "no-store",
       credentials: "omit"
     });
@@ -30,6 +31,9 @@ async function postBridgeMessage(message) {
       throw new Error(result?.error || `Local CLI bridge returned HTTP ${response.status}.`);
     }
     updateNativeBridgeState("connected", "Connected to the local CLI bridge.");
+    if (result?.reload === true) {
+      scheduleReload();
+    }
     return result;
   } catch (error) {
     const messageText = error?.message || String(error);
@@ -94,6 +98,28 @@ function noteBridgeFailure(tabId, isProgress) {
   if (isProgress && goneTooLong && Number.isInteger(tabId)) {
     chrome.tabs.sendMessage(tabId, { type: "AUTO_STOP" }).catch(() => {});
   }
+}
+
+// The CLI says a newer copy of the extension is on disk. Reload once no job is running in any tab, so a
+// scan is never cut off; until then the CLI keeps saying so on every message.
+const RELOAD_DELAY_MS = 3000;
+let reloadScheduled = false;
+function scheduleReload() {
+  if (reloadScheduled) {
+    return;
+  }
+  reloadScheduled = true;
+  setTimeout(async () => {
+    reloadScheduled = false;
+    try {
+      const idle = Object.keys(await readCliJobs()).length === 0;
+      if (idle) {
+        chrome.runtime.reload();
+      }
+    } catch {
+      /* try again on the next message */
+    }
+  }, RELOAD_DELAY_MS);
 }
 
 // Several pages can run a job at once (one per worker), so each tab's job is remembered separately.
@@ -194,10 +220,16 @@ function handleBridgeProgress(message, sender) {
     jobId: message.state.jobId,
     state: message.state
   })
-    .then(() => {
+    .then(async result => {
       bridgeLostSince = null;
-      if (finished) {
-        closeFinishedTab(sender?.tab?.id);
+      const tabId = sender?.tab?.id;
+      if (result?.type === "STOP_JOB" && Number.isInteger(tabId)) {
+        // The CLI cancelled or removed this job: stop its scan and close its tab.
+        await takeCliJob(tabId).catch(() => {});
+        chrome.tabs.sendMessage(tabId, { type: "AUTO_STOP" }).catch(() => {});
+        closeFinishedTab(tabId);
+      } else if (finished) {
+        closeFinishedTab(tabId);
       }
       return { ok: true };
     })

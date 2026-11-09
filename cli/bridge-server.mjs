@@ -1,8 +1,9 @@
 // The loopback server the extension talks to while a job runs.
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { unlink } from "node:fs/promises";
+import { readFile, unlink } from "node:fs/promises";
 import {
+  EXPECTED_VERSION_FILE,
   QUEUE_FILE,
   BRIDGE_CONFIG_FILE,
   BRIDGE_PORT,
@@ -13,7 +14,7 @@ import {
   updateJob,
   isJobId,
   isSignInPage,
-  jobFile
+  readJob
 } from "./store.mjs";
 
 const MAX_BODY_BYTES = 1_000_000;
@@ -60,6 +61,32 @@ function readBody(request, response) {
   });
 }
 
+// `sync-edge` leaves the version it just copied in a file. An extension that reports another version (or none)
+// is told to reload; the file goes away as soon as an extension reports the expected version.
+// The newest extension version that reported in, so `/v1/status` can say what the browser is really running.
+let lastExtension = null;
+export const extensionSeen = () => lastExtension;
+export function resetExtensionSeen() {
+  lastExtension = null;
+}
+
+async function outdatedExtension(message) {
+  let expected;
+  try {
+    expected = (await readFile(EXPECTED_VERSION_FILE, "utf8")).trim();
+  } catch {
+    return false;
+  }
+  if (!expected) {
+    return false;
+  }
+  if (message?.version === expected) {
+    await unlink(EXPECTED_VERSION_FILE).catch(() => {});
+    return false;
+  }
+  return true;
+}
+
 function createBridgeServer(config) {
   const claimedJobs = new Set();
   let bridgeMessageQueue = Promise.resolve();
@@ -82,7 +109,14 @@ function createBridgeServer(config) {
         () => undefined,
         () => undefined
       );
-      respondJson(response, 200, await operation, { "Cache-Control": "no-store" });
+      lastExtension = {
+        version: message?.version ? String(message.version).slice(0, 32) : null,
+        at: new Date().toISOString()
+      };
+      const result = await operation;
+      respondJson(response, 200, (await outdatedExtension(message)) ? { ...result, reload: true } : result, {
+        "Cache-Control": "no-store"
+      });
     } catch (error) {
       // The detail stays in this process's log; the caller only learns that the message failed.
       console.error(`Bridge message failed: ${error?.message || String(error)}`);
@@ -129,6 +163,10 @@ export async function startBridgeServer() {
   });
 }
 
+// A claim lasts for one opening of the job. When the queue retries a job it opens it again with a new
+// `openedAt`, so the new attempt can be claimed; a second tab for the same opening still cannot.
+const claimKey = job => `${job.jobId}|${job.openedAt || ""}`;
+
 // Does the page that announced itself belong to this job?
 function pageMatchesJob(message, job) {
   let sameUrl;
@@ -147,7 +185,7 @@ const CLOSE_TAB = { ok: true, type: "NO_JOB", close: true };
 // not (its job is gone or finished, the site wants a sign-in, it landed on the wrong page, or another
 // tab already runs the job) the extension closes it so tabs never pile up.
 async function judgeTaggedTab(message) {
-  const tagged = isJobId(message.cliJobId) ? await readJson(jobFile(message.cliJobId)) : null;
+  const tagged = isJobId(message.cliJobId) ? await readJob(message.cliJobId) : null;
   if (!tagged || TERMINAL_STATES.has(tagged.status)) {
     return CLOSE_TAB;
   }
@@ -183,11 +221,11 @@ async function handlePageReady(message, claimedJobs) {
   const matching = (await listJobs())
     .filter(job => !TERMINAL_STATES.has(job.status) && pageMatchesJob(message, job))
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
-  const waiting = matching.find(job => job.status === "queued" && !claimedJobs.has(job.jobId));
+  const waiting = matching.find(job => job.status === "queued" && !claimedJobs.has(claimKey(job)));
   if (!waiting) {
     return { ok: true, type: matching.length ? "JOB_CONNECTED" : "NO_JOB" };
   }
-  claimedJobs.add(waiting.jobId);
+  claimedJobs.add(claimKey(waiting));
   const started = await updateJob(waiting.jobId, job => {
     if (job.mediaPage) {
       job.account = String(message.account || job.account);
@@ -208,6 +246,13 @@ async function handleJobUpdate(message) {
   }
   if (!isJobId(jobId)) {
     return { ok: false, error: "Invalid job id." };
+  }
+  // A job that was cancelled, finished or removed must not keep a scan running in its tab: tell the page to stop.
+  if (message.type === "JOB_PROGRESS") {
+    const known = await readJob(jobId);
+    if (!known || TERMINAL_STATES.has(known.status)) {
+      return { ok: true, type: "STOP_JOB", close: true };
+    }
   }
   const job = await updateJob(jobId, current => {
     if (message.type === "JOB_ERROR") {

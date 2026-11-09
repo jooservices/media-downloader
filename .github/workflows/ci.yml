@@ -186,9 +186,102 @@ jobs:
           path: build/coverage/${{ matrix.suite }}/lcov.info
           if-no-files-found: error
 
+  e2e:
+    name: Test (E2E)
+    needs: [lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run the end-to-end suite (the runner's own Chrome, a private profile, the real extension)
+        run: npm run test:e2e
+
+  container:
+    name: Container
+    needs: [lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the image
+        run: docker build --tag media-downloader:ci .
+
+      - name: Start it and ask it for its status
+        run: |
+          set -euo pipefail
+          docker run --detach --name md --publish 127.0.0.1:38542:38542 media-downloader:ci
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:38542/v1/health >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:38542/v1/health
+          token="$(docker exec md cat /data/api-token)"
+          curl -fsS --header "Authorization: Bearer ${token}" http://127.0.0.1:38542/v1/status
+          curl -fsS --header "Authorization: Bearer ${token}" http://127.0.0.1:38542/v1/metrics | grep -q pms_uptime_seconds
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:38542/v1/jobs)"
+          test "${code}" = "401"
+
+      - name: Show the container log
+        if: always()
+        run: docker logs md || true
+
+  platforms:
+    name: Platform (${{ matrix.name }})
+    needs: [lint]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            os: ubuntu-latest
+          - name: Linux arm64
+            os: ubuntu-24.04-arm
+          - name: macOS arm64
+            os: macos-latest
+          - name: macOS x64
+            os: macos-15-intel
+          - name: Windows x64
+            os: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Unit and integration tests on this operating system and CPU
+        run: npm test
+
   coverage:
     name: Coverage upload
-    needs: [test, security]
+    needs: [test, e2e, container, security]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

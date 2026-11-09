@@ -6,8 +6,14 @@ import { loadBackground, plain } from "../helpers/background.mjs";
 
 const loadLib = name => {
   const context = vm.createContext({ URL });
-  const file = new URL(`../../lib/${name}.js`, import.meta.url);
-  new vm.Script(fs.readFileSync(file, "utf8"), { filename: file.pathname }).runInContext(context);
+  const load = fileName => {
+    const file = new URL(`../../lib/${fileName}.js`, import.meta.url);
+    new vm.Script(fs.readFileSync(file, "utf8"), { filename: file.pathname }).runInContext(context);
+  };
+  if (name === "keys") {
+    load("sites");
+  }
+  load(name);
   return context.PageMediaLib[name];
 };
 

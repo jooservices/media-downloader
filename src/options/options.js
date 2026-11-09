@@ -100,6 +100,7 @@
     el("workers-x").value = form.workers.x;
     el("workers-instagram").value = form.workers.instagram;
     el("workers-facebook").value = form.workers.facebook;
+    el("workers-tiktok").value = form.workers.tiktok;
     el("delay-min").value = form.delayMin;
     el("delay-max").value = form.delayMax;
     el("attempts").value = form.maxAttempts;
@@ -157,7 +158,8 @@
       workers: {
         x: el("workers-x").value,
         instagram: el("workers-instagram").value,
-        facebook: el("workers-facebook").value
+        facebook: el("workers-facebook").value,
+        tiktok: el("workers-tiktok").value
       },
       delayMin: el("delay-min").value,
       delayMax: el("delay-max").value,

@@ -14,7 +14,8 @@ import {
   writeJsonAtomic,
   readJson,
   getActiveJob,
-  jobFile
+  readJob,
+  writeJob
 } from "./store.mjs";
 import { printJob } from "./status.mjs";
 
@@ -26,7 +27,7 @@ const sameText = (a, b) => a.toLowerCase() === b.toLowerCase();
 
 async function saveJob(job, changes) {
   Object.assign(job, changes, { updatedAt: new Date().toISOString() });
-  await writeJsonAtomic(jobFile(job.jobId), job);
+  await writeJob(job);
   return job;
 }
 
@@ -172,10 +173,10 @@ async function repairGroup(group, root, launchAndMonitor) {
     return false;
   }
   const job = newRepairJob(profile, targets);
-  await writeJsonAtomic(jobFile(job.jobId), job);
+  await writeJob(job);
   await writeJsonAtomic(QUEUE_FILE, { jobId: job.jobId, updatedAt: job.createdAt });
   await launchAndMonitor(job);
-  const completed = await readJson(jobFile(job.jobId));
+  const completed = await readJob(job.jobId);
   return completed?.status !== "complete" || completed?.repairDeleted !== targets.length;
 }
 
@@ -204,7 +205,7 @@ export async function finalizeRepairById(jobId) {
   if (!jobId) {
     throw new Error("Provide the repair job ID to verify.");
   }
-  const job = await readJson(jobFile(jobId));
+  const job = await readJob(jobId);
   if (!job?.repairTargets?.length) {
     throw new Error(`No repair job was found with id ${jobId}.`);
   }

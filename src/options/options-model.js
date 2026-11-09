@@ -74,11 +74,8 @@
       .map(([site, info]) => ({ site, label: info.label, url: info.signInUrl }));
   }
 
-  const FORM_SITES = Object.freeze([
-    ["x", "Twitter"],
-    ["instagram", "Instagram"],
-    ["facebook", "Facebook"]
-  ]);
+  const sites = globalThis.PageMediaLib.sites;
+  const FORM_SITES = Object.freeze(sites.formSites());
 
   // The settings as the form's text fields.
   function settingsToForm(settings) {

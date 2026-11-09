@@ -17,3 +17,5 @@ eslint.config.mjs export-ignore
 .prettierignore export-ignore
 .c8rc.json export-ignore
 Makefile export-ignore
+*.sh text eol=lf
+Dockerfile text eol=lf

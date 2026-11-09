@@ -5,6 +5,7 @@ import test from "node:test";
 import { parseConfig } from "../../cli/config.mjs";
 
 const require = createRequire(import.meta.url);
+require("../../lib/sites.js");
 const model = require("../../src/options/options-model.js");
 const { STRINGS, pick, translator } = require("../../src/options/options-strings.js");
 
@@ -88,7 +89,7 @@ test("the settings form round-trips through the extension's own validator", () =
     limit: 50
   });
   const form = model.settingsToForm(settings);
-  assert.deepEqual(form.workers, { x: "2", instagram: "3", facebook: "1" });
+  assert.deepEqual(form.workers, { x: "2", instagram: "3", facebook: "1", tiktok: "1" });
   assert.deepEqual(
     [form.delayMin, form.delayMax, form.maxAttempts, form.limit, form.unlimited],
     ["5", "9", "4", "50", false]
@@ -152,6 +153,6 @@ test("every element the page script looks up exists in the page", () => {
 
 test("the page loads its scripts in dependency order and nothing from the network", () => {
   const scripts = [...html.matchAll(/<script src="([^"]+)"/g)].map(match => match[1]);
-  assert.deepEqual(scripts, ["options-strings.js", "options-model.js", "options.js"]);
+  assert.deepEqual(scripts, ["../../lib/sites.js", "options-strings.js", "options-model.js", "options.js"]);
   assert.doesNotMatch(html, /https?:\/\//);
 });

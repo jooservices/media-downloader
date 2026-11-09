@@ -4,13 +4,8 @@
     return;
   }
 
-  const host = global.location.hostname.toLowerCase();
-  const HOST_PLATFORMS = [
-    [/(^|\.)(x|twitter)\.com$/, "Twitter"],
-    [/(^|\.)instagram\.com$/, "Instagram"],
-    [/(^|\.)facebook\.com$/, "Facebook"]
-  ];
-  const platform = HOST_PLATFORMS.find(([pattern]) => pattern.test(host))?.[1] ?? null;
+  const site = global.PageMediaLib?.sites?.forHost(global.location.hostname);
+  const platform = site?.name ?? null;
   const parser = platform && global.PageMediaParsers?.[platform];
   if (!parser) {
     return;
@@ -18,14 +13,22 @@
   global.__pageMediaSaverMediaHook = true;
 
   // Only the platform's own data endpoints are read; everything else is left alone.
-  const DATA_URL = {
-    Twitter: /\/i\/api\/graphql\//,
-    Instagram: /\/graphql(?:[/?]|$)|\/api\/v1\//,
-    Facebook: /\/api\/graphql\/|\/ajax\/bulk-route-definitions|\/video\/video_data/
-  }[platform];
+  const DATA_URL = site.dataUrl;
 
   const CHANNEL = "page-media-saver:media";
   const announced = new Set();
+
+  // The scan runs in another world but shares the page's DOM, so the hook leaves its counters on the root
+  // element. When a scan finds nothing, they tell whether the hook ran and what it could read.
+  const stats = { documents: 0, found: 0 };
+  function publishStats() {
+    try {
+      global.document?.documentElement?.setAttribute("data-pms-hook", JSON.stringify(stats));
+    } catch {
+      /* the page has no root element yet; the next response sets it */
+    }
+  }
+  publishStats();
 
   function parseJsonLoose(text) {
     const body = String(text).replace(/^for \(;;\);/, "");
@@ -50,6 +53,7 @@
 
   function publishDocuments(documents) {
     const fresh = [];
+    stats.documents += documents.length;
     for (const document of documents) {
       let found = [];
       try {
@@ -57,6 +61,7 @@
       } catch {
         /* an unexpected shape must not break the page */
       }
+      stats.found += found.length;
       for (const entry of found) {
         const key = `${entry.platform}:${entry.kind}:${entry.id}:${entry.index}`;
         if (announced.has(key)) {
@@ -66,6 +71,7 @@
         fresh.push(entry);
       }
     }
+    publishStats();
     if (fresh.length) {
       global.postMessage({ channel: CHANNEL, media: fresh }, global.location.origin);
     }
@@ -109,20 +115,19 @@
 
   // Instagram and Facebook render their first screens from JSON embedded in the
   // page, so read those blocks too, including ones added while scrolling.
-  if (platform !== "Twitter" && global.document) {
+  if (site.embeddedBootstrap && global.document) {
     const scanned = new WeakSet();
     const scanEmbedded = () => {
       const documents = [];
-      for (const script of global.document.querySelectorAll('script[type="application/json"]')) {
+      const selector = site.embeddedSelector || 'script[type="application/json"]';
+      const hint =
+        site.embeddedHint || /video_versions|image_versions2|progressive_urls|viewer_image|playable_url|browser_native/;
+      for (const script of global.document.querySelectorAll(selector)) {
         if (scanned.has(script)) {
           continue;
         }
         scanned.add(script);
-        if (
-          !/video_versions|image_versions2|progressive_urls|viewer_image|playable_url|browser_native/.test(
-            script.textContent
-          )
-        ) {
+        if (!hint.test(script.textContent)) {
           continue;
         }
         try {
