@@ -13,12 +13,28 @@ async function hasMediaHeader(file, extension) {
     const header = Buffer.alloc(16);
     const { bytesRead } = await handle.read(header, 0, header.length, 0);
     const bytes = header.subarray(0, bytesRead);
+    const size = (await handle.stat()).size;
     const ext = extension.toLowerCase();
     if (["jpg", "jpeg"].includes(ext)) {
-      return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+      const tail = Buffer.alloc(2);
+      const { bytesRead: tailRead } = await handle.read(tail, 0, 2, size - 2);
+      return (
+        bytes.length >= 3 &&
+        bytes[0] === 0xff &&
+        bytes[1] === 0xd8 &&
+        bytes[2] === 0xff &&
+        tailRead === 2 &&
+        tail.equals(Buffer.from([0xff, 0xd9]))
+      );
     }
     if (ext === "png") {
-      return bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      const tail = Buffer.alloc(8);
+      const { bytesRead: tailRead } = await handle.read(tail, 0, 8, size - 8);
+      return (
+        bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) &&
+        tailRead === 8 &&
+        tail.subarray(4).toString("ascii") === "IEND"
+      );
     }
     if (ext === "gif") {
       return bytes.subarray(0, 6).toString("ascii").startsWith("GIF8");
@@ -78,6 +94,13 @@ async function inspectDirectory(directory) {
 }
 
 const expectedCount = job => Number(job.started || 0) + Number(job.videoStarted || 0);
+const expectedOutputs = jobs =>
+  jobs.flatMap(job =>
+    (Array.isArray(job.outputFiles) ? job.outputFiles : []).map(file => ({
+      filename: path.basename(file.filename || file),
+      size: Number.isFinite(Number(file.size)) ? Number(file.size) : null
+    }))
+  );
 
 export async function verifyAccount(rawAccount, { repair = false, config = null, jobs = null, write = writeJob } = {}) {
   const parsed = normalizeProfileUrl(rawAccount);
@@ -90,16 +113,51 @@ export async function verifyAccount(rawAccount, { repair = false, config = null,
   const completed = accountJobs.filter(job => job.status === "complete");
   const expected = completed.reduce((count, job) => count + expectedCount(job), 0);
   const found = await inspectDirectory(directory);
-  found.missing = Math.max(0, expected - found.files.length);
+  const outputs = expectedOutputs(completed);
+  for (const output of outputs.filter(item => item.size !== null)) {
+    const match = found.files.find(file => path.basename(file).toLowerCase() === output.filename.toLowerCase());
+    if (match && (await stat(match)).size !== output.size) {
+      found.files.splice(found.files.indexOf(match), 1);
+      found.corrupt.push(match);
+    }
+  }
+  const presentNames = new Set([...found.files, ...found.corrupt].map(file => path.basename(file).toLowerCase()));
+  const missingNames = outputs.map(output => output.filename).filter(name => !presentNames.has(name.toLowerCase()));
+  found.missing = outputs.length
+    ? missingNames.length + Math.max(0, expected - outputs.length)
+    : Math.max(0, expected - found.files.length);
+  found.expectedNames = outputs.map(output => output.filename);
+  found.missingNames = missingNames;
+  const repairNames = new Set(
+    [
+      ...missingNames,
+      ...found.corrupt.map(file => path.basename(file)),
+      ...found.partial.map(file => path.basename(file).replace(PARTIAL, ""))
+    ].map(name => name.toLowerCase())
+  );
+  const repairJobs = completed.filter(job => {
+    const outputsForJob = Array.isArray(job.outputFiles) ? job.outputFiles : [];
+    return (
+      !outputsForJob.length ||
+      outputsForJob.some(file => repairNames.has(path.basename(file.filename || file).toLowerCase()))
+    );
+  });
   const affected = found.missing + found.corrupt.length + found.partial.length > 0;
   let requeued = 0;
   if (repair && affected) {
-    for (const job of completed) {
+    for (const job of repairJobs) {
       await write({
         ...job,
         status: "queued",
         attempts: 0,
         openedAt: null,
+        repairBasenames:
+          Array.isArray(job.outputFiles) && job.outputFiles.length
+            ? job.outputFiles
+                .map(file => path.basename(file.filename || file))
+                .filter(name => repairNames.has(name.toLowerCase()))
+            : [...repairNames],
+        forceRedownload: true,
         message: "Requeued by verify --repair because account files are missing, corrupt or partial."
       });
       requeued++;

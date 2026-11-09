@@ -25,7 +25,8 @@ const require = createRequire(import.meta.url);
 export const SITE_FOLDERS = require("../lib/sites.js").names();
 const UNFINISHED = /\.(crdownload|tmp|part|download)$/i;
 const DEFAULT_SETTLE_MS = 15_000;
-const ORPHAN_AGE_MS = 0;
+const ORPHAN_AGE_MS = 60 * 60_000;
+const OWNED_PARTIAL = /^\.pms-mover-[0-9a-f-]{36}\.part$/i;
 const COMPARE_CHUNK = 1024 * 1024;
 const OVERLAP_MESSAGE = "The download folder must not be the browser's Downloads folder or sit inside it.";
 const moveLocks = new Map();
@@ -47,7 +48,7 @@ export async function cleanOrphanedPartials(root, { now = Date.now(), maxAgeMs =
       const file = path.join(directory, entry.name);
       if (entry.isDirectory()) {
         await visit(file);
-      } else if (entry.isFile() && UNFINISHED.test(entry.name)) {
+      } else if (entry.isFile() && OWNED_PARTIAL.test(entry.name)) {
         const info = await stat(file);
         if (maxAgeMs === 0 || now - info.mtimeMs >= maxAgeMs) {
           await unlink(file);
@@ -168,7 +169,7 @@ async function moveOne(from, toDirectory, name, result, copyFileImpl) {
   if (existing) {
     target = await freeName(toDirectory, name);
   }
-  const temporary = path.join(toDirectory, `.${name}.${randomUUID()}.part`);
+  const temporary = path.join(toDirectory, `.pms-mover-${randomUUID()}.part`);
   try {
     await copyFileImpl(from, temporary, constants.COPYFILE_EXCL);
     if ((await stat(temporary)).size !== size || !(await sameContents(from, temporary))) {
@@ -199,6 +200,19 @@ async function moveAccountFolder(source, destination, { now, settleMs, copyFileI
     } catch (error) {
       result.failed++;
       result.errors.push(`${entry.name}: ${error?.message || error}`);
+      const sourceStillExists = await stat(from).then(
+        () => true,
+        () => false
+      );
+      if (
+        error &&
+        ["EACCES", "EHOSTUNREACH", "ENETUNREACH", "ENODEV", "EIO", "ENOENT", "EPERM", "ETIMEDOUT"].includes(
+          error.code
+        ) &&
+        (error.code !== "ENOENT" || sourceStillExists)
+      ) {
+        result.destinationAvailable = false;
+      }
     }
   }
   await rmdir(source).catch(() => {});
@@ -214,7 +228,7 @@ async function moveFinishedFilesUnlocked({
   copyFileImpl = copyFile,
   resolveDestination = realLocation
 }) {
-  const result = { moved: 0, duplicates: 0, skipped: 0, failed: 0, errors: [] };
+  const result = { moved: 0, duplicates: 0, skipped: 0, failed: 0, errors: [], destinationAvailable: true };
   if (overlaps(sourceRoot, destRoot)) {
     throw new Error(OVERLAP_MESSAGE);
   }
@@ -231,7 +245,8 @@ async function moveFinishedFilesUnlocked({
       failed: 1,
       errors: [
         `${destRoot}: destination is unavailable; the source files were left in place (${error?.message || error}).`
-      ]
+      ],
+      destinationAvailable: false
     };
   }
   if (overlaps(realSource, realDestination)) {
@@ -254,6 +269,7 @@ async function moveFinishedFilesUnlocked({
         result.errors.push(
           `${site}/${account.name}: destination is unavailable; files remain in Downloads (${error?.message || error}).`
         );
+        result.destinationAvailable = false;
         continue;
       }
       if (overlaps(realSource, realAccountDestination)) {

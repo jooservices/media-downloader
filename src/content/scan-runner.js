@@ -142,6 +142,17 @@ globalThis.PageMediaSaver ??= {};
     autoState.pending = finalStatus.pending || 0;
     autoState.failed = finalStatus.failed || 0;
     autoState.unavailable = finalStatus.unavailable || 0;
+    const outputs = await chrome.runtime
+      .sendMessage({
+        type: "GET_VERIFIED_OUTPUTS",
+        platform: autoState.platform,
+        account: autoState.account,
+        jobId: autoState.jobId
+      })
+      .catch(() => []);
+    if (Array.isArray(outputs) && outputs.length) {
+      autoState.outputFiles = outputs.map(({ filename, size }) => ({ filename, size }));
+    }
   }
 
   function endScan(status, message) {
@@ -177,12 +188,25 @@ globalThis.PageMediaSaver ??= {};
     const matched = [];
     for (const item of allItems) {
       const basename = repairBasename(item.url);
-      if (basename !== null && targetNames.has(lowerName(basename)) && !seen.has(lowerName(basename))) {
+      const filename = String(item.filename || "")
+        .split(/[\\/]/)
+        .pop();
+      const resolved = PageMediaLib.paths.cleanPart(
+        PageMediaLib.paths.withResolution(filename, item.width, item.height),
+        `photo.${PageMediaLib.paths.imageExtension(item.url)}`
+      );
+      const target = [resolved, filename, basename].find(
+        name => name && targetNames.has(lowerName(name)) && !seen.has(lowerName(name))
+      );
+      if (target) {
         matched.push({
           ...item,
-          key: `repair:${autoState.jobId}:${lowerName(basename)}`,
+          key: `repair:${autoState.jobId}:${lowerName(target)}`,
+          filename: target,
+          width: undefined,
+          height: undefined,
           overwrite: true,
-          repairBasename: basename
+          repairBasename: target
         });
       }
     }
@@ -201,6 +225,29 @@ globalThis.PageMediaSaver ??= {};
           account: item.account,
           platform: item.platform
         });
+      }
+    }
+  }
+
+  async function prepareDownloadItems(items) {
+    const sized = await addImageSizes(items);
+    return autoState.repairMode ? repairItemsFrom(sized) : sized;
+  }
+
+  function recordOutputFiles(items) {
+    autoState.outputFiles ??= [];
+    for (const item of items) {
+      const inputName = String(item.filename || "")
+        .split(/[\\/]/)
+        .pop();
+      const filename = autoState.repairMode
+        ? inputName
+        : PageMediaLib.paths.cleanPart(
+            PageMediaLib.paths.withResolution(inputName, item.width, item.height),
+            `photo.${PageMediaLib.paths.imageExtension(item.url)}`
+          );
+      if (filename && !autoState.outputFiles.some(output => output.filename.toLowerCase() === filename.toLowerCase())) {
+        autoState.outputFiles.push({ filename });
       }
     }
   }
@@ -232,10 +279,14 @@ globalThis.PageMediaSaver ??= {};
       return emptyBatch(result);
     }
     // Repair mode keeps the original file names so the old copies can be matched.
-    const items = autoState.repairMode ? repairItemsFrom(result.items) : await addImageSizes(allowed);
+    const items = await prepareDownloadItems(autoState.repairMode ? result.items : allowed);
     if (!items.length) {
       return { started: 0, skipped: 0, failed: 0, pending: 0, errors: [] };
     }
+    for (const item of items) {
+      item.jobId = autoState.jobId;
+    }
+    recordOutputFiles(items);
     const response = await chrome.runtime.sendMessage({ type: "DOWNLOAD_ITEMS", items });
     if (!response?.ok) {
       throw new Error(response?.error || "The download request failed.");
@@ -447,7 +498,8 @@ globalThis.PageMediaSaver ??= {};
       repairMode: Array.isArray(repairTargets) && repairTargets.length > 0,
       repairTargets: Array.isArray(repairTargets) ? repairTargets.map(value => String(value)) : [],
       repairFound: [],
-      repairFiles: []
+      repairFiles: [],
+      outputFiles: []
     };
     publishAutoState();
     runAutoDownload();

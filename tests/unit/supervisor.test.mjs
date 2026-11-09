@@ -10,7 +10,7 @@ import {
 } from "../../cli/supervisor.mjs";
 
 // A tiny in-memory stand-in for the job files, the clock and Edge.
-function setup(configInput = {}, jobs = []) {
+function setup(configInput = {}, jobs = [], moveResult = { moved: 2, failed: 0 }) {
   let clock = Date.parse("2026-01-01T00:00:00Z");
   const store = new Map(jobs.map(job => [job.jobId, structuredClone(job)]));
   const opened = [];
@@ -34,7 +34,7 @@ function setup(configInput = {}, jobs = []) {
     },
     moveFiles: async destRoot => {
       moves.push(destRoot);
-      return { moved: 2, failed: 0 };
+      return typeof moveResult === "function" ? moveResult() : moveResult;
     }
   });
   return {
@@ -174,6 +174,21 @@ test("files are moved only when a download folder is configured, at most every 2
   await on.tick();
   assert.equal(on.moves.length, 2);
   assert.ok(on.logs.some(line => /Moved 2 file/.test(line)));
+});
+
+test("an unavailable destination pauses scheduling and retries after it returns", async () => {
+  let available = false;
+  const env = setup({ downloadDir: "\\\\nas\\media" }, [queued("1", "Instagram", "a")], () => ({
+    moved: 0,
+    failed: available ? 0 : 1,
+    destinationAvailable: available
+  }));
+  assert.equal((await env.tick()).opened, 0);
+  assert.equal(env.job("1").status, "queued");
+  assert.ok(env.logs.some(line => /Downloads are paused/.test(line)));
+  available = true;
+  env.advance(20_001);
+  assert.equal((await env.tick()).opened, 1);
 });
 
 test("a sign-in wall puts the job back to waiting and holds the whole site, while other sites carry on", async () => {

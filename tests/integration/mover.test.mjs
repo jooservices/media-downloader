@@ -3,7 +3,9 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { parseConfig } from "../../cli/config.mjs";
 import { cleanOrphanedPartials, moveFinishedFiles } from "../../cli/mover.mjs";
+import { createSupervisor } from "../../cli/supervisor.mjs";
 
 const NOW = Date.now();
 const OLD = new Date(NOW - 60_000);
@@ -45,14 +47,25 @@ test("leaves files that are still being written or downloaded", async () => {
   assert.deepEqual(await names(path.join(source, "Instagram", "alice")), ["big.mp4.crdownload", "fresh.jpg"]);
 });
 
-test("startup cleanup removes orphaned partials recursively, including recent files", async () => {
+test("startup cleanup removes only stale mover partials and preserves unrelated or active files", async () => {
   const { dest } = await area();
   const account = path.join(dest, "Instagram", "alice");
-  await put(path.join(account, ".photo.jpg.123.part"), "stale", new Date(NOW - 2 * 60 * 60 * 1000));
-  await put(path.join(account, "video.mp4.crdownload"), "orphan", new Date(NOW - 1000));
+  await put(
+    path.join(account, ".pms-mover-123e4567-e89b-12d3-a456-426614174000.part"),
+    "stale",
+    new Date(NOW - 2 * 60 * 60 * 1000)
+  );
+  await put(path.join(account, ".pms-mover-123e4567-e89b-12d3-a456-426614174001.part"), "active", new Date(NOW - 1000));
+  await put(path.join(account, "project.tmp"), "user data");
+  await put(path.join(account, "video.mp4.crdownload"), "browser download");
   await put(path.join(account, "complete.jpg"), "media");
-  assert.equal(await cleanOrphanedPartials(dest, { now: NOW }), 2);
-  assert.deepEqual(await names(account), ["complete.jpg"]);
+  assert.equal(await cleanOrphanedPartials(dest, { now: NOW }), 1);
+  assert.deepEqual(await names(account), [
+    ".pms-mover-123e4567-e89b-12d3-a456-426614174001.part",
+    "complete.jpg",
+    "project.tmp",
+    "video.mp4.crdownload"
+  ]);
 });
 
 test("a destination share that disappears leaves the source in place for a later pass", async () => {
@@ -75,6 +88,52 @@ test("a destination share that disappears leaves the source in place for a later
   const resumed = await moveFinishedFiles({ sourceRoot: source, destRoot: dest, now: NOW });
   assert.equal(resumed.moved, 1);
   assert.equal(await readFile(path.join(dest, "Instagram", "alice", "photo.jpg"), "utf8"), "photo");
+});
+
+test("a destination that disappears during a copy is reported unavailable to the supervisor", async () => {
+  const { source, dest } = await area();
+  const original = path.join(source, "Instagram", "alice", "photo.jpg");
+  await put(original, "photo");
+  const result = await moveFinishedFiles({
+    sourceRoot: source,
+    destRoot: dest,
+    now: NOW,
+    copyFileImpl: async () => {
+      const error = new Error("share went away");
+      error.code = "EIO";
+      throw error;
+    }
+  });
+  assert.equal(result.destinationAvailable, false);
+  assert.equal(await readFile(original, "utf8"), "photo");
+});
+
+test("the supervisor holds queued jobs when the real mover reports a missing destination", async () => {
+  const { source, dest } = await area();
+  const job = { jobId: "job-1", platform: "Instagram", account: "alice", status: "queued", attempts: 0 };
+  const opened = [];
+  const supervisor = createSupervisor({
+    now: () => Date.now(),
+    random: () => 0,
+    log: () => {},
+    loadConfig: async () => parseConfig({ delaySeconds: { min: 0, max: 0 }, downloadDir: dest }),
+    listJobs: async () => [job],
+    updateJob: async (id, mutate) => mutate(job),
+    openJob: async current => opened.push(current.jobId),
+    moveFiles: async destRoot =>
+      moveFinishedFiles({
+        sourceRoot: source,
+        destRoot,
+        resolveDestination: async () => {
+          const error = new Error("share unavailable");
+          error.code = "ENODEV";
+          throw error;
+        }
+      })
+  });
+  await supervisor.tick();
+  assert.deepEqual(opened, []);
+  assert.equal(job.status, "queued");
 });
 
 test("disk-full errors remove the temporary copy and preserve the original for retry", async () => {

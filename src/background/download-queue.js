@@ -11,6 +11,7 @@ const STORAGE_DEFAULTS = {
   nativeVideoPending: {},
   nativeVideoFailures: {},
   nativeVideoAttempts: {},
+  verifiedOutputs: {},
   queueSettings: null
 };
 
@@ -78,6 +79,7 @@ async function readDownloadState() {
     nativePending: { ...stored.nativeVideoPending },
     nativeFailures: { ...stored.nativeVideoFailures },
     nativeAttempts: { ...stored.nativeVideoAttempts },
+    outputs: { ...stored.verifiedOutputs },
     nativeTarget: stored.nativeVideoTarget || null,
     maxAttempts:
       Number.isInteger(configuredAttempts) && configuredAttempts >= 1 && configuredAttempts <= 20
@@ -96,8 +98,34 @@ async function writeDownloadState(state) {
     nativeVideoPending: state.nativePending,
     nativeVideoFailures: state.nativeFailures,
     nativeVideoAttempts: state.nativeAttempts,
+    verifiedOutputs: state.outputs,
     nativeVideoTarget: state.nativeTarget || null
   });
+}
+
+function downloadedOutput(download, item) {
+  const filename = String(download.filename || "")
+    .split(/[\\/]/)
+    .pop();
+  return filename && Number(download.fileSize) > 0
+    ? {
+        filename,
+        size: Number(download.fileSize),
+        platform: item.platform,
+        account: item.account,
+        jobId: item.jobId || null
+      }
+    : null;
+}
+
+async function getVerifiedOutputs(platform, account, jobId) {
+  const { verifiedOutputs = {} } = await chrome.storage.local.get({ verifiedOutputs: {} });
+  return Object.values(verifiedOutputs).filter(
+    output =>
+      (!platform || output.platform === platform) &&
+      (!account || output.account?.toLowerCase() === account.toLowerCase()) &&
+      (!jobId || output.jobId === jobId)
+  );
 }
 
 // The browser's record of a download once it has ended; null while it is still running
@@ -108,6 +136,12 @@ async function findFinishedDownload(id) {
     return download && FINISHED_STATES.includes(download.state) ? download : null;
   } catch {
     return null;
+  }
+}
+
+async function discardRejectedDownload(download) {
+  if (download?.state === "complete" && Number.isInteger(download.id) && chrome.downloads.removeFile) {
+    await chrome.downloads.removeFile(download.id).catch(() => undefined);
   }
 }
 
@@ -202,10 +236,15 @@ async function reconcilePending(state) {
       download.state === "complete" ? downloadIntegrityError(download, expectedMediaType(item)) : null;
     if (download.state === "complete" && !integrityError) {
       await ledgerAdd(key);
+      const output = downloadedOutput(download, item);
+      if (output) {
+        state.outputs[key] = output;
+      }
       delete state.failed[key];
     } else if (item && isUnavailableError(download.error)) {
       await settleUnavailable(state, key, item);
     } else if (item) {
+      await discardRejectedDownload(download);
       state.failed[key] = {
         item,
         attempts: Number(state.attempts[key] || 1),
@@ -225,10 +264,15 @@ async function reconcileNative(state) {
     const integrityError = download.state === "complete" ? downloadIntegrityError(download, "video") : null;
     if (download.state === "complete" && !integrityError) {
       await ledgerAdd(entry.key);
+      const output = downloadedOutput(download, entry);
+      if (output) {
+        state.outputs[entry.key] = output;
+      }
       delete state.nativeFailures[entry.key];
     } else if (isUnavailableError(download.error)) {
       await settleUnavailable(state, entry.key, entry);
     } else {
+      await discardRejectedDownload(download);
       state.nativeFailures[entry.key] = {
         platform: entry.platform,
         account: entry.account,

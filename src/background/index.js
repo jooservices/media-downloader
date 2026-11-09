@@ -37,7 +37,8 @@ const handlers = {
   DOWNLOAD_ITEMS: message => queueBatch(() => downloadBatch(message.items)),
   RETRY_FAILED_DOWNLOADS: message => queueBatch(() => retryFailedDownloads(message.platform, message.account)),
   DRAIN_DOWNLOADS: message => queueBatch(() => drainDownloads(message.platform, message.account, message.timeoutMs)),
-  DOWNLOAD_STATUS: message => queueBatch(() => getDownloadStatus(message.platform, message.account))
+  DOWNLOAD_STATUS: message => queueBatch(() => getDownloadStatus(message.platform, message.account)),
+  GET_VERIFIED_OUTPUTS: message => getVerifiedOutputs(message.platform, message.account, message.jobId)
 };
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

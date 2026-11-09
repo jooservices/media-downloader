@@ -167,6 +167,11 @@ test("empty, size-mismatched and non-image completions stay retryable instead of
   assert.equal(result.failed, 4);
   assert.equal(result.retryable, 4);
   assert.equal(await env.ledger.has("Twitter|image|1|1"), false);
+  assert.deepEqual(
+    env.removedDownloads,
+    [1, 2, 3, 4],
+    "rejected completed files are removed before the mover can publish them"
+  );
   assert.match(env.storage.failedDownloads["Twitter|image|2|1"].error, /size did not match/);
   assert.match(env.storage.failedDownloads["Twitter|image|3|1"].error, /expected image/);
 });
@@ -182,6 +187,22 @@ test("a corrupt completion can be retried and only the verified retry enters the
   const result = await status(env);
   assert.equal(result.failed, 0);
   assert.equal(await env.ledger.has("Twitter|image|1|1"), true);
+});
+
+test("verified outputs keep their filename and size, and repair keys can replace ledgered media", async () => {
+  const env = loadBackground();
+  await env.ledger.add("Twitter|image|1|1");
+  const item = photo(1, { key: "repair:job-1:pic1.jpg", filename: "pic1.jpg", overwrite: true, jobId: "job-1" });
+  await download(env, [item]);
+  assert.equal(env.started[0].conflictAction, "overwrite");
+  finish(env, 1, { filename: "Twitter/alice/pic1.jpg" });
+  await status(env);
+  const outputs = plain(
+    await env.send({ type: "GET_VERIFIED_OUTPUTS", platform: "Twitter", account: "alice", jobId: "job-1" })
+  );
+  assert.deepEqual(outputs, [
+    { filename: "pic1.jpg", size: 10, platform: "Twitter", account: "alice", jobId: "job-1" }
+  ]);
 });
 
 test("an interrupted download with no reason gets a plain one, and one with no item record is just forgotten", async () => {
