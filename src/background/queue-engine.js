@@ -51,17 +51,24 @@ function createQueueEngine({ store, settings, login, tabs, now, random, log }) {
   }
 
   let running = null;
+  let rerunRequested = false;
   // One pass at a time: a second request while one is running simply shares its result.
   function tick() {
-    running ??= (async () => {
-      try {
-        const summary = await supervisor.tick();
+    if (running) {
+      rerunRequested = true;
+      return running;
+    }
+    running = (async () => {
+      let summary;
+      do {
+        rerunRequested = false;
+        summary = await supervisor.tick();
         await closeSpentTabs();
-        return summary;
-      } finally {
-        running = null;
-      }
-    })();
+      } while (rerunRequested);
+      return summary;
+    })().finally(() => {
+      running = null;
+    });
     return running;
   }
 

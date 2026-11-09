@@ -89,12 +89,36 @@ test("the oldest waiting job for the page starts and is claimed so a second tab 
   assert.equal(first.job.status, "running");
   assert.equal(first.job.tabId, 7);
   assert.match(first.job.message, /profile page/);
+  assert.equal(claimed.size, 1, "the current attempt remains guarded against duplicate claims");
   assert.equal((await read(2)).status, "queued");
 
   const second = await handleBridgeMessage(ready({ tabId: 8 }), claimed);
   assert.equal(second.job.jobId, id(2), "the next tab gets the next job");
   const third = await handleBridgeMessage(ready({ tabId: 9 }), claimed);
   assert.equal(third.type, "JOB_CONNECTED", "both jobs are taken");
+});
+
+test("bridge claim history stays bounded across repeated attempts", async () => {
+  const claimed = new Set();
+  await putJob(42, { openedAt: "2026-01-01T00:00:00.000Z" });
+  for (let attempt = 0; attempt < 501; attempt++) {
+    await store.updateJob(id(42), job => {
+      job.status = "queued";
+      job.openedAt = new Date(Date.UTC(2026, 0, 1, 0, attempt)).toISOString();
+    });
+    assert.equal((await handleBridgeMessage(ready({ tabId: attempt + 1 }), claimed)).type, "START_JOB");
+  }
+  assert.equal(claimed.size, 500);
+});
+
+test("PAGE_READY finds a later tagged page after hundreds of older jobs for other URLs", async () => {
+  for (let n = 1; n <= 501; n++) {
+    await putJob(n, { url: `https://www.instagram.com/other-${n}/` });
+  }
+  await putJob(502, { openedAt: "2026-01-01T00:00:00.000Z" });
+  const result = await handleBridgeMessage(ready({ cliJobId: id(502) }), new Set());
+  assert.equal(result.type, "START_JOB");
+  assert.equal(result.job.jobId, id(502));
 });
 
 test("a page for another site, account or address does not match the job", async () => {

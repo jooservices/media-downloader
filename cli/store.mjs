@@ -1,7 +1,7 @@
 // Where the CLI keeps its files, and how it reads and writes them.
 import { createRequire } from "node:module";
 import { createJobStore } from "./jobstore.mjs";
-import { mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { randomBytes, randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -88,7 +88,12 @@ export function jobs() {
 }
 
 // Every saved job, newest first.
-export const listJobs = () => Promise.resolve().then(() => jobs().list());
+export const listJobs = options => Promise.resolve().then(() => jobs().list(options));
+export const countJobs = status => Promise.resolve().then(() => jobs().count({ status }));
+export const matchingJobs = (platform, account, pageUrl) =>
+  Promise.resolve().then(() => jobs().matchingJobs(platform, account, pageUrl));
+export const watchHistory = urls => Promise.resolve().then(() => jobs().watchHistory(urls));
+export const hasJobUrl = url => Promise.resolve().then(() => jobs().hasUrl(url));
 
 export const readJob = jobId => Promise.resolve().then(() => (isJobId(jobId) ? jobs().read(jobId) : null));
 
@@ -126,6 +131,16 @@ export async function getActiveJob() {
 export async function ensureApiToken() {
   try {
     const existing = (await readFile(API_TOKEN_FILE, "utf8")).trim();
+    if (process.platform !== "win32") {
+      // writeFile's mode only applies on creation; an empty pre-existing file may be permissive.
+      try {
+        await chmod(API_TOKEN_FILE, 0o600);
+      } catch (error) {
+        if (!new Set(["EPERM", "EACCES"]).has(error?.code)) {
+          throw error;
+        }
+      }
+    }
     if (existing) {
       return existing;
     }
@@ -142,6 +157,27 @@ export async function ensureApiToken() {
 `,
     { encoding: "utf8", mode: 0o600 }
   );
+  return token;
+}
+
+// Replace the bearer secret atomically so a running server can be restarted with the new value.
+export async function rotateApiToken() {
+  const token = randomBytes(32).toString("hex");
+  await mkdir(APP_DIR, { recursive: true });
+  const temporary = `${API_TOKEN_FILE}.${process.pid}.${randomUUID()}.tmp`;
+  await writeFile(temporary, `${token}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  try {
+    if (process.platform !== "win32") {
+      await chmod(temporary, 0o600);
+    }
+    await rename(temporary, API_TOKEN_FILE);
+    if (process.platform !== "win32") {
+      await chmod(API_TOKEN_FILE, 0o600);
+    }
+  } catch (error) {
+    await unlink(temporary).catch(() => {});
+    throw error;
+  }
   return token;
 }
 

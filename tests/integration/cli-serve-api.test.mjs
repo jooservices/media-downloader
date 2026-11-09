@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -20,6 +21,7 @@ function freePort() {
 const home = await mkdtemp(path.join(os.tmpdir(), "pms-serve-api-"));
 const API_PORT = await freePort();
 process.env.LOCALAPPDATA = home;
+delete process.env.PMS_DATA_DIR;
 process.env.PMS_BRIDGE_PORT = String(await freePort());
 process.env.PMS_API_PORT = String(API_PORT);
 const store = await import("../../cli/store.mjs");
@@ -34,6 +36,30 @@ const LIMITED = "00000000-0000-4000-8000-000000000079";
 after(() => {
   store.closeJobStore();
   return rm(home, { recursive: true, force: true });
+});
+
+test("the API token is private on POSIX and rotation replaces it without printing it", async () => {
+  const before = await store.ensureApiToken();
+  if (process.platform !== "win32") {
+    assert.equal((await stat(store.API_TOKEN_FILE)).mode & 0o777, 0o600);
+  }
+  const rotated = await store.rotateApiToken();
+  assert.notEqual(rotated, before);
+  assert.equal((await readFile(store.API_TOKEN_FILE, "utf8")).trim(), rotated);
+  if (process.platform !== "win32") {
+    assert.equal((await stat(store.API_TOKEN_FILE)).mode & 0o777, 0o600);
+  }
+  const output = execFileSync(process.execPath, [path.resolve("cli/mediasaver.mjs"), "api-token", "rotate"], {
+    env: { ...process.env, LOCALAPPDATA: home },
+    encoding: "utf8"
+  });
+  const fromCommand = (await readFile(store.API_TOKEN_FILE, "utf8")).trim();
+  assert.notEqual(fromCommand, rotated);
+  assert.doesNotMatch(output, new RegExp(fromCommand));
+  assert.match(output, /API token rotated/);
+  if (process.platform !== "win32") {
+    assert.equal((await stat(store.API_TOKEN_FILE)).mode & 0o777, 0o600);
+  }
 });
 
 function interrupter() {

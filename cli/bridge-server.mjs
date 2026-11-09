@@ -11,6 +11,7 @@ import {
   normalizeProfileUrl,
   readJson,
   listJobs,
+  matchingJobs,
   updateJob,
   isJobId,
   isSignInPage,
@@ -18,6 +19,7 @@ import {
 } from "./store.mjs";
 
 const MAX_BODY_BYTES = 1_000_000;
+const MAX_CLAIMED_JOBS = 500;
 const JOB_UPDATES = new Set(["JOB_PROGRESS", "JOB_DONE", "JOB_ERROR", "JOB_RATE_LIMIT"]);
 const require = createRequire(import.meta.url);
 const { applyProgress, applyError } = require("../lib/job-progress.js");
@@ -222,7 +224,13 @@ async function handlePageReady(message, claimedJobs) {
       return verdict;
     }
   }
-  const matching = (await listJobs())
+  let pageUrl = message.pageUrl || "";
+  try {
+    pageUrl = normalizeProfileUrl(pageUrl).url;
+  } catch {
+    // The store's exact-URL candidate for a media post is only an accelerator; pageMatchesJob rejects bad URLs.
+  }
+  const matching = (await matchingJobs(message.platform, message.account || "", pageUrl))
     .filter(job => !TERMINAL_STATES.has(job.status) && pageMatchesJob(message, job))
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   const waiting = matching.find(job => job.status === "queued" && !claimedJobs.has(claimKey(job)));
@@ -230,6 +238,9 @@ async function handlePageReady(message, claimedJobs) {
     return { ok: true, type: matching.length ? "JOB_CONNECTED" : "NO_JOB" };
   }
   claimedJobs.add(claimKey(waiting));
+  while (claimedJobs.size > MAX_CLAIMED_JOBS) {
+    claimedJobs.delete(claimedJobs.values().next().value);
+  }
   const started = await updateJob(waiting.jobId, job => {
     if (job.mediaPage) {
       job.account = String(message.account || job.account);
@@ -288,6 +299,9 @@ async function handleJobUpdate(message) {
       applyError(current, message.error);
     } else {
       applyProgress(current, message);
+      if (message.type === "JOB_PROGRESS") {
+        current.lastProgressAt = new Date().toISOString();
+      }
     }
   });
   if (!job) {

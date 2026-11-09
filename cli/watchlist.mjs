@@ -3,7 +3,7 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { APP_DIR, accountPages, listJobs } from "./store.mjs";
+import { APP_DIR, accountPages, watchHistory } from "./store.mjs";
 
 const require = createRequire(import.meta.url);
 const { RESCAN_MS, urlsDue } = require("../lib/watch.js");
@@ -52,5 +52,6 @@ export async function removeWatch(url, file = DEFAULT_WATCH) {
 
 // Watched pages whose last scan is old enough to run again.
 export async function watchDue(file = DEFAULT_WATCH, now = Date.now()) {
-  return urlsDue(await listJobs(), await readWatchList(file), now, RESCAN_MS);
+  const urls = await readWatchList(file);
+  return urlsDue(await watchHistory(urls), urls, now, RESCAN_MS);
 }
