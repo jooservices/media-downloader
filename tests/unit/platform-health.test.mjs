@@ -66,6 +66,16 @@ test("a zero-media completion does not clear diagnostics before a media-backed r
   assert.match(item.reason, /found media/);
 });
 
+test("a media recovery for one account does not clear another account's diagnostic", () => {
+  const item = platformHealth([
+    job(1, { account: "alice", started: 0, status: "error", message: "Selector failed to find media" }),
+    job(2, { account: "bob", started: 0, status: "error", message: "Selector failed to find media" }),
+    job(3, { account: "bob", started: 1 })
+  ]).find(entry => entry.platform === "Instagram");
+  assert.equal(item.state, "broken");
+  assert.match(item.reason, /alice/);
+});
+
 test("media found honours explicit count and otherwise combines discovered media counters", () => {
   assert.equal(mediaFound({ mediaFound: 4, started: 0 }), 4);
   assert.equal(mediaFound({ started: 1, skipped: 2, videoStarted: 1, videoSkipped: 1 }), 5);

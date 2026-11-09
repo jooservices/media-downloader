@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { JOBS_DB_FILE, LOGS_DIR, TERMINAL_STATES, deleteJob, listJobs } from "./store.mjs";
 
-const { mediaFound } = createRequire(import.meta.url)("../lib/platform-health.js");
+const { mediaFound, isMediaDiagnostic } = createRequire(import.meta.url)("../lib/platform-health.js");
 const HEALTH_FINISHED_STATES = new Set(["complete", "incomplete", "error"]);
 const canaryKey = job =>
   `${String(job.platform || "").toLowerCase()}|${String(job.account || "unknown").toLowerCase()}`;
@@ -19,6 +19,7 @@ export function expiredJobs(jobs, now, retentionMs = JOB_RETENTION_MS) {
   const newest = new Map();
   const newestProductive = new Map();
   const recentCanaryJobs = new Map();
+  const unresolvedDiagnostics = new Set();
   const touchedAt = job => String(job.updatedAt || job.createdAt || "");
   for (const job of jobs) {
     const seen = newest.get(job.url);
@@ -39,10 +40,24 @@ export function expiredJobs(jobs, now, retentionMs = JOB_RETENTION_MS) {
       recentCanaryJobs.set(key, recent);
     }
   }
-  const canaryHistory = [...recentCanaryJobs.entries()].flatMap(([key, accountJobs]) =>
-    newestProductive.has(key) ? accountJobs.sort((a, b) => touchedAt(b).localeCompare(touchedAt(a))).slice(0, 3) : []
-  );
-  const retained = new Set([...newest.values(), ...newestProductive.values(), ...canaryHistory]);
+  const canaryHistory = [...recentCanaryJobs.values()].flatMap(accountJobs => {
+    const sortedJobs = accountJobs.sort((a, b) => touchedAt(b).localeCompare(touchedAt(a)));
+    const diagnosticIndex = sortedJobs.findIndex(job => isMediaDiagnostic(String(job.message || "")));
+    if (
+      diagnosticIndex >= 0 &&
+      !sortedJobs.slice(0, diagnosticIndex).some(job => job.status === "complete" && mediaFound(job) > 0)
+    ) {
+      unresolvedDiagnostics.add(sortedJobs[diagnosticIndex]);
+      return sortedJobs.slice(0, 3);
+    }
+    return newestProductive.has(canaryKey(sortedJobs[0])) ? sortedJobs.slice(0, 3) : [];
+  });
+  const retained = new Set([
+    ...newest.values(),
+    ...newestProductive.values(),
+    ...canaryHistory,
+    ...unresolvedDiagnostics
+  ]);
   return jobs.filter(job => {
     const touched = Date.parse(job.updatedAt || job.createdAt || 0);
     return (
