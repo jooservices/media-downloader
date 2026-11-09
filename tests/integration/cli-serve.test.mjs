@@ -436,6 +436,7 @@ test("child-process chaos restart recovers a bridge-acknowledged in-flight job w
   assert.equal(recovered.noRetry, true);
   assert.match(recovered.message, /previous run was interrupted/);
   assert.equal((await readFile(marker, "utf8")).trim().split(/\r?\n/).length, 1, "the fake extension ran once total");
+  await waitFor(() => second.output().includes("Serving."), "restarted serve startup log");
   second.child.kill("SIGTERM");
   await once(second.child, "exit");
   assert.match(second.output(), /Serving\./);
