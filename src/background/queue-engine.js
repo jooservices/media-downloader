@@ -138,13 +138,14 @@ function createQueueEngine({ store, settings, login, tabs, now, random, log }) {
     const job =
       jobs.find(item => item.tabId === tabId) ||
       jobs.find(item => item.completedTabId === tabId && now() - Date.parse(item.completedTabAt || 0) <= 60_000);
-    if (!job || ![420, 429].includes(Number(status)) || !job.openedAt) {
+    if (!job || ![420, 429].includes(Number(status)) || !job.openingId) {
       return false;
     }
     await store.updateJob(job.jobId, current => {
       current.rateLimitStatus = Number(status);
-      current.rateLimitOutcomeId = `${current.openingId || current.completedTabAt || current.openedAt}:rate-limit:${status}`;
-      if (current.status === "complete") {
+      current.rateLimitOutcomeId = `${current.openingId}:rate-limit:${status}`;
+      const requeuedOpening = current.status === "queued" && !current.openedAt && current.requeued === current.attempts;
+      if (current.status === "complete" || requeuedOpening) {
         current.status = "incomplete";
         current.outcomeAt = new Date(now()).toISOString();
         current.message = `The platform returned HTTP ${status}; the scan was paused to protect the account.`;

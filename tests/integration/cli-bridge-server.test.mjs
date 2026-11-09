@@ -194,6 +194,38 @@ test("a late rate-limit signal resolves a completed CLI tab by tab id", async ()
   assert.equal(job.rateLimitStatus, 429);
 });
 
+test("a late rate-limit signal after an incomplete CLI attempt was requeued pauses its platform", async () => {
+  await putJob(1, {
+    status: "running",
+    tabId: 7,
+    attempts: 1,
+    openingId: "opening-1",
+    openedAt: "2026-01-01T00:00:00.000Z",
+    started: 1
+  });
+  await handleBridgeMessage(
+    { type: "JOB_DONE", jobId: id(1), state: { status: "incomplete", started: 1, message: "Scan interrupted." } },
+    new Set()
+  );
+  const supervisor = createSupervisor({
+    now: () => Date.parse("2026-01-01T00:01:00Z"),
+    random: () => 0,
+    log: () => {},
+    loadConfig: async () => parseConfig({ workers: { instagram: 2 }, delaySeconds: { min: 0, max: 0 } }),
+    loadBackoffState: async () => null,
+    saveBackoffState: async () => {},
+    listJobs: store.listJobs,
+    updateJob: store.updateJob,
+    openJob: async () => {}
+  });
+  await supervisor.tick();
+  assert.equal((await read(1)).status, "queued");
+
+  await handleBridgeMessage({ type: "JOB_RATE_LIMIT", jobId: id(1), status: 429 }, new Set());
+  await supervisor.tick();
+  assert.equal(supervisor.platformStatus().instagram.backoffLevel, 1);
+});
+
 test("a buffered rate limit still reaches supervisor status when CLI scan startup fails", async () => {
   await putJob(1, { attempts: 1, openedAt: "2026-01-01T00:00:00.000Z" });
   const claimed = new Set();

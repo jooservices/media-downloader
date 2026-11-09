@@ -276,7 +276,9 @@ async function handleJobUpdate(message) {
       if ([420, 429].includes(Number(message.status))) {
         current.rateLimitStatus = Number(message.status);
         current.rateLimitOutcomeId = `${current.openingId || current.openedAt || current.jobId}:rate-limit:${message.status}`;
-        if (current.status === "complete") {
+        const requeuedOpening =
+          current.status === "queued" && !current.openedAt && current.requeued === current.attempts;
+        if (current.status === "complete" || requeuedOpening) {
           current.status = "incomplete";
           current.outcomeAt = new Date().toISOString();
           current.message = `The platform returned HTTP ${message.status}; the scan was paused to protect the account.`;
