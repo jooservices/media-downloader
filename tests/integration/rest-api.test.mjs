@@ -35,10 +35,18 @@ function backend() {
     removed: [],
     asked: []
   };
+  const reads = [];
   return {
     state,
+    reads,
     deps: {
-      listJobs: async () => state.jobs,
+      listJobs: async options => {
+        reads.push(options);
+        const selected = state.jobs.filter(item => !options?.status || item.status === options.status);
+        return options?.limit ? selected.slice(options.offset || 0, (options.offset || 0) + options.limit) : selected;
+      },
+      countJobs: async status => state.jobs.filter(item => !status || item.status === status).length,
+      getJob: async id => state.jobs.find(item => item.jobId === id) || null,
       addUrls: async (urls, options) => {
         state.asked.push([urls[0], options]);
         if (urls[0].includes("known") && !options.force) {
@@ -81,7 +89,7 @@ function encodeBody(body) {
 }
 
 async function withServer(options, run) {
-  const { state, deps } = backend();
+  const { state, deps, reads } = backend();
   const server = await startApiServer({ port: 0, token: TOKEN, ...deps, ...options });
   const port = server.address().port;
   const call = (method, path, { body, headers = {}, host, auth = true, json = true } = {}) =>
@@ -109,7 +117,7 @@ async function withServer(options, run) {
       req.end(encodeBody(body));
     });
   try {
-    await run({ call, state, port });
+    await run({ call, state, reads, port });
   } finally {
     await new Promise(resolve => server.close(() => resolve()));
   }
@@ -140,8 +148,8 @@ test("a request for another host is refused, and unknown resources are 404 probl
     assert.equal((await call("GET", "/health")).status, 404, "the old unversioned path is gone");
   }));
 
-test("GET /v1/jobs lists jobs as a page, filters by status and links the next page", () =>
-  withServer({}, async ({ call }) => {
+test("GET /v1/jobs lists bounded pages, filters by status and links the next page", () =>
+  withServer({}, async ({ call, reads }) => {
     const all = await call("GET", "/v1/jobs");
     assert.equal(all.status, 200);
     assert.deepEqual(all.body.page, { limit: 50, offset: 0, total: 3 });
@@ -150,6 +158,11 @@ test("GET /v1/jobs lists jobs as a page, filters by status and links the next pa
     assert.equal(all.body.items[0].links.self, `/v1/jobs/${ID_A}`);
     assert.equal(all.body.items[0].cookie, undefined, "no internal field leaks");
     assert.equal(all.headers.link, undefined);
+    assert.deepEqual(
+      reads[0],
+      { status: null, limit: 50, offset: 0 },
+      "the backing read is capped at the requested page"
+    );
     const running = await call("GET", "/v1/jobs?status=running");
     assert.deepEqual(
       running.body.items.map(item => item.id),

@@ -16,6 +16,7 @@ function setup(configInput = {}, jobs = []) {
   const opened = [];
   const moves = [];
   const logs = [];
+  let beforeUpdate = null;
   const config = parseConfig({ delaySeconds: { min: 0, max: 0 }, ...configInput });
   const supervisor = createSupervisor({
     now: () => clock,
@@ -23,10 +24,26 @@ function setup(configInput = {}, jobs = []) {
     log: message => logs.push(message),
     loadConfig: async () => config,
     listJobs: async () => [...store.values()].map(job => structuredClone(job)),
+    listWorkJobs: async () =>
+      [...store.values()]
+        .filter(
+          job =>
+            job.status === "running" ||
+            (job.status === "queued" && (job.openedAt || !job.notBefore || Date.parse(job.notBefore) <= clock))
+        )
+        .map(job => structuredClone(job)),
     updateJob: async (jobId, mutate) => {
       const job = store.get(jobId);
+      if (beforeUpdate) {
+        const hook = beforeUpdate;
+        beforeUpdate = null;
+        await hook(job);
+      }
+      const before = JSON.stringify(job);
       await mutate(job);
-      job.updatedAt = new Date(clock).toISOString();
+      if (JSON.stringify(job) !== before) {
+        job.updatedAt = new Date(clock).toISOString();
+      }
       return job;
     },
     openJob: async job => {
@@ -43,6 +60,9 @@ function setup(configInput = {}, jobs = []) {
     opened,
     moves,
     logs,
+    beforeUpdate: hook => {
+      beforeUpdate = hook;
+    },
     tick: () => supervisor.tick(),
     advance: ms => {
       clock += ms;
@@ -92,6 +112,14 @@ test("counts the attempt and marks the job as opened", async () => {
   assert.ok(env.job("1").openedAt);
 });
 
+test("an opened job holds its worker while PAGE_READY is delayed", async () => {
+  const env = setup({}, [queued("1", "Twitter", "a"), queued("2", "Twitter", "b")]);
+  assert.equal((await env.tick()).opened, 1);
+  assert.ok(env.job("1").openedAt);
+  assert.equal((await env.tick()).opened, 0, "a later pass still counts the unacknowledged open");
+  assert.deepEqual(env.opened, ["Twitter/a"]);
+});
+
 test("a page that never answers fails after 90 s, then the job is retried after a pause", async () => {
   const env = setup({}, [queued("1", "Twitter", "a")]);
   await env.tick();
@@ -107,6 +135,48 @@ test("a page that never answers fails after 90 s, then the job is retried after 
   env.advance(60_000 + 1000);
   assert.equal((await env.tick()).opened, 1);
   assert.equal(env.job("1").attempts, 2);
+});
+
+test("ACK reaper expires only after 90 seconds and safely retries an unanswered page", async () => {
+  const env = setup({}, [queued("1", "Twitter", "a")]);
+  await env.tick();
+  env.advance(ACK_TIMEOUT_MS);
+  assert.equal((await env.tick()).expired, 0, "the exact ACK deadline is still eligible");
+  env.advance(1);
+  assert.equal((await env.tick()).expired, 1);
+  assert.equal(env.job("1").status, "queued", "an unacknowledged job is retried");
+  assert.equal(env.job("1").noRetry, undefined);
+});
+
+test("ACK reaper preserves a job acknowledged between its sweep read and update", async () => {
+  const env = setup({}, [queued("1", "Twitter", "a")]);
+  await env.tick();
+  env.advance(ACK_TIMEOUT_MS + 1);
+  // Simulate PAGE_READY winning the serialized store update after the reaper read its old snapshot.
+  env.beforeUpdate(job => {
+    job.status = "running";
+    job.openedAt = null;
+    job.updatedAt = "2026-01-01T00:01:31.001Z";
+  });
+  assert.equal((await env.tick()).expired, 0);
+  assert.equal(env.job("1").status, "running");
+  assert.equal((await env.tick()).requeued, 0);
+  assert.deepEqual(env.opened, ["Twitter/a"]);
+});
+
+test("stale-running reaper preserves progress reported between its sweep read and update", async () => {
+  const env = setup({}, [queued("1", "Twitter", "a", { status: "running", openedAt: "2026-01-01T00:00:00Z" })]);
+  env.job("1").updatedAt = "2026-01-01T00:00:00Z";
+  env.advance(STALE_RUNNING_MS + 1);
+  env.beforeUpdate(job => {
+    job.started = 1;
+    job.updatedAt = new Date(Date.parse("2026-01-01T00:00:00Z") + STALE_RUNNING_MS + 1).toISOString();
+  });
+  assert.equal((await env.tick()).expired, 0);
+  assert.equal(env.job("1").status, "running");
+  assert.equal(env.job("1").noRetry, undefined);
+  assert.equal((await env.tick()).requeued, 0);
+  assert.deepEqual(env.opened, []);
 });
 
 test("stops retrying after maxAttempts", async () => {
@@ -130,6 +200,79 @@ test("a running job that stops reporting is ended as incomplete", async () => {
   env.advance(STALE_RUNNING_MS + 1000);
   assert.equal((await env.tick()).expired, 1);
   assert.equal(env.job("1").status, "incomplete");
+});
+
+test("stale-running reaper boundary: 15 minutes is allowed, one millisecond more is parked", async () => {
+  const env = setup({}, [queued("1", "Twitter", "a", { status: "running", openedAt: "2026-01-01T00:00:00Z" })]);
+  env.job("1").updatedAt = "2026-01-01T00:00:00Z";
+  env.advance(STALE_RUNNING_MS);
+  assert.equal((await env.tick()).expired, 0);
+  env.advance(1);
+  assert.equal((await env.tick()).expired, 1);
+  assert.equal(env.job("1").status, "incomplete");
+  assert.equal(env.job("1").noRetry, true, "a quiet but live page is not launched twice");
+  assert.equal((await env.tick()).requeued, 0);
+});
+
+test("reaper keyset paging visits eligible rows beyond 500 while statuses change", async () => {
+  let clock = Date.parse("2026-01-01T00:00:00Z");
+  const config = parseConfig({ delaySeconds: { min: 0, max: 0 } });
+  const jobs = new Map(
+    Array.from({ length: 1105 }, (_, index) => {
+      const number = index + 1;
+      const jobId = `job-${String(number).padStart(4, "0")}`;
+      let status = "error";
+      if (number % 3 === 0) {
+        status = "complete";
+      } else if (number % 2 === 0) {
+        status = "running";
+      }
+      return [
+        jobId,
+        {
+          jobId,
+          platform: "Twitter",
+          account: String(number),
+          url: `https://x.com/${number}`,
+          status,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+          attempts: 0,
+          noRetry: status === "running"
+        }
+      ];
+    })
+  );
+  const listJobs = async ({ status, limit, after }) =>
+    [...jobs.values()]
+      .filter(
+        job =>
+          job.status === status &&
+          (!after || job.createdAt < after.createdAt || (job.createdAt === after.createdAt && job.jobId > after.jobId))
+      )
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.jobId.localeCompare(b.jobId))
+      .slice(0, limit);
+  const supervisor = createSupervisor({
+    now: () => clock,
+    random: () => 0,
+    log: () => {},
+    loadConfig: async () => config,
+    listJobs,
+    listWorkJobs: async () => [],
+    updateJob: async (jobId, mutate) => {
+      const job = jobs.get(jobId);
+      await mutate(job);
+      job.updatedAt = new Date(clock).toISOString();
+    },
+    openJob: async () => {},
+    moveFiles: async () => ({ moved: 0, failed: 0 })
+  });
+  clock += STALE_RUNNING_MS + 1;
+  const summary = await supervisor.tick();
+  assert.equal(summary.expired, 368);
+  assert.equal(summary.requeued, 369);
+  assert.equal([...jobs.values()].filter(job => job.status === "running").length, 0);
+  assert.equal([...jobs.values()].filter(job => job.status === "queued").length, 369);
 });
 
 test("shouldRetry: errors yes, incomplete only if something was saved, complete and paused never", () => {
@@ -234,10 +377,33 @@ test("on start, jobs left running by a dead process are ended and unanswered one
   };
   assert.equal(await recoverInterrupted(deps), 2);
   assert.equal(env.job("1").status, "incomplete");
+  assert.equal(env.job("1").noRetry, true);
   assert.match(env.job("1").message, /interrupted/);
   assert.equal(env.job("2").openedAt, null);
   assert.equal(env.job("3").status, "queued");
   assert.equal(env.job("4").status, "complete");
+});
+
+test("restart recovery preserves a completion received after its running page was read", async () => {
+  const job = queued("1", "Twitter", "a", { status: "running", started: 1 });
+  let completed = false;
+  const recovered = await recoverInterrupted({
+    listJobs: async () => (job.status === "running" ? [structuredClone(job)] : []),
+    updateJob: async (_jobId, mutate) => {
+      if (!completed) {
+        job.status = "complete";
+        job.message = "The extension finished the scan.";
+        completed = true;
+      }
+      await mutate(job);
+      return job;
+    }
+  });
+
+  assert.equal(recovered, 0);
+  assert.equal(job.status, "complete");
+  assert.equal(job.message, "The extension finished the scan.");
+  assert.equal(job.noRetry, undefined);
 });
 
 test("an invalid config is rejected at start but the previous one is kept while running", async () => {

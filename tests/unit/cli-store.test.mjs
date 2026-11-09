@@ -1,16 +1,20 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
 
 // The CLI keeps its files under %LOCALAPPDATA%\PageMediaSaver; point it at a temp folder before importing.
 const home = await mkdtemp(path.join(os.tmpdir(), "pms-store-"));
+const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite");
 process.env.LOCALAPPDATA = home;
 process.env.USERPROFILE = home;
 const store = await import("../../cli/store.mjs");
+const { createJobStore, sqliteCall } = await import("../../cli/jobstore.mjs");
 const config = await import("../../cli/config.mjs");
 const prune = await import("../../cli/prune.mjs");
+const { recoverInterrupted } = await import("../../cli/supervisor.mjs");
 const { DEFAULT_LIMIT, parseDownloadArgs } = await import("../../cli/args.mjs");
 
 after(() => {
@@ -229,6 +233,26 @@ test("prune copes with no folders at all and jobs with unparsable dates", async 
   assert.ok(await store.readJob(id(1)), "nothing was removed");
 });
 
+test("SQLite pruning keeps an older duplicate whose stored timestamp cannot be parsed", async () => {
+  await reset();
+  await store.writeJob({
+    jobId: id(1),
+    url: "https://x.com/a/",
+    status: "complete",
+    createdAt: "2020-01-01T00:00:00.000Z",
+    updatedAt: "not-a-date"
+  });
+  await store.writeJob({
+    jobId: id(2),
+    url: "https://x.com/a/",
+    status: "complete",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z"
+  });
+  assert.equal((await prune.prune(Date.parse("2026-11-09T00:00:00.000Z"))).jobs, 0);
+  assert.ok(await store.readJob(id(1)), "an invalid timestamp is never considered expired");
+});
+
 test("download args: URL, default limit, --limit N, --limit=N and --unlimited", () => {
   assert.deepEqual(parseDownloadArgs(["https://x.com/a"]), { url: "https://x.com/a", limit: DEFAULT_LIMIT });
   assert.equal(parseDownloadArgs(["--limit", "25", "u"]).limit, 25);
@@ -267,6 +291,41 @@ test("jobs from the old one-file-per-job layout are imported once and the folder
   assert.equal((await store.listJobs()).length, 1, "a second start does not import again");
 });
 
+test("a failed legacy SQLite save rolls back and leaves the source folder available", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pms-import-failure-"));
+  const file = path.join(root, "queue.db");
+  const legacy = path.join(root, "jobs");
+  await mkdir(legacy);
+  const jobId = id(71);
+  await writeFile(path.join(legacy, `${jobId}.json`), JSON.stringify({ jobId, status: "queued" }));
+  const initial = createJobStore({ file });
+  initial.close();
+  const db = new DatabaseSync(file);
+  db.exec(
+    "CREATE TRIGGER fail_legacy BEFORE INSERT ON jobs BEGIN SELECT RAISE(ABORT, 'forced import write failure'); END;"
+  );
+  db.close();
+  try {
+    assert.throws(() => createJobStore({ file, legacyDir: legacy }), /forced import write failure/);
+    assert.ok(await stat(legacy), "the original files remain available for another import attempt");
+    assert.equal(
+      await readFile(path.join(legacy, `${jobId}.json`), "utf8")
+        .then(JSON.parse)
+        .then(item => item.jobId),
+      jobId
+    );
+    const repairDb = new DatabaseSync(file);
+    repairDb.exec("DROP TRIGGER fail_legacy;");
+    repairDb.close();
+    const retried = createJobStore({ file, legacyDir: legacy });
+    assert.equal(retried.read(jobId).status, "queued");
+    retried.close();
+    await assert.rejects(stat(legacy), { code: "ENOENT" }, "the source is archived only after a successful retry");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("the job store pages, filters, counts, updates one job at a time and deletes", async () => {
   await reset();
   const jobs = store.jobs();
@@ -294,6 +353,184 @@ test("the job store pages, filters, counts, updates one job at a time and delete
   assert.equal(jobs.remove(id(1)), true);
   assert.equal(jobs.count(), 3);
   assert.equal(jobs.file, store.JOBS_DB_FILE);
+  assert.equal(jobs.hasUrl("https://x.com/1"), false);
+  jobs.write({ jobId: id(5), url: "https://X.com/Alice/" });
+  assert.equal(jobs.hasUrl("https://x.com/alice/"), true, "URL existence uses the indexed case-insensitive key");
+  assert.deepEqual(jobs.integrityCheck(), ["ok"]);
+});
+
+test("supervisor keyset recovery follows the same SQLite ordering across pages", async () => {
+  await reset();
+  for (let n = 1; n <= 501; n++) {
+    store.jobs().write({
+      jobId: id(n),
+      status: "queued",
+      createdAt: new Date(Date.UTC(2026, 0, n)).toISOString(),
+      openedAt: "2026-01-01T00:00:00.000Z"
+    });
+  }
+  const recovered = await recoverInterrupted({
+    listJobs: options => store.listJobs(options),
+    updateJob: (jobId, update) => store.updateJob(jobId, update)
+  });
+  assert.equal(recovered, 501);
+  assert.equal((await store.listJobs({ status: "queued" })).filter(job => job.openedAt).length, 0);
+});
+
+test("SQLite busy and locked errors retry with backoff, while other errors pass through", () => {
+  let attempts = 0;
+  const result = sqliteCall(() => {
+    attempts++;
+    if (attempts < 3) {
+      throw Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR" });
+    }
+    return "written";
+  });
+  assert.equal(result, "written");
+  assert.equal(attempts, 3);
+
+  attempts = 0;
+  assert.throws(
+    () =>
+      sqliteCall(() => {
+        attempts++;
+        throw Object.assign(new Error("busy"), { code: "SQLITE_BUSY" });
+      }),
+    error => error.code === "SQLITE_BUSY"
+  );
+  assert.equal(attempts, 5, "the busy operation is retried four times after its first attempt");
+  assert.throws(
+    () =>
+      sqliteCall(() => {
+        throw new Error("disk full");
+      }),
+    /disk full/
+  );
+});
+
+test("the supervisor work window excludes history and selects queued jobs oldest first", async () => {
+  await reset();
+  const jobs = store.jobs();
+  jobs.write({ jobId: id(1), status: "complete", createdAt: "2026-01-01" });
+  jobs.write({ jobId: id(2), status: "queued", createdAt: "2026-02-01" });
+  jobs.write({ jobId: id(3), status: "running", createdAt: "2026-03-01" });
+  jobs.write({ jobId: id(4), status: "queued", createdAt: "2026-04-01" });
+  assert.deepEqual(
+    jobs.workWindow().map(job => job.jobId),
+    [id(3), id(2), id(4)],
+    "bounded active work is ordered without loading finished history"
+  );
+});
+
+test("eligible queued jobs are selected after any number of delayed or awaiting-ack jobs", async () => {
+  await reset();
+  const jobs = store.jobs();
+  const now = "2026-06-01T00:00:00.000Z";
+  for (let n = 1; n <= 501; n++) {
+    jobs.write({
+      jobId: id(n),
+      status: "queued",
+      platform: "Instagram",
+      createdAt: new Date(Date.parse(now) + n).toISOString(),
+      notBefore: "2026-06-02T00:00:00.000Z"
+    });
+  }
+  jobs.write({
+    jobId: id(502),
+    status: "queued",
+    platform: "Instagram",
+    createdAt: new Date(Date.parse(now) + 1000).toISOString()
+  });
+  assert.deepEqual(
+    jobs.workWindow(now).map(job => job.jobId),
+    [id(502)]
+  );
+});
+
+test("the work window retains opened queued jobs for worker accounting", async () => {
+  await reset();
+  const jobs = store.jobs();
+  jobs.write({ jobId: id(1), status: "queued", platform: "Instagram", openedAt: "2026-06-01T00:00:00Z" });
+  jobs.write({ jobId: id(2), status: "queued", platform: "Instagram", createdAt: "2026-06-01T00:00:01Z" });
+  assert.deepEqual(
+    jobs.workWindow("2026-06-01T00:00:00Z").map(job => job.jobId),
+    [id(1), id(2)]
+  );
+});
+
+test("pending notifications, bridge matches, and running jobs have bounded store reads", async () => {
+  await reset();
+  const jobs = store.jobs();
+  for (let n = 1; n <= 120; n++) {
+    jobs.write({
+      jobId: id(n),
+      status: n % 2 ? "complete" : "queued",
+      platform: "Instagram",
+      account: "alice",
+      createdAt: new Date(Date.UTC(2026, 0, n)).toISOString()
+    });
+  }
+  assert.equal(jobs.pendingNotifications(7).length, 7);
+  await jobs.update(id(1), job => {
+    job.notifiedAt = "2026-06-01T00:00:00.000Z";
+  });
+  assert.equal(jobs.pendingNotifications(120).length, 59, "announced jobs fall out of the bounded pending set");
+  assert.equal(jobs.matchingJobs("Instagram", "alice").length, 60);
+  for (let n = 121; n <= 621; n++) {
+    jobs.write({
+      jobId: id(n),
+      status: "queued",
+      platform: "Instagram",
+      account: "alice",
+      url: `https://www.instagram.com/other-${n}/`,
+      createdAt: new Date(Date.UTC(2026, 5, n)).toISOString()
+    });
+  }
+  jobs.write({
+    jobId: id(622),
+    status: "queued",
+    platform: "Instagram",
+    account: "alice",
+    url: "https://www.instagram.com/alice/",
+    createdAt: "2026-12-01T00:00:00.000Z"
+  });
+  assert.deepEqual(
+    jobs.matchingJobs("Instagram", "alice", "https://www.instagram.com/alice/").map(job => job.jobId),
+    [id(622)]
+  );
+  assert.equal(jobs.watchHistory(["https://www.instagram.com/alice/"]).length, 1);
+  assert.equal(jobs.runningJobs().length, 0);
+});
+
+test("watch history stays capped per URL as the job ledger grows", async () => {
+  await reset();
+  const jobs = store.jobs();
+  for (let n = 1; n <= 620; n++) {
+    jobs.write({
+      jobId: id(n),
+      status: "complete",
+      url: "https://www.instagram.com/alice/",
+      createdAt: new Date(Date.UTC(2025, 0, n)).toISOString(),
+      updatedAt: new Date(Date.UTC(2025, 0, n)).toISOString()
+    });
+  }
+  const latest = jobs.watchHistory(["https://www.instagram.com/alice/"]);
+  assert.equal(latest.length, 4);
+  assert.equal(latest[0].jobId, id(620));
+});
+
+test("a corrupt database is backed up and fails with an actionable startup error", async () => {
+  await reset();
+  await store.writeJob({ jobId: id(1), status: "queued" });
+  store.closeJobStore();
+  await writeFile(store.JOBS_DB_FILE, "not a sqlite database");
+  await assert.rejects(store.listJobs(), /SQLite queue database is corrupt; backup saved to .*\.bak/);
+  const backups = (await readdir(store.APP_DIR)).filter(
+    name => name.startsWith("queue.db.corrupt-") && name.endsWith(".bak")
+  );
+  assert.equal(backups.length, 1);
+  assert.equal(await readFile(path.join(store.APP_DIR, backups[0]), "utf8"), "not a sqlite database");
+  await reset();
 });
 
 test("closeJobStore lets the store open again, and the database can be copied while it is closed", async () => {
