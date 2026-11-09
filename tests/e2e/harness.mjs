@@ -166,6 +166,7 @@ function browserArgs({ userData, extension, sitesPort }) {
     "--no-first-run",
     "--no-default-browser-check",
     "--ignore-certificate-errors",
+    ...(process.env.CI ? ["--no-sandbox", "--disable-gpu"] : []),
     `--host-resolver-rules=${hosts}`
   ];
 }
