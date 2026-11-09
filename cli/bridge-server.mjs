@@ -269,6 +269,9 @@ async function handleJobUpdate(message) {
       applyError(current, message.error);
     } else {
       applyProgress(current, message);
+      if (message.type === "JOB_PROGRESS") {
+        current.lastProgressAt = new Date().toISOString();
+      }
     }
   });
   if (!job) {

@@ -83,6 +83,7 @@ async function parkRunningJobs() {
     if (!running.length) {
       return;
     }
+    let progressed = false;
     for (const job of running) {
       await updateJob(job.jobId, current => {
         if (current.status !== "running") {
@@ -91,7 +92,11 @@ async function parkRunningJobs() {
         current.status = "incomplete";
         current.noRetry = true;
         current.message = "The queue stopped while this scan was active; review it before retrying.";
+        progressed = true;
       });
+    }
+    if (!progressed) {
+      return;
     }
   }
 }
@@ -160,7 +165,7 @@ async function createLogger() {
         const old = readdirSync(LOGS_DIR)
           .filter(name => name.startsWith(`serve-${stamp.slice(0, 10)}.log.`) && name.endsWith(".bak"))
           .sort();
-        while (old.length >= MAX_ROTATED_LOGS) {
+        while (old.length > MAX_ROTATED_LOGS) {
           const expired = old.shift();
           unlinkSync(path.join(LOGS_DIR, expired));
         }

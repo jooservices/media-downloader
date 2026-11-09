@@ -91,7 +91,11 @@ export function createNotifier({
         if (job.notifiedAt || !["complete", "incomplete", "error"].includes(job.status)) {
           continue;
         }
-        await markNotified(job.jobId);
+        try {
+          await markNotified(job.jobId);
+        } catch {
+          continue;
+        }
         await announce(config.notify, job);
       }
     }
