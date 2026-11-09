@@ -46,10 +46,10 @@ test("an empty grid ends after four end checks, with nothing pending", async () 
   const page = scanPage();
   const state = await start(page);
   assert.equal(state.running, false);
-  assert.equal(state.status, "complete");
-  assert.match(state.message, /Four end checks found no older rows/);
+  assert.equal(state.status, "incomplete", "a page with nothing on it is not a success");
+  assert.match(state.message, /No photos or videos were found on this page/);
   assert.ok(state.rounds >= 4);
-  assert.equal(page.storage.autoDownloadStatus.status, "complete", "the final state is saved for the popup");
+  assert.equal(page.storage.autoDownloadStatus.status, "incomplete", "the final state is saved for the popup");
   assert.ok(page.sent.some(message => message.type === "AUTO_DONE"));
 });
 
@@ -143,7 +143,7 @@ test("a retry that fails, or starts nothing, ends the draining", async () => {
     });
     const state = await start(page);
     assert.equal(calls, 1);
-    assert.equal(state.status, "complete", "a missing final status falls back to the last known counts");
+    assert.equal(state.status, "incomplete", "a missing final status falls back to the last known counts");
   }
 });
 
@@ -184,7 +184,7 @@ test("scrolling down a long page reaches the bottom and then finishes", async ()
     page.dom.scrollTop += top;
   };
   const state = await start(page);
-  assert.equal(state.status, "complete");
+  assert.equal(state.status, "incomplete");
   assert.ok(state.rounds > 4, "it passed through the middle of the page first");
   assert.ok(page.dom.scrollTop > 2000);
 });
@@ -200,7 +200,7 @@ test("a page that keeps growing at the bottom is scanned until it stops", async 
     }
   };
   const state = await start(page);
-  assert.equal(state.status, "complete");
+  assert.equal(state.status, "incomplete");
   assert.ok(page.dom.scrollHeight >= 2000);
 });
 
@@ -389,7 +389,7 @@ test("a scan of an Instagram profile also saves the account's stories first", as
   page.document.querySelectorAll = selector => (selector === 'a[href*="/stories/"]' ? [tray] : []);
   const state = await start(page, { url: "https://www.instagram.com/disleft/" });
   assert.deepEqual(opened, ["tray"]);
-  assert.equal(state.status, "complete");
+  assert.equal(state.status, "incomplete");
 });
 
 test("repairing never opens stories", async () => {
@@ -400,4 +400,14 @@ test("repairing never opens stories", async () => {
   };
   page.document.querySelectorAll = selector => (selector === 'a[href*="/stories/"]' ? [tray] : []);
   await start(page, { url: "https://www.instagram.com/disleft/", repairTargets: ["x.jpg"] });
+});
+
+test("a grid whose photos were all saved before is a success", async () => {
+  const page = scanPage({
+    articles: photos(2),
+    onSend: settled({ DOWNLOAD_ITEMS: () => ({ ok: true, started: 0, skipped: 2, failed: 0, pending: 0 }) })
+  });
+  const state = await start(page);
+  assert.equal(state.status, "complete");
+  assert.match(state.message, /Four end checks found no older rows/);
 });

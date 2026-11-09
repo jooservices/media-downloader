@@ -118,7 +118,7 @@ test("a scan of an empty profile finishes and reports to the background", async 
   }
   const state = page.context.PageMediaSaver.scan.state;
   assert.equal(state.running, false);
-  assert.ok(["complete", "paused"].includes(state.status), state.status);
+  assert.ok(["incomplete", "paused"].includes(state.status), state.status);
   assert.ok(page.sent.some(message => message.type === "AUTO_DONE" && message.state.jobId === "j3"));
 });
 

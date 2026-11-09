@@ -267,15 +267,21 @@ globalThis.PageMediaSaver ??= {};
     await settleDownloads();
     const { repairFound, repairTargets, started, videoStarted, pending, failed } = autoState;
     const repairShort = autoState.repairMode && repairFound.length !== repairTargets.length;
+    // A page with nothing on it is not a success: the user may be signed out, or the site changed its data.
+    const seen = started + videoStarted + skippedCount() + pending + failed + autoState.unavailable;
+    const nothingFound = !autoState.repairMode && seen === 0;
     let message;
-    if (repairShort) {
+    if (nothingFound) {
+      message =
+        "No photos or videos were found on this page. Sign in to the site in this browser, or the site may have changed how it sends its data.";
+    } else if (repairShort) {
       message = `Repair incomplete: matched ${repairFound.length} of ${repairTargets.length} source images. Original files were left in Downloads.`;
     } else if (hasOutstanding()) {
       message = `Grid scan ended after four checks found no older rows. ${started} download request(s) started; ${pending} remain pending and ${failed} failed after retries.`;
     } else {
       message = `Download finished: ${started} photo request(s) and ${videoStarted} page-data file(s) completed with no pending or failed files; ${skippedCount()} saved or unavailable items skipped${unavailableNote()}. Four end checks found no older rows.`;
     }
-    endScan(hasOutstanding() || repairShort ? "incomplete" : "complete", message);
+    endScan(hasOutstanding() || repairShort || nothingFound ? "incomplete" : "complete", message);
   }
 
   // Lazy rows can take several seconds on a slow connection: poll until the page grows or the wait runs out.
