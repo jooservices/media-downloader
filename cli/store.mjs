@@ -88,6 +88,7 @@ export function jobs() {
 
 // Every saved job, newest first.
 export const listJobs = options => Promise.resolve().then(() => jobs().list(options));
+export const countJobs = status => Promise.resolve().then(() => jobs().count({ status }));
 export const matchingJobs = (platform, account, pageUrl) =>
   Promise.resolve().then(() => jobs().matchingJobs(platform, account, pageUrl));
 export const watchHistory = urls => Promise.resolve().then(() => jobs().watchHistory(urls));

@@ -14,8 +14,10 @@ An acknowledged page that stops reporting progress for more than 15 minutes is a
 
 The job store uses SQLite WAL mode, `synchronous=NORMAL`, a 1-second busy timeout, and short exponential retries for `SQLITE_BUSY` and `SQLITE_LOCKED` operations. On open, SQLite runs `PRAGMA integrity_check`. If the database is damaged, `serve` stops with an error naming a timestamped `queue.db.corrupt-….bak` copy (plus WAL sidecars when present); preserve that backup for recovery or diagnosis before replacing the database.
 
+If importing a legacy `jobs/` folder fails because SQLite cannot save a job, startup fails and the import transaction rolls back. The source folder remains available so the failure can be diagnosed and the import retried after the database issue is fixed.
+
 ## Logs and retained jobs
 
 `logs/serve-YYYY-MM-DD.log` is capped at 2 MiB. At most three size-rotated backups are kept for that day, and the existing daily retention removes logs older than 14 days. A single log message is capped at 2,000 characters. Finished job history is pruned hourly after 30 days, retaining the newest job for every URL and all active jobs.
 
-The REST API and its request/response contract are unchanged. Its job listing remains paginated; `status` and metrics use SQLite counts rather than materializing job history. The supervisor works from a bounded 500-job queued window plus up to 500 running rows, and recovery and reaper scans read pages of 500.
+The REST API and its request/response contract are unchanged. Its job listing reads only the requested page and gets the total from a SQLite count; an individual job lookup reads by ID. `status` and metrics also use SQLite counts rather than materializing job history. The supervisor works from a bounded 500-job queued window plus up to 500 running rows, and recovery and reaper scans read pages of 500. The bridge keeps at most 500 recent in-memory page claims; durable job state remains in SQLite.

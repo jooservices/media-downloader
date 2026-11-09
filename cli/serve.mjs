@@ -13,6 +13,7 @@ import {
   LOGS_DIR,
   TERMINAL_STATES,
   listJobs,
+  countJobs,
   closeJobStore,
   hasJobUrl,
   accountPages,
@@ -227,6 +228,8 @@ export async function serve({
       await startApiServer({
         addUrls,
         listJobs,
+        countJobs,
+        getJob: readJob,
         removeJob,
         status: () => Promise.resolve({ jobs: queueJobs().counts(), extension: extensionSeen(), pid: process.pid }),
         port: API_PORT,

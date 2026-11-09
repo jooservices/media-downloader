@@ -153,14 +153,15 @@ function importLegacy(db, legacyDir) {
       if (!name.endsWith(".json") || !JOB_ID.test(id)) {
         continue;
       }
+      let job;
       try {
-        const job = JSON.parse(readFileSync(path.join(legacyDir, name), "utf8"));
-        if (job?.jobId === id) {
-          sqliteCall(() => save(db, job));
-          imported++;
-        }
+        job = JSON.parse(readFileSync(path.join(legacyDir, name), "utf8"));
       } catch {
         /* an unreadable job file is skipped, as it always was */
+      }
+      if (job?.jobId === id) {
+        sqliteCall(() => save(db, job));
+        imported++;
       }
     }
     sqliteCall(() =>
@@ -186,7 +187,13 @@ const locks = new Map();
 export function createJobStore({ file, legacyDir = null }) {
   const db = database(file);
   if (legacyDir) {
-    importLegacy(db, legacyDir);
+    try {
+      importLegacy(db, legacyDir);
+    } catch (error) {
+      db.close();
+      open.delete(file);
+      throw error;
+    }
   }
   return {
     file,
@@ -364,7 +371,11 @@ export function createJobStore({ file, legacyDir = null }) {
         if (!job) {
           return null;
         }
+        const before = JSON.stringify(job);
         const next = (await mutate(job)) || job;
+        if (JSON.stringify(next) === before) {
+          return job;
+        }
         next.updatedAt = new Date().toISOString();
         sqliteCall(() => save(db, next));
         return next;

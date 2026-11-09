@@ -16,6 +16,7 @@ function setup(configInput = {}, jobs = []) {
   const opened = [];
   const moves = [];
   const logs = [];
+  let beforeUpdate = null;
   const config = parseConfig({ delaySeconds: { min: 0, max: 0 }, ...configInput });
   const supervisor = createSupervisor({
     now: () => clock,
@@ -33,8 +34,16 @@ function setup(configInput = {}, jobs = []) {
         .map(job => structuredClone(job)),
     updateJob: async (jobId, mutate) => {
       const job = store.get(jobId);
+      if (beforeUpdate) {
+        const hook = beforeUpdate;
+        beforeUpdate = null;
+        await hook(job);
+      }
+      const before = JSON.stringify(job);
       await mutate(job);
-      job.updatedAt = new Date(clock).toISOString();
+      if (JSON.stringify(job) !== before) {
+        job.updatedAt = new Date(clock).toISOString();
+      }
       return job;
     },
     openJob: async job => {
@@ -51,6 +60,9 @@ function setup(configInput = {}, jobs = []) {
     opened,
     moves,
     logs,
+    beforeUpdate: hook => {
+      beforeUpdate = hook;
+    },
     tick: () => supervisor.tick(),
     advance: ms => {
       clock += ms;
@@ -134,6 +146,37 @@ test("ACK reaper expires only after 90 seconds and safely retries an unanswered 
   assert.equal((await env.tick()).expired, 1);
   assert.equal(env.job("1").status, "queued", "an unacknowledged job is retried");
   assert.equal(env.job("1").noRetry, undefined);
+});
+
+test("ACK reaper preserves a job acknowledged between its sweep read and update", async () => {
+  const env = setup({}, [queued("1", "Twitter", "a")]);
+  await env.tick();
+  env.advance(ACK_TIMEOUT_MS + 1);
+  // Simulate PAGE_READY winning the serialized store update after the reaper read its old snapshot.
+  env.beforeUpdate(job => {
+    job.status = "running";
+    job.openedAt = null;
+    job.updatedAt = "2026-01-01T00:01:31.001Z";
+  });
+  assert.equal((await env.tick()).expired, 0);
+  assert.equal(env.job("1").status, "running");
+  assert.equal((await env.tick()).requeued, 0);
+  assert.deepEqual(env.opened, ["Twitter/a"]);
+});
+
+test("stale-running reaper preserves progress reported between its sweep read and update", async () => {
+  const env = setup({}, [queued("1", "Twitter", "a", { status: "running", openedAt: "2026-01-01T00:00:00Z" })]);
+  env.job("1").updatedAt = "2026-01-01T00:00:00Z";
+  env.advance(STALE_RUNNING_MS + 1);
+  env.beforeUpdate(job => {
+    job.started = 1;
+    job.updatedAt = new Date(Date.parse("2026-01-01T00:00:00Z") + STALE_RUNNING_MS + 1).toISOString();
+  });
+  assert.equal((await env.tick()).expired, 0);
+  assert.equal(env.job("1").status, "running");
+  assert.equal(env.job("1").noRetry, undefined);
+  assert.equal((await env.tick()).requeued, 0);
+  assert.deepEqual(env.opened, []);
 });
 
 test("stops retrying after maxAttempts", async () => {

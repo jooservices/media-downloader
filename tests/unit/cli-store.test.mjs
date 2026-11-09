@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
 
 // The CLI keeps its files under %LOCALAPPDATA%\PageMediaSaver; point it at a temp folder before importing.
 const home = await mkdtemp(path.join(os.tmpdir(), "pms-store-"));
+const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite");
 process.env.LOCALAPPDATA = home;
 process.env.USERPROFILE = home;
 const store = await import("../../cli/store.mjs");
-const { sqliteCall } = await import("../../cli/jobstore.mjs");
+const { createJobStore, sqliteCall } = await import("../../cli/jobstore.mjs");
 const config = await import("../../cli/config.mjs");
 const prune = await import("../../cli/prune.mjs");
 const { recoverInterrupted } = await import("../../cli/supervisor.mjs");
@@ -287,6 +289,41 @@ test("jobs from the old one-file-per-job layout are imported once and the folder
   assert.ok((await stat(`${store.JOBS_DIR}.imported`)).isDirectory());
   store.closeJobStore();
   assert.equal((await store.listJobs()).length, 1, "a second start does not import again");
+});
+
+test("a failed legacy SQLite save rolls back and leaves the source folder available", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pms-import-failure-"));
+  const file = path.join(root, "queue.db");
+  const legacy = path.join(root, "jobs");
+  await mkdir(legacy);
+  const jobId = id(71);
+  await writeFile(path.join(legacy, `${jobId}.json`), JSON.stringify({ jobId, status: "queued" }));
+  const initial = createJobStore({ file });
+  initial.close();
+  const db = new DatabaseSync(file);
+  db.exec(
+    "CREATE TRIGGER fail_legacy BEFORE INSERT ON jobs BEGIN SELECT RAISE(ABORT, 'forced import write failure'); END;"
+  );
+  db.close();
+  try {
+    assert.throws(() => createJobStore({ file, legacyDir: legacy }), /forced import write failure/);
+    assert.ok(await stat(legacy), "the original files remain available for another import attempt");
+    assert.equal(
+      await readFile(path.join(legacy, `${jobId}.json`), "utf8")
+        .then(JSON.parse)
+        .then(item => item.jobId),
+      jobId
+    );
+    const repairDb = new DatabaseSync(file);
+    repairDb.exec("DROP TRIGGER fail_legacy;");
+    repairDb.close();
+    const retried = createJobStore({ file, legacyDir: legacy });
+    assert.equal(retried.read(jobId).status, "queued");
+    retried.close();
+    await assert.rejects(stat(legacy), { code: "ENOENT" }, "the source is archived only after a successful retry");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("the job store pages, filters, counts, updates one job at a time and deletes", async () => {

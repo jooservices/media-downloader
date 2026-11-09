@@ -18,6 +18,7 @@ import {
 } from "./store.mjs";
 
 const MAX_BODY_BYTES = 1_000_000;
+const MAX_CLAIMED_JOBS = 500;
 const JOB_UPDATES = new Set(["JOB_PROGRESS", "JOB_DONE", "JOB_ERROR"]);
 const require = createRequire(import.meta.url);
 const { applyProgress, applyError } = require("../lib/job-progress.js");
@@ -232,6 +233,9 @@ async function handlePageReady(message, claimedJobs) {
     return { ok: true, type: matching.length ? "JOB_CONNECTED" : "NO_JOB" };
   }
   claimedJobs.add(claimKey(waiting));
+  while (claimedJobs.size > MAX_CLAIMED_JOBS) {
+    claimedJobs.delete(claimedJobs.values().next().value);
+  }
   const started = await updateJob(waiting.jobId, job => {
     if (job.mediaPage) {
       job.account = String(message.account || job.account);

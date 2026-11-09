@@ -169,9 +169,12 @@ async function listJobsRoute({ response, url, deps }) {
     problem(response, 400, page.error);
     return;
   }
-  const all = (await deps.listJobs()).filter(job => !page.status || job.status === page.status);
-  const items = all.slice(page.offset, page.offset + page.limit).map(jobView);
-  const next = page.offset + page.limit < all.length;
+  const selected = await deps.listJobs({ status: page.status, limit: page.limit, offset: page.offset });
+  const total = deps.countJobs
+    ? await deps.countJobs(page.status)
+    : (await deps.listJobs()).filter(job => !page.status || job.status === page.status).length;
+  const items = selected.map(jobView);
+  const next = page.offset + page.limit < total;
   const query = new URLSearchParams({ limit: String(page.limit), offset: String(page.offset + page.limit) });
   if (page.status) {
     query.set("status", page.status);
@@ -179,7 +182,7 @@ async function listJobsRoute({ response, url, deps }) {
   send(
     response,
     200,
-    { items, page: { limit: page.limit, offset: page.offset, total: all.length } },
+    { items, page: { limit: page.limit, offset: page.offset, total } },
     next ? { Link: `<${API_BASE}/jobs?${query}>; rel="next"` } : {}
   );
 }
@@ -205,7 +208,9 @@ async function createJobRoute({ request, response, deps }) {
 }
 
 async function jobRoute({ response, params, deps }) {
-  const job = (await deps.listJobs()).find(item => item.jobId === params[0].toLowerCase());
+  const job = deps.getJob
+    ? await deps.getJob(params[0].toLowerCase())
+    : (await deps.listJobs()).find(item => item.jobId === params[0].toLowerCase());
   if (job) {
     send(response, 200, jobView(job));
   } else {
@@ -394,6 +399,8 @@ function createApiServer(deps) {
 export function startApiServer({
   addUrls,
   listJobs,
+  countJobs = null,
+  getJob = null,
   removeJob = () => Promise.resolve(false),
   status = null,
   port = API_PORT,
@@ -410,7 +417,17 @@ export function startApiServer({
   }
   let host = `127.0.0.1:${port}`;
   const allowedHosts = () => [host, ...extraHosts];
-  const server = createApiServer({ addUrls, listJobs, removeJob, token, watch, status, allowedHosts });
+  const server = createApiServer({
+    addUrls,
+    listJobs,
+    countJobs,
+    getJob,
+    removeJob,
+    token,
+    watch,
+    status,
+    allowedHosts
+  });
   return new Promise((resolve, reject) => {
     server.once("error", error => {
       reject(error?.code === "EADDRINUSE" ? new Error(`Download API port ${port} is already in use.`) : error);
