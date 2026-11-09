@@ -264,9 +264,17 @@ test("Instagram: a stories tray is a one-page scan for that account, not one fra
 });
 
 test("Instagram: a profile scan opens the story tray and saves that account's cached stories", async () => {
+  let firstLook = true;
   const page = loadContent({
     url: "https://www.instagram.com/disleft/",
-    onSend: () => ({ ok: true, started: 2, skipped: 0, failed: 0, pending: 0, cached: 1 })
+    onSend: message => {
+      if (message.type !== "DOWNLOAD_CACHED_MEDIA") {
+        return { ok: true };
+      }
+      const started = firstLook ? 2 : 0; // the tray's files are saved on the first look; later looks find nothing new
+      firstLook = false;
+      return { ok: true, started, skipped: 0, failed: 0, pending: 0, cached: 1 };
+    }
   });
   const link = {
     href: "https://www.instagram.com/stories/disleft/",

@@ -262,14 +262,20 @@ globalThis.PageMediaSaver ??= {};
   const unavailableNote = () =>
     autoState.unavailable ? ` (${autoState.unavailable} of them the site no longer serves)` : "";
 
-  // What the page-world hook reports about the data it could read, for the "nothing found" message.
-  function hookDiagnostics() {
+  // What the page-world hook reports about the data it could read, or null when it never reported in.
+  function hookStats() {
     try {
-      const stats = JSON.parse(document.documentElement.getAttribute("data-pms-hook"));
-      return `The page's data hook read ${stats.documents} response(s) and found ${stats.found} photo(s) or video(s) in them.`;
+      return JSON.parse(document.documentElement.getAttribute("data-pms-hook"));
     } catch {
-      return "The page's data hook did not report in, so the page's data could not be read.";
+      return null;
     }
+  }
+
+  function hookDiagnostics() {
+    const stats = hookStats();
+    return stats
+      ? `The page's data hook read ${stats.documents} response(s) and found ${stats.found} photo(s) or video(s) in them.`
+      : "The page's data hook did not report in, so the page's data could not be read.";
   }
 
   // The scroll loop ended because four checks found no older rows.
@@ -279,7 +285,7 @@ globalThis.PageMediaSaver ??= {};
     const repairShort = autoState.repairMode && repairFound.length !== repairTargets.length;
     // A page with nothing on it is not a success: the user may be signed out, or the site changed its data.
     const seen = started + videoStarted + skippedCount() + pending + failed + autoState.unavailable;
-    const nothingFound = !autoState.repairMode && seen === 0;
+    const nothingFound = !autoState.repairMode && seen === 0 && (hookStats()?.found ?? 0) === 0;
     let message;
     if (nothingFound) {
       message = document.querySelector('input[type="password"]')

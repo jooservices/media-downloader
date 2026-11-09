@@ -6,6 +6,7 @@ All notable changes to this project are documented in this file. Format follows 
 
 ### Added
 
+- End-to-end tests for every site through the real hook: Instagram (photos, a reel, a carousel, stories), Facebook (profile, Photos, Reels and Videos tabs), TikTok (videos and a photo post) and X (a video and a photo), each checked for the best quality, the saved bytes and a second run that saves nothing again
 - Watched accounts are rescanned with a small fixed spread of their own and less often while they keep ending in trouble (up to four times the interval), so a long list neither wakes together nor keeps knocking on a site that is turning it away
 - Notifications: set `notify.url` in `config.json` to be told (JSON or ntfy-style text) when a scan saves new files or runs into trouble such as an expired sign-in; each job is announced once and trouble on one site at most every 6 hours
 - A container image and `docker-compose.yml` for unattended runs (Chromium inside, amd64 and arm64), a one-time sign-in over VNC, `GET /v1/status` and a Prometheus `GET /v1/metrics`; `PMS_DATA_DIR`, `PMS_DOWNLOAD_DIR`, `PMS_BROWSER`, `PMS_BROWSER_ARGS`, `PMS_API_HOST` and `PMS_API_ALLOWED_HOSTS` configure it
@@ -36,6 +37,9 @@ All notable changes to this project are documented in this file. Format follows 
 
 ### Fixed
 
+- Photos and videos the page delivers in its own data (Instagram, Facebook, TikTok, X videos) never reached the downloader in a browser that ran the page bridge before the shared site list had loaded; the bridge no longer depends on load order
+- Instagram stories could be missed when the page's own posts arrived first: the story tray is now looked at until two looks in a row find nothing new
+- A rescan of an account with nothing new is no longer reported as "nothing found"; files already saved count as seen
 - The packaged zip left out the scripts a page loads (`popup.js` was missing, so the popup did nothing in a packaged build); the packager now includes them
 - X: promoted, suggested and reposted posts no longer land in the scanned account's folder (cached media, page photos and menu videos)
 - Instagram: the page hook now reads `POST /api/graphql` responses (it only matched URLs ending in `/graphql/`), and posts addressed by 39-character codes are accepted

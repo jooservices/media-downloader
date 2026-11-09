@@ -291,7 +291,7 @@ function loadBridge() {
   };
   context.window = context;
   context.globalThis = context;
-  runScript("lib/sites.js", context);
+  // Nothing else is loaded first: the bridge has to work on its own.
   runScript("src/page/media-bridge.js", context);
   const deliver = event =>
     listeners[0].listener({ source: vm.runInContext("window", context), origin: context.location.origin, ...event });
@@ -360,18 +360,12 @@ test("bridge: messages from another frame or origin, or another channel, are ign
   assert.deepEqual(sent, []);
 });
 
-test("bridge: unknown platforms, entries without an id and junk entries are dropped", () => {
+test("bridge: entries without a platform or an id and junk entries are dropped", () => {
   const { sent, deliver } = loadBridge();
   deliver({
     data: {
       channel: CHANNEL,
-      media: [
-        { platform: "MySpace", id: "1" },
-        { platform: "Instagram", id: "" },
-        { platform: "Instagram" },
-        null,
-        undefined
-      ]
+      media: [{ platform: "", id: "1" }, { platform: "Instagram", id: "" }, { platform: "Instagram" }, null, undefined]
     }
   });
   assert.deepEqual(sent, [], "nothing valid, nothing sent");

@@ -5,7 +5,9 @@
   globalThis.__pageMediaSaverMediaBridge = true;
 
   const CHANNEL = "page-media-saver:media";
-  const PLATFORMS = new Set(globalThis.PageMediaLib?.sites?.names?.() || []);
+  // The service worker is the one that knows which platforms and file hosts are valid and drops the rest. The
+  // bridge must not depend on any other script having loaded first: the browser does not promise an order across
+  // content-script entries, and a data response can arrive before the page is even parsed.
 
   window.addEventListener("message", event => {
     if (event.source !== window || event.origin !== location.origin) {
@@ -27,7 +29,7 @@
         height: Number(entry?.height) || 0,
         url: String(entry?.url || "")
       }))
-      .filter(entry => PLATFORMS.has(entry.platform) && entry.id);
+      .filter(entry => entry.platform && entry.id);
     if (media.length) {
       chrome.runtime.sendMessage({ type: "MEDIA_FOUND", media }).catch(() => {});
     }

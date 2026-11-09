@@ -440,3 +440,19 @@ test("an empty page says what the page-world hook could read, or that it never r
   const silent = await start(scanPage());
   assert.match(silent.message, /data hook did not report in/);
 });
+
+test("media the page's data delivered that was all saved before is a success, not an empty page", async () => {
+  const page = scanPage({
+    tweak: sandbox => {
+      Object.defineProperty(sandbox.document, "documentElement", {
+        get: () => ({
+          scrollHeight: 800,
+          getAttribute: name => (name === "data-pms-hook" ? '{"documents":2,"found":7}' : null)
+        })
+      });
+    }
+  });
+  const state = await start(page);
+  assert.equal(state.status, "complete");
+  assert.match(state.message, /Download finished/);
+});

@@ -456,10 +456,20 @@ test("a post that changed the address is left with the overlay's close button, t
 
 // ---- stories -----------------------------------------------------------------------------
 
+// Opening a tray makes one new file available: the first look afterwards saves it, later looks find nothing new.
+let trayJustOpened = false;
 function storyPage({ onSend } = {}) {
   const page = loadPage({
     url: "https://www.instagram.com/disleft/",
-    onSend: onSend || settled({ DOWNLOAD_CACHED_MEDIA: () => ({ ok: true, started: 1, cached: 1 }) })
+    onSend:
+      onSend ||
+      settled({
+        DOWNLOAD_CACHED_MEDIA: () => {
+          const started = trayJustOpened ? 1 : 0;
+          trayJustOpened = false;
+          return { ok: true, started, cached: 1 };
+        }
+      })
   });
   page.stories = [];
   page.highlights = [];
@@ -477,6 +487,7 @@ const storyLink = (href, extra = {}) => ({
   getClientRects: () => [{}],
   click() {
     this.clicked = (this.clicked || 0) + 1;
+    trayJustOpened = true;
     extra.onClick?.();
   }
 });
@@ -501,7 +512,7 @@ test("stories: the account's own tray and each highlight are opened, saved and l
   assert.deepEqual(plain(page.highlights.map(link => link.clicked ?? 0)), [1, 1, 0], "highlights are opened once");
 });
 
-test("stories: leaving a tray goes back in history, and a tray that never caches is tried six times", async () => {
+test("stories: leaving a tray goes back in history, and a tray with nothing new is looked at twice", async () => {
   let asked = 0;
   const page = storyPage({
     onSend: settled({
@@ -519,7 +530,7 @@ test("stories: leaving a tray goes back in history, and a tray that never caches
     })
   ];
   assert.equal(await page.ns.videoSources.saveAccountStories("disleft"), 0);
-  assert.equal(asked, 6);
+  assert.equal(asked, 2, "two looks in a row that find nothing new end it");
   assert.equal(page.history.backed, 1);
   assert.equal(page.sent.find(message => message.type === "DOWNLOAD_CACHED_MEDIA").limit, null);
 });
@@ -548,4 +559,39 @@ test("stories: at most 40 highlights are opened, and a finite limit is passed al
   await page.ns.videoSources.saveAccountStories("disleft");
   assert.equal(page.highlights.filter(link => link.clicked).length, 40);
   assert.equal(page.sent.find(message => message.type === "DOWNLOAD_CACHED_MEDIA").limit, 100);
+});
+
+test("stories: a tray keeps being looked at while new files keep turning up, up to six looks", async () => {
+  let asked = 0;
+  const page = storyPage({
+    onSend: settled({
+      DOWNLOAD_CACHED_MEDIA: () => {
+        asked++;
+        return { ok: true, started: 1, cached: 1 };
+      }
+    })
+  });
+  page.stories = [storyLink("https://www.instagram.com/stories/disleft/")];
+  assert.equal(await page.ns.videoSources.saveAccountStories("disleft"), 6);
+  assert.equal(asked, 6);
+});
+
+test("stories: files that arrive after the first look are still saved", async () => {
+  const answers = [0, 2, 0, 0];
+  const page = storyPage({
+    onSend: settled({ DOWNLOAD_CACHED_MEDIA: () => ({ ok: true, started: answers.shift() ?? 0, cached: 1 }) })
+  });
+  page.stories = [storyLink("https://www.instagram.com/stories/disleft/")];
+  assert.equal(await page.ns.videoSources.saveAccountStories("disleft"), 2);
+});
+
+test("cached files that were saved earlier are counted as seen (skipped), not as nothing", async () => {
+  const page = loadPage({
+    url: "https://x.com/disleft/",
+    onSend: settled({ DOWNLOAD_CACHED_MEDIA: () => ({ ok: true, started: 0, skipped: 5, cached: 5, coveredIds: [] }) })
+  });
+  page.document.querySelectorAll = () => [];
+  const result = await page.ns.videoSources.collectPageMedia("Twitter", "disleft");
+  assert.equal(result.videoDownloadsSkipped, 5);
+  assert.equal(result.videoDownloadsClicked, 0);
 });

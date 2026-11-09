@@ -343,7 +343,12 @@ globalThis.PageMediaSaver ??= {};
       cachedStarted += await openGridPosts(account, budget - cachedStarted, cached?.coveredIds);
     }
     const videos = await collectNativeVideoDownloads(platform, account, budget - cachedStarted);
-    return { ...videos, videoDownloadsClicked: videos.videoDownloadsClicked + cachedStarted };
+    return {
+      ...videos,
+      videoDownloadsClicked: videos.videoDownloadsClicked + cachedStarted,
+      // Files the page delivered that were saved earlier count as seen, so a rescan with nothing new is not "empty".
+      videoDownloadsSkipped: (videos.videoDownloadsSkipped || 0) + (cached?.skipped || 0)
+    };
   }
 
   // The profile header links to the current story tray. Opening it makes Instagram
@@ -375,7 +380,10 @@ globalThis.PageMediaSaver ??= {};
     const home = location.href;
     link.click();
     let started = 0;
-    for (let attempt = 0; attempt < 6 && limitRemaining() > 0; attempt++) {
+    // The tray's own files arrive a moment after the page's earlier ones, so stop only after two looks in a row
+    // find nothing new to save.
+    let quiet = 0;
+    for (let attempt = 0; attempt < 6 && limitRemaining() > 0 && quiet < 2; attempt++) {
       await pause(700);
       const remaining = limitRemaining();
       const response = await chrome.runtime
@@ -387,9 +395,7 @@ globalThis.PageMediaSaver ??= {};
         })
         .catch(() => null);
       started += response?.started || 0;
-      if (response?.cached) {
-        break;
-      }
+      quiet = response?.started ? 0 : quiet + 1;
     }
     if (location.href !== home) {
       history.back();

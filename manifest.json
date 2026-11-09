@@ -48,7 +48,7 @@
         "https://*.twitter.com/*",
         "https://*.tiktok.com/*"
       ],
-      "js": ["lib/sites.js", "src/page/media-bridge.js"],
+      "js": ["src/page/media-bridge.js"],
       "run_at": "document_start"
     },
     {

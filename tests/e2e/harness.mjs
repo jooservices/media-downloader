@@ -135,10 +135,15 @@ export async function startFakeSites(state) {
       key: await readFile(path.join(FIXTURES, "test-key.pem")),
       cert: await readFile(path.join(FIXTURES, "test-cert.pem"))
     },
-    (request, response) => {
+    async (request, response) => {
       const host = String(request.headers.host || "").split(":")[0];
       const url = new URL(request.url, `https://${host}`);
       state.requests.push(`${host}${url.pathname}`);
+      for (const route of state.routes ?? []) {
+        if (await route({ host, url, request, response })) {
+          return;
+        }
+      }
       if (host === "pbs.twimg.com" && url.pathname.startsWith("/media/")) {
         response.writeHead(200, { "Content-Type": "image/png", "Access-Control-Allow-Origin": "*" });
         response.end(makePng(640, 480, url.pathname.slice("/media/".length)));
@@ -155,8 +160,10 @@ export async function startFakeSites(state) {
   return { port: server.address().port, close: () => new Promise(resolve => server.close(resolve)) };
 }
 
-function browserArgs({ userData, extension, sitesPort }) {
-  const hosts = ["x.com", "www.x.com", "pbs.twimg.com"].map(host => `MAP ${host} 127.0.0.1:${sitesPort}`).join(", ");
+const DEFAULT_HOSTS = ["x.com", "www.x.com", "pbs.twimg.com"];
+
+function browserArgs({ userData, extension, sitesPort, siteHosts = DEFAULT_HOSTS }) {
+  const hosts = siteHosts.map(host => `MAP ${host} 127.0.0.1:${sitesPort}`).join(", ");
   return [
     `--user-data-dir=${userData}`,
     `--load-extension=${extension}`,
@@ -171,7 +178,7 @@ function browserArgs({ userData, extension, sitesPort }) {
   ];
 }
 
-export async function createSandbox({ bridgePort, apiPort, sitesPort, executable, config = {} }) {
+export async function createSandbox({ bridgePort, apiPort, sitesPort, executable, config = {}, siteHosts }) {
   const debugPort = await freePort();
   const root = await mkdtemp(path.join(os.tmpdir(), "pms-e2e-"));
   const localAppData = path.join(root, "localappdata");
@@ -195,7 +202,7 @@ export async function createSandbox({ bridgePort, apiPort, sitesPort, executable
   );
   await writeFile(
     path.join(appDir, "config.json"),
-    JSON.stringify({ delaySeconds: { min: 0, max: 0 }, maxAttempts: 2, downloadDir: media, ...config })
+    JSON.stringify({ delaySeconds: { min: 0, max: 0 }, maxAttempts: 3, downloadDir: media, ...config })
   );
   await writeFile(
     path.join(appDir, "edge-profile.json"),
@@ -205,7 +212,7 @@ export async function createSandbox({ bridgePort, apiPort, sitesPort, executable
       userData,
       executable,
       debugPort,
-      extraArgs: browserArgs({ userData, extension, sitesPort })
+      extraArgs: browserArgs({ userData, extension, sitesPort, siteHosts })
     })
   );
   const env = {
@@ -217,7 +224,7 @@ export async function createSandbox({ bridgePort, apiPort, sitesPort, executable
     PMS_BRIDGE_PORT: String(bridgePort),
     PMS_API_PORT: String(apiPort)
   };
-  return { root, env, appDir, userData, downloads, media, extension };
+  return { root, env, appDir, userData, downloads, media, extension, debugPort };
 }
 
 export function startServe(sandbox) {
@@ -279,4 +286,91 @@ export function apiClient(apiPort, token) {
     },
     raw: (pathname, init) => fetch(`${base}${pathname}`, init)
   };
+}
+
+// A small MP4-looking file that differs per label (the browser only saves it; nothing plays it).
+export function makeMp4(label) {
+  const brand = Buffer.from("ftypisom");
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(8 + 8 + 4 + String(label).length, 0);
+  return Buffer.concat([header, brand, Buffer.alloc(4), Buffer.from(`mdat-${label}`)]);
+}
+
+export function sendJson(response, body) {
+  response.writeHead(200, { "Content-Type": "application/json" });
+  response.end(JSON.stringify(body));
+}
+
+export function sendHtml(response, html) {
+  response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+  response.end(html);
+}
+
+// Serves a picture or a video for any path on a media host: the label is the path, so every file differs.
+export function serveMedia(host, hostsSet) {
+  return ({ host: requested, url, response }) => {
+    if (!hostsSet.has(requested) || requested !== host) {
+      return false;
+    }
+    const label = url.pathname;
+    if (/[.]mp4$/.test(label)) {
+      response.writeHead(200, { "Content-Type": "video/mp4", "Access-Control-Allow-Origin": "*" });
+      response.end(makeMp4(label));
+    } else {
+      response.writeHead(200, { "Content-Type": "image/png", "Access-Control-Allow-Origin": "*" });
+      response.end(makePng(640, 480, label));
+    }
+    return true;
+  };
+}
+
+const FINISHED_STATES = new Set(["complete", "incomplete", "error", "paused"]);
+
+export async function listFiles(directory) {
+  const { readdir } = await import("node:fs/promises");
+  const entries = await readdir(directory, { withFileTypes: true, recursive: true }).catch(() => []);
+  return entries
+    .filter(entry => entry.isFile())
+    .map(entry => path.join(entry.parentPath ?? entry.path, entry.name))
+    .sort();
+}
+
+// Everything one end-to-end file needs: fake sites, a private browser profile, the real queue and its API.
+export async function startEnvironment(t, { routes, siteHosts, config } = {}) {
+  const executable = await chromiumPath();
+  const state = { account: "unused", posts: [], requests: [], routes };
+  const sites = await startFakeSites(state);
+  const [bridgePort, apiPort] = [await freePort(), await freePort()];
+  const sandbox = await createSandbox({ bridgePort, apiPort, sitesPort: sites.port, executable, siteHosts, config });
+  const serve = startServe(sandbox);
+  t.after(async () => {
+    await destroySandbox(sandbox, serve);
+    await sites.close();
+  });
+  const token = await waitFor(
+    async () => (await readFile(path.join(sandbox.appDir, "api-token"), "utf8").catch(() => "")).trim(),
+    { what: "the API token", timeoutMs: 30_000 }
+  );
+  const api = apiClient(apiPort, token);
+  await waitFor(() => api.health().catch(() => null), { what: "the API", timeoutMs: 30_000 });
+  const diagnostics = () =>
+    ["serve output:", serve.output.join(""), "site requests:", ...state.requests].join(String.fromCharCode(10));
+  async function runJob(url, again = false, timeoutMs = 600_000) {
+    const queued = await api.queue(url, again);
+    if (queued.status !== 201) {
+      throw new Error(`${url} was not queued: ${JSON.stringify(queued.body)}`);
+    }
+    const ids = queued.body.items.map(item => item.id);
+    const finished = await waitFor(
+      async () => {
+        const jobs = (await api.jobs()).items.filter(item => ids.includes(item.id));
+        return jobs.length === ids.length && jobs.every(job => FINISHED_STATES.has(job.status)) ? jobs : null;
+      },
+      { what: `${url} to finish`, timeoutMs, everyMs: 1000 }
+    ).catch(error => {
+      throw new Error([error.message, diagnostics()].join(String.fromCharCode(10)), { cause: error });
+    });
+    return finished;
+  }
+  return { api, sandbox, state, runJob, diagnostics, executable };
 }
