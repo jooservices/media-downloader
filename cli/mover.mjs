@@ -1,7 +1,20 @@
 // Moves finished downloads out of Edge's Downloads folder into the folder the user chose.
 // A browser extension may only save inside the browser's own Downloads folder, so the CLI
 // relocates the files afterwards. Nothing is deleted until its copy has been checked.
-import { copyFile, lstat, mkdir, open, readFile, readdir, realpath, rmdir, stat, unlink } from "node:fs/promises";
+import {
+  copyFile,
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rmdir,
+  stat,
+  unlink
+} from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -12,8 +25,40 @@ const require = createRequire(import.meta.url);
 export const SITE_FOLDERS = require("../lib/sites.js").names();
 const UNFINISHED = /\.(crdownload|tmp|part|download)$/i;
 const DEFAULT_SETTLE_MS = 15_000;
+const ORPHAN_AGE_MS = 0;
 const COMPARE_CHUNK = 1024 * 1024;
 const OVERLAP_MESSAGE = "The download folder must not be the browser's Downloads folder or sit inside it.";
+const moveLocks = new Map();
+
+// At startup, no mover copy from this queue is active, so any remaining temporary file is orphaned.
+export async function cleanOrphanedPartials(root, { now = Date.now(), maxAgeMs = ORPHAN_AGE_MS } = {}) {
+  let removed = 0;
+  const visit = async directory => {
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        return;
+      }
+      throw error;
+    }
+    for (const entry of entries) {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(file);
+      } else if (entry.isFile() && UNFINISHED.test(entry.name)) {
+        const info = await stat(file);
+        if (maxAgeMs === 0 || now - info.mtimeMs >= maxAgeMs) {
+          await unlink(file);
+          removed++;
+        }
+      }
+    }
+  };
+  await visit(root);
+  return removed;
+}
 
 // Where Edge saves downloads for this profile (its setting, else the standard Downloads folder).
 // A preferences file that cannot be read is an error only when no folder was found in the other one: guessing the
@@ -109,7 +154,7 @@ async function freeName(directory, name) {
   throw new Error(`No free file name for ${name}`);
 }
 
-async function moveOne(from, toDirectory, name, result) {
+async function moveOne(from, toDirectory, name, result, copyFileImpl) {
   await mkdir(toDirectory, { recursive: true });
   const size = (await stat(from)).size;
   let target = path.join(toDirectory, name);
@@ -123,16 +168,22 @@ async function moveOne(from, toDirectory, name, result) {
   if (existing) {
     target = await freeName(toDirectory, name);
   }
-  await copyFile(from, target, constants.COPYFILE_EXCL);
-  if ((await stat(target)).size !== size) {
-    await unlink(target).catch(() => {});
-    throw new Error(`Copy of ${name} is not the same size as the original.`);
+  const temporary = path.join(toDirectory, `.${name}.${randomUUID()}.part`);
+  try {
+    await copyFileImpl(from, temporary, constants.COPYFILE_EXCL);
+    if ((await stat(temporary)).size !== size || !(await sameContents(from, temporary))) {
+      throw new Error(`Copy of ${name} is not the same as the original.`);
+    }
+    await rename(temporary, target);
+  } catch (error) {
+    await unlink(temporary).catch(() => {});
+    throw error;
   }
   await unlink(from);
   result.moved++;
 }
 
-async function moveAccountFolder(source, destination, { now, settleMs }, result) {
+async function moveAccountFolder(source, destination, { now, settleMs, copyFileImpl }, result) {
   const entries = await readdir(source, { withFileTypes: true });
   for (const entry of entries) {
     const from = path.join(source, entry.name);
@@ -144,7 +195,7 @@ async function moveAccountFolder(source, destination, { now, settleMs }, result)
       continue;
     }
     try {
-      await moveOne(from, destination, entry.name, result);
+      await moveOne(from, destination, entry.name, result, copyFileImpl);
     } catch (error) {
       result.failed++;
       result.errors.push(`${entry.name}: ${error?.message || error}`);
@@ -155,14 +206,35 @@ async function moveAccountFolder(source, destination, { now, settleMs }, result)
 
 // Moves every settled file in <sourceRoot>/<Site>/<account>/ to <destRoot>/<Site>/<account>/.
 // A site folder that is a link (for example to a network share) already points elsewhere and is left alone.
-export async function moveFinishedFiles({ sourceRoot, destRoot, now = Date.now(), settleMs = DEFAULT_SETTLE_MS }) {
+async function moveFinishedFilesUnlocked({
+  sourceRoot,
+  destRoot,
+  now = Date.now(),
+  settleMs = DEFAULT_SETTLE_MS,
+  copyFileImpl = copyFile,
+  resolveDestination = realLocation
+}) {
   const result = { moved: 0, duplicates: 0, skipped: 0, failed: 0, errors: [] };
   if (overlaps(sourceRoot, destRoot)) {
     throw new Error(OVERLAP_MESSAGE);
   }
   // A junction or symlink can make the destination another name for the source: compare where they really are.
   const realSource = await realLocation(sourceRoot);
-  if (overlaps(realSource, await realLocation(destRoot))) {
+  let realDestination;
+  try {
+    realDestination = await resolveDestination(destRoot);
+  } catch (error) {
+    return {
+      moved: 0,
+      duplicates: 0,
+      skipped: 0,
+      failed: 1,
+      errors: [
+        `${destRoot}: destination is unavailable; the source files were left in place (${error?.message || error}).`
+      ]
+    };
+  }
+  if (overlaps(realSource, realDestination)) {
     throw new Error(OVERLAP_MESSAGE);
   }
   for (const site of SITE_FOLDERS) {
@@ -174,13 +246,42 @@ export async function moveFinishedFiles({ sourceRoot, destRoot, now = Date.now()
     const accounts = await readdir(siteDir, { withFileTypes: true });
     for (const account of accounts.filter(entry => entry.isDirectory())) {
       const destination = path.join(destRoot, site, account.name);
-      if (overlaps(realSource, await realLocation(destination))) {
+      let realAccountDestination;
+      try {
+        realAccountDestination = await resolveDestination(destination);
+      } catch (error) {
+        result.failed++;
+        result.errors.push(
+          `${site}/${account.name}: destination is unavailable; files remain in Downloads (${error?.message || error}).`
+        );
+        continue;
+      }
+      if (overlaps(realSource, realAccountDestination)) {
         result.failed++;
         result.errors.push(`${site}/${account.name}: the destination folder is a link into the Downloads folder.`);
         continue;
       }
-      await moveAccountFolder(path.join(siteDir, account.name), destination, { now, settleMs }, result);
+      await moveAccountFolder(path.join(siteDir, account.name), destination, { now, settleMs, copyFileImpl }, result);
     }
   }
   return result;
+}
+
+// A manual `move` can overlap a queue pass. Serialize the same source/destination pair so two
+// workers cannot both choose and publish the same final filename.
+export function moveFinishedFiles(options) {
+  const key = path.resolve(options.destRoot).toLowerCase();
+  const previous = moveLocks.get(key) || Promise.resolve();
+  const run = previous.then(() => moveFinishedFilesUnlocked(options));
+  const settled = run.then(
+    () => undefined,
+    () => undefined
+  );
+  moveLocks.set(key, settled);
+  settled.then(() => {
+    if (moveLocks.get(key) === settled) {
+      moveLocks.delete(key);
+    }
+  });
+  return run;
 }

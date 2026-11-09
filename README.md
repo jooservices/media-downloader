@@ -97,6 +97,8 @@ node .\cli\mediasaver.mjs add <url> [<url>...]  # from another window, at any ti
 
 Each job is retried a few times when Edge does not answer or the page is closed (`maxAttempts`). Jobs left running by a crashed or stopped `serve` are recovered when it starts again. While `serve` is running, `download <url>` hands its URL to the queue instead of competing for the bridge. `status` shows every job and its state. Logs are written to `%LOCALAPPDATA%\PageMediaSaver\logs\`.
 
+Use `node cli/mediasaver.mjs verify <profile-url>` to compare an account's saved media files with completed job totals. It walks the account folder, checks media signatures, and reports missing, corrupt and partial files without changing anything. Add `--repair` to requeue completed scans for that account when the folder does not match. Verification is at account-scan level because older job records do not include a per-file manifest. Copies moved to a configured download folder are written beside the final name as `.part`, checked, then renamed into place; orphaned partials are removed from that folder when `serve` starts. A missing network share or a full destination leaves the source download in place for a later mover pass.
+
 `serve` keeps going only while the computer is awake, the browser is available and you are still signed in to the sites.
 
 `service install` registers that queue to start when you sign in (the Windows Startup folder, a systemd user service, or a macOS launch agent) and starts it now. Run it from the project folder, or pass the full path to `mediasaver.mjs`. `service remove` unregisters it. It is not a Session 0 Windows service: the download has to open the signed-in browser on the desktop.

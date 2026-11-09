@@ -26,7 +26,7 @@ import { createJob, openJobInEdge } from "./jobs.mjs";
 import { API_PORT, startApiServer } from "./api.mjs";
 import { extensionSeen, startBridgeServer } from "./bridge-server.mjs";
 import { resolvedProfile } from "./browsers.mjs";
-import { edgeDownloadsDir, firefoxDownloadDir, moveFinishedFiles } from "./mover.mjs";
+import { cleanOrphanedPartials, edgeDownloadsDir, firefoxDownloadDir, moveFinishedFiles } from "./mover.mjs";
 import { addWatch, readWatchList, removeWatch, watchDue } from "./watchlist.mjs";
 
 import { createNotifier } from "./notify.mjs";
@@ -148,7 +148,10 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
     throw new Error(`Another “serve” is already running (process ${other.pid}).`);
   }
   await ensureConfigFile();
-  await loadConfig();
+  const startupConfig = await loadConfig();
+  if (startupConfig.downloadDir) {
+    await cleanOrphanedPartials(startupConfig.downloadDir).catch(() => 0);
+  }
   const log = await createLogger();
   const servers = [];
   let stopping = false;

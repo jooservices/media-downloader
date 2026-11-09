@@ -8,6 +8,7 @@ import { installService, removeService } from "./service.mjs";
 import { browserCommand } from "./browser.mjs";
 import { runMcp } from "./mcp.mjs";
 import { addToWatch, watch } from "./watch.mjs";
+import { verifyCommand } from "./verify.mjs";
 
 const USAGE = [
   "Page Media Saver",
@@ -19,7 +20,7 @@ const USAGE = [
   "  mcp                               MCP server on stdin/stdout for AI assistants",
   "  browser setup|login|status        a browser profile owned by the queue, for unattended runs",
   "",
-  "Also: add, serve, move, resume, repair-root, uninstall, help.",
+  "Also: add, serve, move, resume, verify <profile-url> [--repair], repair-root, uninstall, help.",
   "A Facebook link also scans Photos, Reels and Videos. Files go to <download folder>/<Site>/<account>.",
   "Works with Edge, Chrome and Firefox on Windows, macOS and Linux. Load the unpacked extension first.",
   ""
@@ -81,6 +82,7 @@ const COMMANDS = {
   resume: args => resumeJob(args[0]),
   "repair-root": () => repairRootDownloads(launchAndMonitor),
   "finalize-repair": args => finalizeRepairById(args[0]),
+  verify: verifyCommand,
   download: downloadCommand
 };
 

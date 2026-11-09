@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { moveFinishedFiles } from "../../cli/mover.mjs";
+import { cleanOrphanedPartials, moveFinishedFiles } from "../../cli/mover.mjs";
 
 const NOW = Date.now();
 const OLD = new Date(NOW - 60_000);
@@ -45,6 +45,91 @@ test("leaves files that are still being written or downloaded", async () => {
   assert.deepEqual(await names(path.join(source, "Instagram", "alice")), ["big.mp4.crdownload", "fresh.jpg"]);
 });
 
+test("startup cleanup removes orphaned partials recursively, including recent files", async () => {
+  const { dest } = await area();
+  const account = path.join(dest, "Instagram", "alice");
+  await put(path.join(account, ".photo.jpg.123.part"), "stale", new Date(NOW - 2 * 60 * 60 * 1000));
+  await put(path.join(account, "video.mp4.crdownload"), "orphan", new Date(NOW - 1000));
+  await put(path.join(account, "complete.jpg"), "media");
+  assert.equal(await cleanOrphanedPartials(dest, { now: NOW }), 2);
+  assert.deepEqual(await names(account), ["complete.jpg"]);
+});
+
+test("a destination share that disappears leaves the source in place for a later pass", async () => {
+  const { source, dest } = await area();
+  const original = path.join(source, "Instagram", "alice", "photo.jpg");
+  await put(original, "photo");
+  const paused = await moveFinishedFiles({
+    sourceRoot: source,
+    destRoot: dest,
+    now: NOW,
+    resolveDestination: async () => {
+      const error = new Error("network path was not found");
+      error.code = "ENOENT";
+      throw error;
+    }
+  });
+  assert.equal(paused.failed, 1);
+  assert.equal(await readFile(original, "utf8"), "photo");
+
+  const resumed = await moveFinishedFiles({ sourceRoot: source, destRoot: dest, now: NOW });
+  assert.equal(resumed.moved, 1);
+  assert.equal(await readFile(path.join(dest, "Instagram", "alice", "photo.jpg"), "utf8"), "photo");
+});
+
+test("disk-full errors remove the temporary copy and preserve the original for retry", async () => {
+  const { source, dest } = await area();
+  const original = path.join(source, "Instagram", "alice", "photo.jpg");
+  await put(original, "photo");
+  const full = await moveFinishedFiles({
+    sourceRoot: source,
+    destRoot: dest,
+    now: NOW,
+    copyFileImpl: async () => {
+      const error = new Error("no space left on device");
+      error.code = "ENOSPC";
+      throw error;
+    }
+  });
+  assert.equal(full.failed, 1);
+  assert.equal(await readFile(original, "utf8"), "photo");
+  assert.deepEqual(await names(path.join(dest, "Instagram", "alice")), []);
+
+  const retried = await moveFinishedFiles({ sourceRoot: source, destRoot: dest, now: NOW });
+  assert.equal(retried.moved, 1);
+});
+
+test("the final filename stays absent until a verified temporary copy is renamed", async () => {
+  const { source, dest } = await area();
+  const original = path.join(source, "Instagram", "alice", "photo.jpg");
+  const final = path.join(dest, "Instagram", "alice", "photo.jpg");
+  await put(original, "complete photo");
+  let copyReady;
+  const ready = new Promise(resolve => {
+    copyReady = resolve;
+  });
+  let finishCopy;
+  const blocked = new Promise(resolve => {
+    finishCopy = resolve;
+  });
+  const moving = moveFinishedFiles({
+    sourceRoot: source,
+    destRoot: dest,
+    now: NOW,
+    copyFileImpl: async (_from, temporary) => {
+      await writeFile(temporary, "partial");
+      copyReady();
+      await blocked;
+      await writeFile(temporary, "complete photo");
+    }
+  });
+  await ready;
+  await assert.rejects(() => stat(final), { code: "ENOENT" });
+  finishCopy();
+  assert.equal((await moving).moved, 1);
+  assert.equal(await readFile(final, "utf8"), "complete photo");
+});
+
 test("a file already in the destination with the same size is a duplicate: the source is dropped", async () => {
   const { source, dest } = await area();
   await put(path.join(dest, "Instagram", "alice", "a.jpg"), "same!");
@@ -65,6 +150,42 @@ test("a different file with the same name is kept under a new name, never overwr
   assert.equal(result.moved, 1);
   assert.deepEqual(await names(path.join(dest, "Instagram", "alice")), ["a (1).jpg", "a.jpg"]);
   assert.equal(await readFile(path.join(dest, "Instagram", "alice", "a.jpg"), "utf8"), "original");
+});
+
+test("overlapping mover passes serialize filename selection and preserve both files", async () => {
+  const first = await area();
+  const second = await area();
+  await put(path.join(first.source, "Instagram", "alice", "photo.jpg"), "first");
+  await put(path.join(second.source, "Instagram", "alice", "photo.jpg"), "second");
+  await Promise.all([
+    moveFinishedFiles({ sourceRoot: first.source, destRoot: first.dest, now: NOW }),
+    moveFinishedFiles({ sourceRoot: second.source, destRoot: first.dest, now: NOW })
+  ]);
+  assert.deepEqual(await names(path.join(first.dest, "Instagram", "alice")), ["photo (1).jpg", "photo.jpg"]);
+  assert.deepEqual(
+    await Promise.all([
+      readFile(path.join(first.dest, "Instagram", "alice", "photo.jpg"), "utf8"),
+      readFile(path.join(first.dest, "Instagram", "alice", "photo (1).jpg"), "utf8")
+    ]).then(values => values.sort()),
+    ["first", "second"]
+  );
+});
+
+test("an unavailable destination keeps the source for a later mover pass", async () => {
+  const { source, dest } = await area();
+  const original = path.join(source, "Instagram", "alice", "photo.jpg");
+  await put(original, "photo");
+  await mkdir(path.join(dest, "Instagram"), { recursive: true });
+  await writeFile(path.join(dest, "Instagram", "alice"), "blocks the share folder");
+
+  const paused = await moveFinishedFiles({ sourceRoot: source, destRoot: dest, now: NOW });
+  assert.equal(paused.failed, 1);
+  assert.equal(await readFile(original, "utf8"), "photo");
+
+  await rm(path.join(dest, "Instagram", "alice"));
+  const resumed = await moveFinishedFiles({ sourceRoot: source, destRoot: dest, now: NOW });
+  assert.equal(resumed.moved, 1);
+  assert.equal(await readFile(path.join(dest, "Instagram", "alice", "photo.jpg"), "utf8"), "photo");
 });
 
 test("refuses a destination that is, contains or sits inside the Downloads folder", async () => {

@@ -20,8 +20,16 @@ const photo = (account, extra = {}) => ({
   ...extra
 });
 
-async function complete(harness, downloadId) {
-  harness.downloads.set(downloadId, { id: downloadId, state: "complete" });
+async function complete(harness, downloadId, type = "image") {
+  harness.downloads.set(downloadId, {
+    id: downloadId,
+    state: "complete",
+    bytesReceived: 10,
+    totalBytes: 10,
+    fileSize: 10,
+    filename: type === "video" ? "video.mp4" : "photo.jpg",
+    mime: type === "video" ? "video/mp4" : "image/jpeg"
+  });
   await harness.listeners.changed[0]({ id: downloadId, state: { current: "complete" } });
 }
 
@@ -86,7 +94,7 @@ test("a cached video and the same video from the page menu share one key", async
     account: "jasondchen",
     ids: ["DezPoWNzXMt"]
   });
-  await complete(harness, 1);
+  await complete(harness, 1, "video");
   const menu = await harness.send({
     type: "SET_NATIVE_VIDEO_TARGET",
     target: {
