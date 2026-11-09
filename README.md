@@ -152,7 +152,7 @@ A Facebook profile still adds Photos, Reels and Videos, so `items` can hold seve
 }
 ```
 
-`watch` is `serve` for a fixed list of accounts (`watch add <url>` writes them to `%LOCALAPPDATA%\PageMediaSaver\watch.txt`). Every 6 hours an account whose last scan has finished is queued again, so new stories, highlights, reels and photos are picked up. Anything already saved is skipped. A Facebook profile link is queued as the profile plus its Photos, Reels and Videos tabs. An Instagram profile scan also opens the current story tray and highlight reels. When a job ends, the CLI prints the account folder and how many files were new versus already saved.
+`watch` is `serve` for a fixed list of accounts (`watch add <url>` writes them to `%LOCALAPPDATA%\PageMediaSaver\watch.txt`). About every 6 hours (each account waits up to 20% longer, by a fixed amount of its own, so they do not all wake together; an account whose last scans ended in trouble is visited at half, then a quarter, of that pace) an account whose last scan has finished is queued again, so new stories, highlights, reels and photos are picked up. Anything already saved is skipped. A Facebook profile link is queued as the profile plus its Photos, Reels and Videos tabs. An Instagram profile scan also opens the current story tray and highlight reels. When a job ends, the CLI prints the account folder and how many files were new versus already saved.
 
 On this machine the unpacked extension lives in `C:\Claude\PageMediaSaver`. `npm run sync-edge` copies the current tree there and bumps that copy's version. Reload Page Media Saver in `edge://extensions` afterwards. The git version is left unchanged.
 

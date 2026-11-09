@@ -6,6 +6,7 @@ All notable changes to this project are documented in this file. Format follows 
 
 ### Added
 
+- Watched accounts are rescanned with a small fixed spread of their own and less often while they keep ending in trouble (up to four times the interval), so a long list neither wakes together nor keeps knocking on a site that is turning it away
 - Notifications: set `notify.url` in `config.json` to be told (JSON or ntfy-style text) when a scan saves new files or runs into trouble such as an expired sign-in; each job is announced once and trouble on one site at most every 6 hours
 - A container image and `docker-compose.yml` for unattended runs (Chromium inside, amd64 and arm64), a one-time sign-in over VNC, `GET /v1/status` and a Prometheus `GET /v1/metrics`; `PMS_DATA_DIR`, `PMS_DOWNLOAD_DIR`, `PMS_BROWSER`, `PMS_BROWSER_ARGS`, `PMS_API_HOST` and `PMS_API_ALLOWED_HOSTS` configure it
 - Jobs live in one SQLite file (`queue.db`, Node's built-in `node:sqlite`, no new dependency) instead of one JSON file per job, so listing and pruning stay fast however long the queue runs. Jobs saved by an older version are imported the first time, and the old `jobs` folder is kept as `jobs.imported`
