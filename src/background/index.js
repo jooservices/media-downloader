@@ -36,7 +36,10 @@ const handlers = {
   SET_NATIVE_VIDEO_TARGET: message => queueBatch(() => setNativeVideoTarget(message.target)),
   DOWNLOAD_ITEMS: message => queueBatch(() => downloadBatch(message.items)),
   RETRY_FAILED_DOWNLOADS: message => queueBatch(() => retryFailedDownloads(message.platform, message.account)),
-  DRAIN_DOWNLOADS: message => queueBatch(() => drainDownloads(message.platform, message.account, message.timeoutMs)),
+  DRAIN_DOWNLOADS: message =>
+    drainDownloads(message.platform, message.account, message.timeoutMs, (platform, account) =>
+      queueBatch(() => getDownloadStatus(platform, account))
+    ),
   DOWNLOAD_STATUS: message => queueBatch(() => getDownloadStatus(message.platform, message.account))
 };
 

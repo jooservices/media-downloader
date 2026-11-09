@@ -170,6 +170,36 @@ test("the limit counts only items that are not already saved or pending", async 
   });
 });
 
+test("a cached-media request returns promptly when all download slots are busy", async () => {
+  let clock = 1_000_000;
+  const env = loadBackground({ now: () => clock });
+  await found(env, [photo("free001"), photo("free002")]);
+  await env.send({
+    type: "DOWNLOAD_ITEMS",
+    items: Array.from({ length: 8 }, (_, index) => ({
+      platform: "Twitter",
+      account: "alice",
+      key: `Twitter|image|pending${index}|1`,
+      url: `https://pbs.twimg.com/media/pending${index}.jpg`
+    }))
+  });
+
+  const request = saveCached(env, { platform: "Twitter", account: "alice", limit: 8 });
+  const returnedQuickly = await Promise.race([
+    request.then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 100))
+  ]);
+  clock += 61_000;
+  const result = await request;
+  assert.equal(returnedQuickly, true);
+  assert.equal(result.started, 0);
+  assert.equal(env.started.length, 8);
+
+  env.downloads.set(1, { id: 1, state: "complete" });
+  assert.equal((await saveCached(env, { platform: "Twitter", account: "alice", limit: 8 })).started, 1);
+  assert.equal(env.started.length, 9);
+});
+
 test("a limit that is not a whole number is ignored", async () => {
   const env = loadBackground();
   await found(env, [photo("nl001"), photo("nl002")]);

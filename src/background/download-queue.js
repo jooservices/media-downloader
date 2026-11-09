@@ -230,13 +230,13 @@ async function getDownloadStatus(platform, account) {
   return statusFor(await reconcileDownloads(), platform, account);
 }
 
-async function drainDownloads(platform, account, timeoutMs) {
+async function drainDownloads(platform, account, timeoutMs, getStatus = getDownloadStatus) {
   const timeout = Math.max(1000, Math.min(Number(timeoutMs) || 60000, 120000));
   const deadline = Date.now() + timeout;
-  let status = await getDownloadStatus(platform, account);
+  let status = await getStatus(platform, account);
   while (status.pending && Date.now() < deadline) {
     await pause(750);
-    status = await getDownloadStatus(platform, account);
+    status = await getStatus(platform, account);
   }
   return status;
 }

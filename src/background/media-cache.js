@@ -148,21 +148,26 @@ async function downloadCachedMedia({ platform, account, ids, limit }) {
   // What the cache held for this page, so a scan that saves nothing can say why.
   const diag = cacheDiagnostics(mediaCache, platform, wantedIds, wantedAccount, entries.length);
   const items = entries.map(entry => cachedMediaItem(entry, account));
-  // Items already saved or pending are skipped by downloadBatch, so only they may
-  // use the allowance: trim to the not-yet-started ones before applying `limit`.
-  if (Number.isInteger(limit) && limit >= 0) {
-    const { pendingDownloads = {} } = await chrome.storage.local.get({ pendingDownloads: {} });
-    const fresh = [];
-    for (const item of items) {
-      if (fresh.length >= limit) {
-        break;
+  // A cache request must not wait for a download slot: the page's message channel can
+  // close while a different tab is draining downloads. Only send work that fits now.
+  const state = await reconcileDownloads();
+  const availableSlots = Math.max(0, MAX_ACTIVE_DOWNLOADS - Object.keys(state.pending).length);
+  const hasLimit = Number.isInteger(limit) && limit >= 0;
+  const freshLimit = hasLimit ? Math.min(limit, availableSlots) : availableSlots;
+  const selected = [];
+  let freshCount = 0;
+  for (const item of items) {
+    const alreadyStarted = Object.hasOwn(state.pending, item.key) || (await ledgerHas(item.key));
+    if (alreadyStarted) {
+      if (!hasLimit) {
+        selected.push(item);
       }
-      if (!Object.hasOwn(pendingDownloads, item.key) && !(await ledgerHas(item.key))) {
-        fresh.push(item);
-      }
+    } else if (freshCount < freshLimit) {
+      selected.push(item);
+      freshCount++;
     }
-    items.splice(0, items.length, ...fresh);
   }
+  items.splice(0, items.length, ...selected);
   if (!items.length) {
     return { ok: true, started: 0, skipped: 0, failed: 0, pending: 0, errors: [], cached: 0, coveredIds, diag };
   }

@@ -242,6 +242,25 @@ test("draining waits for pending downloads to finish and returns the final statu
   assert.equal(await env.ledger.has("Twitter|image|1|1"), true);
 });
 
+test("draining does not hold the batch queue while it waits for downloads", async () => {
+  const env = loadBackground();
+  await download(env, [photo(1)]);
+
+  const draining = env.send({ type: "DRAIN_DOWNLOADS", platform: "Twitter", account: "alice", timeoutMs: 5000 });
+  await settle();
+  const next = env.send({ type: "DOWNLOAD_ITEMS", items: [photo(2)] });
+  const returnedQuickly = await Promise.race([
+    next.then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 200))
+  ]);
+  assert.equal(returnedQuickly, true);
+  assert.equal(plain(await next).started, 1);
+
+  finish(env, 1);
+  finish(env, 2);
+  assert.equal(plain(await draining).pending, 0);
+});
+
 test("draining gives up at its deadline, clamped to between one and two minutes", async () => {
   let clock = 1_000_000;
   const env = loadBackground({ now: () => clock });
