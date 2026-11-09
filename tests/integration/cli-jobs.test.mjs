@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { readFileSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -32,8 +31,11 @@ const ORIGIN = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
 const PAGE = "https://www.instagram.com/alice/";
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
-after(() => rm(home, { recursive: true, force: true }));
-beforeEach(() => rm(store.APP_DIR, { recursive: true, force: true }));
+after(() => {
+  store.closeJobStore();
+  return rm(home, { recursive: true, force: true });
+});
+beforeEach(() => store.removeAppData());
 afterEach(() => {
   process.exitCode = undefined;
 });
@@ -66,7 +68,7 @@ async function putJob(n, extra = {}) {
     updatedAt: new Date(Date.UTC(2026, 0, n)).toISOString(),
     ...extra
   };
-  await store.writeJsonAtomic(store.jobFile(job.jobId), job);
+  await store.writeJob(job);
   return job;
 }
 
@@ -79,7 +81,7 @@ async function install({ executable = process.execPath } = {}) {
 const bridge = () => store.writeJsonAtomic(store.BRIDGE_CONFIG_FILE, { extensionOrigin: ORIGIN, port: PORT });
 
 const finishWith = (jobId, patch) => () =>
-  writeFileSync(store.jobFile(jobId), JSON.stringify({ jobId, platform: "Instagram", account: "alice", ...patch }));
+  store.jobs().write({ jobId, platform: "Instagram", account: "alice", ...patch });
 const announced = line => /^(Opening|Watching) /.test(line);
 
 test("printJob lists status, account, counters, optional lines and the save folder", t => {
@@ -165,7 +167,7 @@ test("createJob writes a waiting job file for the normalised URL", async () => {
   assert.equal(job.status, "queued");
   assert.equal(job.openedAt, null);
   assert.equal(job.mediaPage, false);
-  assert.deepEqual(await store.readJson(store.jobFile(job.jobId)), job);
+  assert.deepEqual(await store.readJob(job.jobId), job);
   assert.equal((await jobs.createJob(PAGE)).limit, 10, "the default limit");
   assert.equal((await jobs.createJob(PAGE, null)).limit, null, "no limit");
   await assert.rejects(jobs.createJob("https://example.com/nope"), /Automatic URL downloads support/);
@@ -280,7 +282,7 @@ test("a browser that cannot start fails the job and says why", async t => {
   await jobs.openJobInEdge(job, spawnProcess);
   calls[0].child.emit("error", new Error("spawn EACCES"));
   await store.sleep(100);
-  const saved = await store.readJson(store.jobFile(id(1)));
+  const saved = await store.readJob(id(1));
   assert.equal(saved.status, "error");
   assert.equal(saved.message, "Could not open Edge: spawn EACCES");
   assert.match(String(stderr.mock.calls[0].arguments[0]), /Could not open Edge: spawn EACCES/);
@@ -343,7 +345,7 @@ test("a job nobody acknowledges within 90 seconds is failed with a hint", async 
   const done = jobs.launchAndMonitor(job, { openPage: false });
   t.mock.timers.tick(91_000);
   await done;
-  const saved = await store.readJson(store.jobFile(id(1)));
+  const saved = await store.readJob(id(1));
   assert.equal(saved.status, "error");
   assert.match(saved.message, /did not acknowledge the job within 90 seconds/);
   assert.match(lines.join(""), /Status: error/);
@@ -364,7 +366,7 @@ test("stopping the monitor leaves the job running and tells how to resume", asyn
   handler();
   await done;
   assert.match(lines.join(""), new RegExp(`Stopped monitoring[\\s\\S]*resume ${id(1)}`));
-  assert.equal((await store.readJson(store.jobFile(id(1)))).status, "running");
+  assert.equal((await store.readJob(id(1))).status, "running");
   assert.deepEqual(new Set(process.listeners("SIGINT")), before, "the handler is removed");
 });
 
@@ -375,14 +377,11 @@ test("a finished repair job is verified before it is reported", async t => {
   lines.onLine = line => {
     if (announced(line)) {
       // A repair job whose source file is gone from the Downloads root and whose copy was never made.
-      writeFileSync(
-        store.jobFile(id(1)),
-        JSON.stringify({
-          ...job,
-          status: "complete",
-          repairTargets: [{ basename: "a.jpg", rootPath: path.join(home, "nowhere", "a.jpg") }]
-        })
-      );
+      store.jobs().write({
+        ...job,
+        status: "complete",
+        repairTargets: [{ basename: "a.jpg", rootPath: path.join(home, "nowhere", "a.jpg") }]
+      });
     }
   };
   await jobs.launchAndMonitor(job, { openPage: false });
@@ -462,7 +461,7 @@ test("resuming a paused job queues it again and opens the browser", async t => {
   assert.match(lines.join(""), /Opening Instagram\/alice/);
 });
 
-const readNow = jobId => JSON.parse(readFileSync(store.jobFile(jobId), "utf8"));
+const readNow = jobId => store.jobs().read(jobId);
 
 test("printJob and the job list cope with jobs that lack a site, account, message or dates", async t => {
   const lines = capture(t);
@@ -471,9 +470,9 @@ test("printJob and the job list cope with jobs that lack a site, account, messag
   assert.match(lines.join(""), /Account: \/alice\n[\s\S]*Account: Instagram\/\n/);
 
   lines.length = 0;
-  await store.writeJsonAtomic(store.jobFile(id(2)), { jobId: id(2), status: "paused", createdAt: "2026-01-02" });
-  await store.writeJsonAtomic(store.jobFile(id(3)), { jobId: id(3), status: "paused", updatedAt: "2026-02-02" });
-  await store.writeJsonAtomic(store.jobFile(id(4)), { jobId: id(4), status: "paused" });
+  await store.writeJob({ jobId: id(2), status: "paused", createdAt: "2026-01-02" });
+  await store.writeJob({ jobId: id(3), status: "paused", updatedAt: "2026-02-02" });
+  await store.writeJob({ jobId: id(4), status: "paused" });
   await showStatus();
   assert.equal(lines[0], "Jobs: 3 paused\n");
   const order = lines.slice(1).map(line => line.split("  ")[0]);

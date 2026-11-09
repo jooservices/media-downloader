@@ -6,6 +6,7 @@ All notable changes to this project are documented in this file. Format follows 
 
 ### Added
 
+- Jobs live in one SQLite file (`queue.db`, Node's built-in `node:sqlite`, no new dependency) instead of one JSON file per job, so listing and pruning stay fast however long the queue runs. Jobs saved by an older version are imported the first time, and the old `jobs` folder is kept as `jobs.imported`
 - A RESTful loopback API (`/v1/jobs`, `/v1/watches/{platform}/{account}`) with a bearer token, JSON-only bodies, RFC 9457 problem documents, correct status codes (201 with `Location`, 204, 409, 422, 405 with `Allow`), paging and filtering
 - An MCP server (`mediasaver mcp`, stdio) so an AI assistant can request downloads, read job state and manage watched accounts. It only calls the REST API
 - `serve` rescans the watched accounts by itself; `watch` is the same queue reading the watch list as its inbox

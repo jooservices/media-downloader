@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -29,8 +29,11 @@ const ORIGIN = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
 const PAGE = "https://www.instagram.com/alice/";
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
-after(() => rm(home, { recursive: true, force: true }));
-beforeEach(() => rm(store.APP_DIR, { recursive: true, force: true }));
+after(() => {
+  store.closeJobStore();
+  return rm(home, { recursive: true, force: true });
+});
+beforeEach(() => store.removeAppData());
 
 async function putJob(n, extra = {}) {
   const job = {
@@ -43,7 +46,7 @@ async function putJob(n, extra = {}) {
     createdAt: new Date(Date.UTC(2026, 0, n)).toISOString(),
     ...extra
   };
-  await store.writeJsonAtomic(store.jobFile(job.jobId), job);
+  await store.writeJob(job);
   return job;
 }
 
@@ -55,7 +58,7 @@ const ready = (extra = {}) => ({
   account: "Alice",
   ...extra
 });
-const read = n => store.readJson(store.jobFile(id(n)));
+const read = n => store.readJob(id(n));
 
 test("a page that is not a tab at all is refused", async () => {
   const result = await handleBridgeMessage(ready({ tabId: "7" }), new Set());
@@ -272,7 +275,18 @@ test("the bridge handles a message end to end and refuses broken ones", async ()
 test("a message that fails inside returns a generic 500 and later messages still work", async t => {
   const errors = t.mock.method(console, "error", () => {});
   await putJob(1);
-  await writeFile(store.jobFile(id(2)), "{ corrupt");
+  // A job whose saved data cannot be read makes the handler throw inside.
+  store.jobs().write({ jobId: id(2), status: "complete", url: PAGE });
+  const original = store.jobs().read;
+  store.jobs().read = jobId => {
+    if (jobId === id(2)) {
+      throw new Error("corrupt data { not json");
+    }
+    return original.call(store.jobs(), jobId);
+  };
+  t.after(() => {
+    store.jobs().read = original;
+  });
   await withBridge(async () => {
     const failed = await post(JSON.stringify(ready({ cliJobId: id(2) })));
     assert.equal(failed.status, 500);

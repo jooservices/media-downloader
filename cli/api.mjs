@@ -279,7 +279,40 @@ async function deleteWatchRoute({ response, params, deps }) {
 
 const ID = "([0-9a-f-]{36})";
 const SEGMENT = "([^/]+)";
+const startedAt = Date.now();
+
+async function statusRoute({ response, deps }) {
+  const state = deps.status ? await deps.status() : {};
+  send(response, 200, { uptimeSeconds: Math.round((Date.now() - startedAt) / 1000), ...state });
+}
+
+// Prometheus text format: one gauge per job state, whether an extension has reported in, and uptime.
+async function metricsRoute({ response, deps }) {
+  const state = deps.status ? await deps.status() : {};
+  const lines = ["# HELP pms_jobs Jobs in the queue by status.", "# TYPE pms_jobs gauge"];
+  for (const [status, count] of Object.entries(state.jobs ?? {})) {
+    lines.push(`pms_jobs{status="${status}"} ${count}`);
+  }
+  lines.push(
+    "# HELP pms_extension_seen_timestamp_seconds When the browser extension last reported in.",
+    "# TYPE pms_extension_seen_timestamp_seconds gauge",
+    `pms_extension_seen_timestamp_seconds ${state.extension?.at ? Math.round(Date.parse(state.extension.at) / 1000) : 0}`,
+    "# HELP pms_uptime_seconds Seconds since the API started.",
+    "# TYPE pms_uptime_seconds gauge",
+    `pms_uptime_seconds ${Math.round((Date.now() - startedAt) / 1000)}`
+  );
+  const payload = lines.join(String.fromCharCode(10)) + String.fromCharCode(10);
+  response.writeHead(200, {
+    "Content-Type": "text/plain; version=0.0.4; charset=utf-8",
+    "Cache-Control": "no-store",
+    "Content-Length": Buffer.byteLength(payload)
+  });
+  response.end(payload);
+}
+
 const ROUTES = [
+  { pattern: new RegExp(`^${API_BASE}/status$`), GET: statusRoute },
+  { pattern: new RegExp(`^${API_BASE}/metrics$`), GET: metricsRoute },
   {
     pattern: new RegExp(`^${API_BASE}/health$`),
     open: true,
@@ -361,12 +394,13 @@ export function startApiServer({
   addUrls,
   listJobs,
   removeJob = () => Promise.resolve(false),
+  status = null,
   port = API_PORT,
   token = null,
   watch = null
 }) {
   let host = `127.0.0.1:${port}`;
-  const server = createApiServer({ addUrls, listJobs, removeJob, token, watch, expectedHost: () => host });
+  const server = createApiServer({ addUrls, listJobs, removeJob, token, watch, status, expectedHost: () => host });
   return new Promise((resolve, reject) => {
     server.once("error", error => {
       reject(error?.code === "EADDRINUSE" ? new Error(`Download API port ${port} is already in use.`) : error);

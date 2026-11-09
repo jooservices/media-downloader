@@ -15,7 +15,8 @@ import {
   writeJsonAtomic,
   readJson,
   getActiveJob,
-  jobFile
+  readJob,
+  writeJob
 } from "./store.mjs";
 import { DEFAULT_LIMIT } from "./args.mjs";
 import { browserLayout, launchArgs, resolvedProfile } from "./browsers.mjs";
@@ -80,7 +81,7 @@ export async function openJobInEdge(job, spawnProcess = spawn, managedOptions = 
       message: `Could not open ${profile.label}: ${error.message}`,
       updatedAt: new Date().toISOString()
     };
-    await writeJsonAtomic(jobFile(job.jobId), failedJob).catch(() => {});
+    await writeJob(failedJob).catch(() => {});
     process.stderr.write(`${failedJob.message}\n`);
   });
   browserProcess.unref();
@@ -97,7 +98,7 @@ async function failUnacknowledgedJob(current) {
       "The browser did not acknowledge the job within 90 seconds. Reload Page Media Saver on its extensions page, then resume this job.",
     updatedAt: new Date().toISOString()
   };
-  await writeJsonAtomic(jobFile(current.jobId), failedJob);
+  await writeJob(failedJob);
   printJob(failedJob);
   process.exitCode = 1;
 }
@@ -115,7 +116,7 @@ async function finishJob(current) {
 async function watchJob(job, queuedAt, isInterrupted) {
   let lastLine = "";
   while (!isInterrupted()) {
-    const current = await readJson(jobFile(job.jobId));
+    const current = await readJob(job.jobId);
     if (current?.status === "queued" && Date.now() - queuedAt >= QUEUE_TIMEOUT_MS) {
       await failUnacknowledgedJob(current);
       return true;
@@ -200,7 +201,7 @@ export async function createJob(rawUrl, limit = DEFAULT_LIMIT) {
     attempts: 0,
     openedAt: null
   };
-  await writeJsonAtomic(jobFile(jobId), job);
+  await writeJob(job);
   return job;
 }
 
@@ -224,7 +225,7 @@ export async function startDownload(rawUrl, limit = DEFAULT_LIMIT) {
 
 export async function resumeJob(jobId) {
   const active = await getActiveJob();
-  const job = jobId ? await readJson(jobFile(jobId)) : active;
+  const job = jobId ? await readJob(jobId) : active;
   if (!job) {
     throw new Error("No job was found to resume. Run “status” to list saved jobs.");
   }
@@ -240,7 +241,7 @@ export async function resumeJob(jobId) {
   job.status = "queued";
   job.updatedAt = new Date().toISOString();
   job.message = "Resuming the saved profile scan.";
-  await writeJsonAtomic(jobFile(job.jobId), job);
+  await writeJob(job);
   await writeJsonAtomic(QUEUE_FILE, { jobId: job.jobId, updatedAt: job.updatedAt });
   return launchAndMonitor(job);
 }

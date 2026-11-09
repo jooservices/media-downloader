@@ -14,7 +14,7 @@ const browser = await import("../../cli/browser.mjs");
 const FAKE = { id: "chrome", label: "Chrome", executable: path.join(home, "chrome-fake") };
 
 after(() => rm(home, { recursive: true, force: true }));
-beforeEach(() => rm(store.APP_DIR, { recursive: true, force: true }));
+beforeEach(() => store.removeAppData());
 
 function capture(t) {
   const lines = [];

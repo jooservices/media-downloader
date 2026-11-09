@@ -14,7 +14,7 @@ import {
   updateJob,
   isJobId,
   isSignInPage,
-  jobFile
+  readJob
 } from "./store.mjs";
 
 const MAX_BODY_BYTES = 1_000_000;
@@ -63,6 +63,13 @@ function readBody(request, response) {
 
 // `sync-edge` leaves the version it just copied in a file. An extension that reports another version (or none)
 // is told to reload; the file goes away as soon as an extension reports the expected version.
+// The newest extension version that reported in, so `/v1/status` can say what the browser is really running.
+let lastExtension = null;
+export const extensionSeen = () => lastExtension;
+export function resetExtensionSeen() {
+  lastExtension = null;
+}
+
 async function outdatedExtension(message) {
   let expected;
   try {
@@ -102,6 +109,10 @@ function createBridgeServer(config) {
         () => undefined,
         () => undefined
       );
+      lastExtension = {
+        version: message?.version ? String(message.version).slice(0, 32) : null,
+        at: new Date().toISOString()
+      };
       const result = await operation;
       respondJson(response, 200, (await outdatedExtension(message)) ? { ...result, reload: true } : result, {
         "Cache-Control": "no-store"
@@ -174,7 +185,7 @@ const CLOSE_TAB = { ok: true, type: "NO_JOB", close: true };
 // not (its job is gone or finished, the site wants a sign-in, it landed on the wrong page, or another
 // tab already runs the job) the extension closes it so tabs never pile up.
 async function judgeTaggedTab(message) {
-  const tagged = isJobId(message.cliJobId) ? await readJson(jobFile(message.cliJobId)) : null;
+  const tagged = isJobId(message.cliJobId) ? await readJob(message.cliJobId) : null;
   if (!tagged || TERMINAL_STATES.has(tagged.status)) {
     return CLOSE_TAB;
   }

@@ -1,6 +1,6 @@
 // Printing a job and listing saved jobs.
 import { createRequire } from "node:module";
-import { readJson, getActiveJob, jobFile, listJobs } from "./store.mjs";
+import { getActiveJob, listJobs, readJob } from "./store.mjs";
 import { loadConfig } from "./config.mjs";
 
 const require = createRequire(import.meta.url);
@@ -28,7 +28,7 @@ export function printJob(job, downloadDir = null) {
 
 export async function showStatus(jobId) {
   if (jobId) {
-    const job = await readJson(jobFile(jobId));
+    const job = await readJob(jobId);
     if (!job) {
       throw new Error(`No job was found with id ${jobId}.`);
     }

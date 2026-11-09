@@ -101,7 +101,7 @@ async function withServer(options, run) {
             status: response.statusCode,
             headers: response.headers,
             text,
-            body: text ? JSON.parse(text) : null
+            body: /json/.test(response.headers["content-type"] || "") && text ? JSON.parse(text) : null
           });
         });
       });
@@ -331,3 +331,39 @@ test("a port already in use is reported clearly", async () => {
     await new Promise(resolve => first.close(() => resolve()));
   }
 });
+
+test("GET /v1/status reports uptime and what the queue tells it; /v1/metrics speaks Prometheus", () =>
+  withServer(
+    {
+      status: async () => ({
+        jobs: { queued: 2, complete: 5 },
+        extension: { version: "0.5.9", at: "2026-01-01T00:00:00.000Z" },
+        pid: 42
+      })
+    },
+    async ({ call }) => {
+      const status = await call("GET", "/v1/status");
+      assert.equal(status.status, 200);
+      assert.equal(status.body.jobs.complete, 5);
+      assert.equal(status.body.extension.version, "0.5.9");
+      assert.equal(typeof status.body.uptimeSeconds, "number");
+      assert.equal((await call("GET", "/v1/status", { auth: false })).status, 401, "status needs the token");
+
+      const metrics = await call("GET", "/v1/metrics", { json: false });
+      assert.equal(metrics.status, 200);
+      assert.match(metrics.headers["content-type"], /^text\/plain; version=0\.0\.4/);
+      assert.match(metrics.text, /^pms_jobs\{status="queued"\} 2$/m);
+      assert.match(metrics.text, /^pms_jobs\{status="complete"\} 5$/m);
+      assert.match(metrics.text, /^pms_extension_seen_timestamp_seconds 1767225600$/m);
+      assert.match(metrics.text, /^pms_uptime_seconds \d+$/m);
+      assert.equal((await call("POST", "/v1/metrics", { body: {} })).status, 405);
+    }
+  ));
+
+test("status and metrics still answer when the queue offers no details", () =>
+  withServer({ status: null }, async ({ call }) => {
+    assert.equal((await call("GET", "/v1/status")).status, 200);
+    const metrics = await call("GET", "/v1/metrics", { json: false });
+    assert.match(metrics.text, /pms_extension_seen_timestamp_seconds 0/);
+    assert.doesNotMatch(metrics.text, /pms_jobs\{/);
+  }));

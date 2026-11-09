@@ -4,7 +4,7 @@ Thank you for considering a contribution to `jooservices/media-downloader`.
 
 ## Requirements
 
-- Node.js `>= 22.4` (see `.nvmrc`) and npm
+- Node.js `>= 22.13` (see `.nvmrc`) and npm
 - Microsoft Edge (or another Chromium browser) to try the extension by hand
 - Windows for the CLI's Edge integration (`install`, `download`, `resume`, `repair-root`); everything else, including the whole test suite, runs on Linux and macOS
 

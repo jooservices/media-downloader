@@ -41,8 +41,12 @@ const PROFILE = path.join(home, "browser-profile");
 const SOURCE = path.join(home, "browser-downloads");
 const MEDIA = path.join(home, "Media");
 
-after(() => rm(home, { recursive: true, force: true }));
+after(() => {
+  store.closeJobStore();
+  return rm(home, { recursive: true, force: true });
+});
 beforeEach(async () => {
+  store.closeJobStore();
   for (const dir of [store.APP_DIR, INBOX, PROFILE, SOURCE, MEDIA]) {
     await rm(dir, { recursive: true, force: true });
   }
@@ -74,7 +78,7 @@ async function noBrowser() {
 
 async function putJob(n, url, status, daysAgo = 0, extra = {}) {
   const stamp = new Date(Date.now() - daysAgo * DAY).toISOString();
-  await store.writeJsonAtomic(store.jobFile(id(n)), {
+  await store.writeJob({
     jobId: id(n),
     url,
     platform: "Instagram",
@@ -345,13 +349,19 @@ test("serve keeps going after a failed pass and carries on once the problem is g
   await noBrowser();
   await writeFile(INBOX, `${ALICE}\n`);
   await mkdir(store.APP_DIR, { recursive: true });
-  await writeFile(store.JOBS_DIR, "not a folder"); // saving a job fails until this is removed
+  const realWrite = store.jobs().write;
+  store.jobs().write = () => {
+    throw new Error("disk full"); // saving a job fails until this is put back
+  };
+  t.after(() => {
+    store.jobs().write = realWrite;
+  });
   const lines = capture(t);
   const done = serve({ inbox: INBOX, once: true });
   while (!lines.join("").includes("Pass failed (1/20)")) {
     await new Promise(resolve => setTimeout(resolve, 10));
   }
-  await rm(store.JOBS_DIR, { force: true });
+  store.jobs().write = realWrite;
   await done;
   assert.equal((await store.listJobs()).length, 1);
   assert.match(lines.join(""), /Pass failed \(1\/20\): /);
@@ -362,7 +372,13 @@ test("serve gives up after twenty failed passes in a row", async t => {
   await noBrowser();
   await writeFile(INBOX, `${ALICE}\n`);
   await mkdir(store.APP_DIR, { recursive: true });
-  await writeFile(store.JOBS_DIR, "not a folder");
+  const realWrite = store.jobs().write;
+  store.jobs().write = () => {
+    throw new Error("disk full");
+  };
+  t.after(() => {
+    store.jobs().write = realWrite;
+  });
   const lines = capture(t);
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let outcome;

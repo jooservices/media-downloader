@@ -13,15 +13,24 @@ const config = await import("../../cli/config.mjs");
 const prune = await import("../../cli/prune.mjs");
 const { DEFAULT_LIMIT, parseDownloadArgs } = await import("../../cli/args.mjs");
 
-after(() => rm(home, { recursive: true, force: true }));
+after(() => {
+  store.closeJobStore();
+  return rm(home, { recursive: true, force: true });
+});
 
-const reset = () => rm(store.APP_DIR, { recursive: true, force: true });
+const reset = () => store.removeAppData();
 const DAY = 24 * 60 * 60 * 1000;
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
 test("the app folder lives under LOCALAPPDATA and every file sits inside it", () => {
   assert.equal(store.APP_DIR, path.join(home, "PageMediaSaver"));
-  for (const file of [store.QUEUE_FILE, store.CONFIG_FILE, store.DAEMON_FILE, store.API_TOKEN_FILE, store.JOBS_DIR]) {
+  for (const file of [
+    store.QUEUE_FILE,
+    store.CONFIG_FILE,
+    store.DAEMON_FILE,
+    store.API_TOKEN_FILE,
+    store.JOBS_DB_FILE
+  ]) {
     assert.equal(path.dirname(file), store.APP_DIR);
   }
   assert.equal(store.EXTENSION_ROOT, path.resolve("."));
@@ -54,16 +63,12 @@ test("writeJsonAtomic reports a rename that can never succeed and cleans its tem
   assert.deepEqual(await readdir(store.APP_DIR), ["target"]);
 });
 
-test("listJobs returns newest first and skips foreign, mismatched and unreadable files", async () => {
+test("listJobs returns newest first; saving a job again replaces it", async () => {
   await reset();
-  await store.writeJsonAtomic(store.jobFile(id(1)), { jobId: id(1), createdAt: "2026-01-01T00:00:00Z" });
-  await store.writeJsonAtomic(store.jobFile(id(2)), { jobId: id(2), createdAt: "2026-03-01T00:00:00Z" });
-  await store.writeJsonAtomic(store.jobFile(id(3)), { jobId: id(3) }); // no createdAt sorts last
-  await store.writeJsonAtomic(store.jobFile(id(4)), { jobId: id(1), createdAt: "2026-02-01T00:00:00Z" }); // wrong id inside
-  await writeFile(store.jobFile(id(5)), "{ broken");
-  await writeFile(path.join(store.JOBS_DIR, "notes.json"), "{}");
-  await writeFile(path.join(store.JOBS_DIR, "readme.txt"), "x");
-  await mkdir(path.join(store.JOBS_DIR, `${id(6)}.json`));
+  await store.writeJob({ jobId: id(1), createdAt: "2026-01-01T00:00:00Z" });
+  await store.writeJob({ jobId: id(2), createdAt: "2026-03-01T00:00:00Z" });
+  await store.writeJob({ jobId: id(3) }); // no createdAt sorts last
+  await store.writeJob({ jobId: id(1), createdAt: "2026-02-01T00:00:00Z" }); // the same job saved again
   assert.deepEqual(
     (await store.listJobs()).map(job => job.jobId),
     [id(2), id(1), id(3)]
@@ -74,7 +79,7 @@ test("listJobs returns newest first and skips foreign, mismatched and unreadable
 
 test("updateJob applies concurrent changes one at a time and stamps updatedAt", async () => {
   await reset();
-  await store.writeJsonAtomic(store.jobFile(id(1)), { jobId: id(1), count: 0, updatedAt: "old" });
+  await store.writeJob({ jobId: id(1), count: 0, updatedAt: "old" });
   await Promise.all(
     Array.from({ length: 12 }, () =>
       store.updateJob(id(1), async job => {
@@ -84,7 +89,7 @@ test("updateJob applies concurrent changes one at a time and stamps updatedAt", 
       })
     )
   );
-  const job = await store.readJson(store.jobFile(id(1)));
+  const job = await store.readJob(id(1));
   assert.equal(job.count, 12, "no update was lost");
   assert.notEqual(job.updatedAt, "old");
 });
@@ -92,7 +97,7 @@ test("updateJob applies concurrent changes one at a time and stamps updatedAt", 
 test("updateJob can replace the job, ignores a missing job, and survives a failing mutation", async () => {
   await reset();
   assert.equal(await store.updateJob(id(1), () => assert.fail("never called")), null);
-  await store.writeJsonAtomic(store.jobFile(id(1)), { jobId: id(1), status: "queued" });
+  await store.writeJob({ jobId: id(1), status: "queued" });
   const replaced = await store.updateJob(id(1), () => ({ jobId: id(1), status: "running" }));
   assert.equal(replaced.status, "running");
   await assert.rejects(
@@ -113,7 +118,7 @@ test("getActiveJob follows the queue file to its job", async () => {
   assert.equal(await store.getActiveJob(), null);
   await store.writeJsonAtomic(store.QUEUE_FILE, { updatedAt: "x" });
   assert.equal(await store.getActiveJob(), null, "a queue file without a job id is ignored");
-  await store.writeJsonAtomic(store.jobFile(id(1)), { jobId: id(1), status: "running" });
+  await store.writeJob({ jobId: id(1), status: "running" });
   await store.writeJsonAtomic(store.QUEUE_FILE, { jobId: id(1) });
   assert.equal((await store.getActiveJob()).status, "running");
 });
@@ -171,7 +176,7 @@ test("prune removes old finished jobs and logs, keeping the newest job of each U
   const now = Date.now();
   const put = async (n, url, status, daysAgo) => {
     const stamp = new Date(now - daysAgo * DAY).toISOString();
-    await store.writeJsonAtomic(store.jobFile(id(n)), {
+    await store.writeJob({
       jobId: id(n),
       url,
       status,
@@ -195,25 +200,25 @@ test("prune removes old finished jobs and logs, keeping the newest job of each U
   const result = await prune.prune(now);
   assert.equal(result.jobs, 3);
   assert.equal(result.logs, 1);
-  assert.equal(result.dir, store.JOBS_DIR);
+  assert.equal(result.dir, store.JOBS_DB_FILE);
   assert.deepEqual((await store.listJobs()).map(job => job.jobId).sort(), [id(3), id(4), id(6)]);
   assert.deepEqual((await readdir(logs)).sort(), ["folder", "new.log"]);
-  assert.deepEqual(await prune.prune(now), { jobs: 0, logs: 0, dir: store.JOBS_DIR });
+  assert.deepEqual(await prune.prune(now), { jobs: 0, logs: 0, dir: store.JOBS_DB_FILE });
   assert.ok(prune.JOB_RETENTION_MS > prune.LOG_RETENTION_MS);
   assert.equal(prune.PRUNE_EVERY_MS, 3600_000);
 });
 
 test("prune copes with no folders at all and jobs with unparsable dates", async () => {
   await reset();
-  assert.deepEqual(await prune.prune(), { jobs: 0, logs: 0, dir: store.JOBS_DIR });
-  await store.writeJsonAtomic(store.jobFile(id(1)), {
+  assert.deepEqual(await prune.prune(), { jobs: 0, logs: 0, dir: store.JOBS_DB_FILE });
+  await store.writeJob({
     jobId: id(1),
     url: "u",
     status: "complete",
     createdAt: "2020-01-01",
     updatedAt: "garbage"
   });
-  await store.writeJsonAtomic(store.jobFile(id(2)), {
+  await store.writeJob({
     jobId: id(2),
     url: "u",
     status: "complete",
@@ -221,7 +226,7 @@ test("prune copes with no folders at all and jobs with unparsable dates", async 
   });
   const expired = prune.expiredJobs(await store.listJobs(), Date.parse("2026-11-09")).map(job => job.jobId);
   assert.deepEqual(expired, [], "the newest job of a URL stays, and a date that cannot be read is never old");
-  assert.ok((await stat(store.jobFile(id(1)))).isFile());
+  assert.ok(await store.readJob(id(1)), "nothing was removed");
 });
 
 test("download args: URL, default limit, --limit N, --limit=N and --unlimited", () => {
@@ -240,4 +245,61 @@ test("download args reject bad limits, duplicates and extra arguments", () => {
   assert.throws(() => parseDownloadArgs(["--limit=2", "--limit=3"]), /only one of/);
   assert.throws(() => parseDownloadArgs(["--unlimited", "--limit", "x"]), /only one of/);
   assert.throws(() => parseDownloadArgs(["a", "b"]), /Unexpected argument: b/);
+});
+
+test("jobs from the old one-file-per-job layout are imported once and the folder is kept as a backup", async () => {
+  await reset();
+  await mkdir(store.JOBS_DIR, { recursive: true });
+  const put = (name, text) => writeFile(path.join(store.JOBS_DIR, name), text);
+  await put(`${id(1)}.json`, JSON.stringify({ jobId: id(1), status: "complete", createdAt: "2026-01-01" }));
+  await put(`${id(2)}.json`, JSON.stringify({ jobId: id(1), status: "complete" })); // wrong id inside
+  await put(`${id(3)}.json`, "{ broken");
+  await put("notes.json", "{}");
+  await put("readme.txt", "x");
+  await mkdir(path.join(store.JOBS_DIR, `${id(6)}.json`));
+  assert.deepEqual(
+    (await store.listJobs()).map(job => job.jobId),
+    [id(1)]
+  );
+  await assert.rejects(stat(store.JOBS_DIR), "the old folder is renamed, not left to be read again");
+  assert.ok((await stat(`${store.JOBS_DIR}.imported`)).isDirectory());
+  store.closeJobStore();
+  assert.equal((await store.listJobs()).length, 1, "a second start does not import again");
+});
+
+test("the job store pages, filters, counts, updates one job at a time and deletes", async () => {
+  await reset();
+  const jobs = store.jobs();
+  for (const n of [1, 2, 3, 4]) {
+    jobs.write({ jobId: id(n), status: n % 2 ? "complete" : "running", createdAt: `2026-01-0${n}` });
+  }
+  assert.equal(jobs.count(), 4);
+  assert.equal(jobs.count({ status: "running" }), 2);
+  assert.deepEqual(jobs.counts(), { complete: 2, running: 2 });
+  jobs.write({ jobId: id(5), createdAt: "2026-01-05" });
+  assert.equal(jobs.counts().unknown, 1, "a job without a status is counted as unknown");
+  jobs.remove(id(5));
+  assert.deepEqual(
+    jobs.list({ status: "complete" }).map(job => job.jobId),
+    [id(3), id(1)]
+  );
+  assert.deepEqual(
+    jobs.list({ limit: 2, offset: 1 }).map(job => job.jobId),
+    [id(3), id(2)]
+  );
+  assert.equal(jobs.read(id(2).toUpperCase()).jobId, id(2), "ids are case-insensitive");
+  assert.equal(jobs.read(id(9)), null);
+  assert.equal(await jobs.update(id(9), job => job), null, "updating a job that is gone changes nothing");
+  assert.equal(jobs.remove(id(9)), false);
+  assert.equal(jobs.remove(id(1)), true);
+  assert.equal(jobs.count(), 3);
+  assert.equal(jobs.file, store.JOBS_DB_FILE);
+});
+
+test("closeJobStore lets the store open again, and the database can be copied while it is closed", async () => {
+  await reset();
+  await store.writeJob({ jobId: id(1), status: "queued" });
+  store.closeJobStore();
+  store.closeJobStore(); // closing twice is harmless
+  assert.equal((await store.readJob(id(1))).status, "queued");
 });

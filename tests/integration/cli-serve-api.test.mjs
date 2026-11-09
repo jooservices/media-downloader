@@ -28,8 +28,12 @@ const { serve } = await import("../../cli/serve.mjs");
 const ALICE = "https://www.instagram.com/alice/";
 const BOB = "https://x.com/Bob/";
 const FINISHED = "00000000-0000-4000-8000-000000000077";
+const RUNNING = "00000000-0000-4000-8000-000000000078";
 
-after(() => rm(home, { recursive: true, force: true }));
+after(() => {
+  store.closeJobStore();
+  return rm(home, { recursive: true, force: true });
+});
 
 function interrupter() {
   const before = new Set(process.listeners("SIGINT"));
@@ -84,13 +88,22 @@ test("the running serve answers the REST API: create, read, watch and cancel", a
     assert.equal(created.headers.get("location"), `/v1/jobs/${job.id}`);
     assert.equal((await call("POST", "/v1/jobs", { url: ALICE })).status, 409);
 
-    const cancelled = await call("DELETE", `/v1/jobs/${job.id}`);
+    // A job that is running right now (the queue never touches it) is cancelled, not erased.
+    await store.writeJob({
+      jobId: RUNNING,
+      url: BOB,
+      platform: "Twitter",
+      account: "bob2",
+      status: "running",
+      createdAt: new Date().toISOString()
+    });
+    const cancelled = await call("DELETE", `/v1/jobs/${RUNNING}`);
     assert.equal(cancelled.status, 204);
-    const kept = await store.readJson(store.jobFile(job.id));
+    const kept = await store.readJob(RUNNING);
     assert.equal(kept.noRetry, true, "an active job is cancelled, not erased");
     assert.equal(kept.status, "paused");
 
-    await store.writeJsonAtomic(store.jobFile(FINISHED), {
+    await store.writeJob({
       jobId: FINISHED,
       url: BOB,
       platform: "Twitter",
@@ -99,8 +112,14 @@ test("the running serve answers the REST API: create, read, watch and cancel", a
       createdAt: new Date().toISOString()
     });
     assert.equal((await call("DELETE", `/v1/jobs/${FINISHED}`)).status, 204);
-    assert.equal(await store.readJson(store.jobFile(FINISHED)), null, "a finished job is removed");
+    assert.equal(await store.readJob(FINISHED), null, "a finished job is removed");
     assert.equal((await call("DELETE", `/v1/jobs/${FINISHED}`)).status, 404);
+
+    const status = await (await call("GET", "/v1/status")).json();
+    assert.equal(status.pid, process.pid);
+    assert.equal(typeof status.jobs, "object");
+    assert.ok(status.jobs.paused >= 1, "the cancelled job is counted");
+    assert.ok((await (await call("GET", "/v1/metrics")).text()).includes('pms_jobs{status="paused"}'));
 
     const watching = await call("POST", "/v1/watches", { url: ALICE });
     assert.equal(watching.status, 201);

@@ -23,7 +23,7 @@ const PORT = await freePort();
 process.env.LOCALAPPDATA = home;
 process.env.PMS_BRIDGE_PORT = String(PORT);
 const store = await import("../../cli/store.mjs");
-const { startBridgeServer } = await import("../../cli/bridge-server.mjs");
+const { extensionSeen, resetExtensionSeen, startBridgeServer } = await import("../../cli/bridge-server.mjs");
 const { syncEdge } = await import("../../tools/sync-edge.mjs");
 
 const ORIGIN = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
@@ -44,7 +44,13 @@ test("an extension that is not the version on disk is told to reload until it re
   await store.writeJsonAtomic(store.BRIDGE_CONFIG_FILE, { extensionOrigin: ORIGIN, port: PORT });
   const server = await startBridgeServer();
   try {
+    resetExtensionSeen();
+    assert.equal(extensionSeen(), null, "nothing has reported in yet");
     const quiet = await post({ type: "JOB_PROGRESS", jobId: "bad id", version: "1.0.0" });
+    assert.equal(extensionSeen().version, "1.0.0", "the version that reported in is remembered");
+    assert.ok(Number.isFinite(Date.parse(extensionSeen().at)));
+    await post({ type: "JOB_PROGRESS", jobId: "bad id" });
+    assert.equal(extensionSeen().version, null, "an extension that sends no version is noted as such");
     assert.equal(quiet.reload, undefined, "no version file, no reload");
 
     await writeFile(store.EXPECTED_VERSION_FILE, "1.0.1\n");

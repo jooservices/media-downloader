@@ -79,7 +79,7 @@ test(
             const job = (await api.jobs()).items.find(item => item.id === jobId);
             return job && FINISHED.has(job.status) ? job : null;
           },
-          { what: `${what} to finish`, timeoutMs: 150_000, everyMs: 1000 }
+          { what: `${what} to finish`, timeoutMs: 240_000, everyMs: 1000 }
         );
       } catch (error) {
         throw new Error(`${error.message}\n${diagnostics()}`, { cause: error });

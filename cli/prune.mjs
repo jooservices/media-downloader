@@ -2,7 +2,7 @@
 // The newest job of every URL is always kept, because `watch` uses it to decide when to scan again.
 import { readdir, stat, unlink } from "node:fs/promises";
 import path from "node:path";
-import { JOBS_DIR, LOGS_DIR, TERMINAL_STATES, jobFile, listJobs } from "./store.mjs";
+import { JOBS_DB_FILE, LOGS_DIR, TERMINAL_STATES, deleteJob, listJobs } from "./store.mjs";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 export const JOB_RETENTION_MS = 30 * DAY_MS;
@@ -50,14 +50,9 @@ async function removeOldLogs(now, retentionMs) {
 export async function prune(now = Date.now()) {
   let jobs = 0;
   for (const job of expiredJobs(await listJobs(), now)) {
-    if (
-      await unlink(jobFile(job.jobId)).then(
-        () => true,
-        () => false
-      )
-    ) {
+    if (await deleteJob(job.jobId)) {
       jobs++;
     }
   }
-  return { jobs, logs: await removeOldLogs(now, LOG_RETENTION_MS), dir: JOBS_DIR };
+  return { jobs, logs: await removeOldLogs(now, LOG_RETENTION_MS), dir: JOBS_DB_FILE };
 }

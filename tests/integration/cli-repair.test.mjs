@@ -18,9 +18,12 @@ const URL_ALICE = "https://www.instagram.com/alice/";
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const realPlatform = Object.getOwnPropertyDescriptor(process, "platform");
 
-after(() => rm(home, { recursive: true, force: true }));
+after(() => {
+  store.closeJobStore();
+  return rm(home, { recursive: true, force: true });
+});
 beforeEach(async () => {
-  await rm(store.APP_DIR, { recursive: true, force: true });
+  await store.removeAppData();
   await rm(DOWNLOADS, { recursive: true, force: true });
 });
 afterEach(() => {
@@ -82,7 +85,7 @@ test("every verified copy lets its original be removed, and the job is marked fi
   assert.match(result.message, /Redownloaded and verified 2 files in Downloads\/Instagram\/alice; removed 2 old root/);
   assert.equal(await exists(path.join(DOWNLOADS, "a.jpg")), false);
   assert.equal(await exists(path.join(ACCOUNT_DIR, "a.jpg")), true, "the new copy stays");
-  assert.equal((await store.readJson(store.jobFile(id(1)))).repairFinalized, true);
+  assert.equal((await store.readJob(id(1))).repairFinalized, true);
 });
 
 test("a copy that is missing, empty, older than the job or unnamed keeps every original", async () => {
@@ -167,9 +170,9 @@ test(
 test("verifying a repair by id needs an id, a repair job and a finished scan", async () => {
   await assert.rejects(repair.finalizeRepairById(""), /Provide the repair job ID/);
   await assert.rejects(repair.finalizeRepairById(id(1)), /No repair job was found/);
-  await store.writeJsonAtomic(store.jobFile(id(1)), { jobId: id(1), status: "complete" });
+  await store.writeJob({ jobId: id(1), status: "complete" });
   await assert.rejects(repair.finalizeRepairById(id(1)), /No repair job was found/, "not a repair job");
-  await store.writeJsonAtomic(store.jobFile(id(1)), repairJob(["a.jpg"], { status: "running" }));
+  await store.writeJob(repairJob(["a.jpg"], { status: "running" }));
   await assert.rejects(repair.finalizeRepairById(id(1)), /is running; originals stay in Downloads/);
 });
 
@@ -177,14 +180,14 @@ test("verifying a repair by id prints the result and sets the exit code from it"
   const lines = capture(t);
   await put(path.join(DOWNLOADS, "a.jpg"));
   await put(path.join(ACCOUNT_DIR, "a.jpg"));
-  await store.writeJsonAtomic(store.jobFile(id(1)), repairJob(["a.jpg"]));
+  await store.writeJob(repairJob(["a.jpg"]));
   await repair.finalizeRepairById(id(1));
   assert.match(lines.join(""), /Redownloaded and verified 1 files/);
   assert.equal(process.exitCode, undefined);
 
   await rm(ACCOUNT_DIR, { recursive: true, force: true });
   await put(path.join(DOWNLOADS, "a.jpg"));
-  await store.writeJsonAtomic(store.jobFile(id(1)), repairJob(["a.jpg"]));
+  await store.writeJob(repairJob(["a.jpg"]));
   await repair.finalizeRepairById(id(1));
   assert.match(lines.join(""), /Status: incomplete/);
   assert.equal(process.exitCode, 1);
@@ -215,7 +218,7 @@ test("root repair needs the CLI installed, no unfinished job and a manifest with
   await store.writeJsonAtomic(store.REPAIR_MANIFEST_FILE, { jobs: "nope" });
   await assert.rejects(repair.repairRootDownloads(never), /No repair jobs were found/);
 
-  await store.writeJsonAtomic(store.jobFile(id(9)), { jobId: id(9), status: "running" });
+  await store.writeJob({ jobId: id(9), status: "running" });
   await store.writeJsonAtomic(store.QUEUE_FILE, { jobId: id(9) });
   await assert.rejects(repair.repairRootDownloads(never), new RegExp(`Job ${id(9)} is still running`));
 });
@@ -268,7 +271,7 @@ function fakeBrowser({ succeed }) {
       status: "complete",
       repairFiles: job.repairTargets.map(target => ({ basename: target.basename, filename: target.basename }))
     };
-    await store.writeJsonAtomic(store.jobFile(job.jobId), await repair.finalizeRepairJob(done));
+    await store.writeJob(await repair.finalizeRepairJob(done));
   };
   return { launched, launch };
 }

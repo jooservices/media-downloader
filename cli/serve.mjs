@@ -1,7 +1,7 @@
 // `serve`: keeps the bridge open and works through the queue until stopped.
 // `add`: puts profile URLs in that queue. Both share the job files, so adding works whether or not
 // `serve` is running at that moment.
-import { appendFile, mkdir, readFile, unlink } from "node:fs/promises";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   APP_DIR,
@@ -16,13 +16,15 @@ import {
   readJson,
   sleep,
   updateJob,
-  jobFile,
+  jobs as queueJobs,
+  readJob,
+  deleteJob,
   writeJsonAtomic
 } from "./store.mjs";
 import { ensureConfigFile, loadConfig } from "./config.mjs";
 import { createJob, openJobInEdge } from "./jobs.mjs";
 import { API_PORT, startApiServer } from "./api.mjs";
-import { startBridgeServer } from "./bridge-server.mjs";
+import { extensionSeen, startBridgeServer } from "./bridge-server.mjs";
 import { resolvedProfile } from "./browsers.mjs";
 import { edgeDownloadsDir, firefoxDownloadDir, moveFinishedFiles } from "./mover.mjs";
 import { addWatch, readWatchList, removeWatch, watchDue } from "./watchlist.mjs";
@@ -34,12 +36,12 @@ const watchApi = { list: () => readWatchList(), add: url => addWatch([url]), rem
 
 // Cancels a job that is still active (the page closes itself the next time it reports) and removes a finished one.
 async function removeJob(jobId) {
-  const job = await readJson(jobFile(jobId)).catch(() => null);
+  const job = await readJob(jobId).catch(() => null);
   if (!job) {
     return false;
   }
   if (TERMINAL_STATES.has(job.status)) {
-    await unlink(jobFile(jobId)).catch(() => {});
+    await deleteJob(jobId);
   } else {
     await updateJob(jobId, current => {
       current.status = "paused";
@@ -160,6 +162,7 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
         addUrls,
         listJobs,
         removeJob,
+        status: () => Promise.resolve({ jobs: queueJobs().counts(), extension: extensionSeen(), pid: process.pid }),
         port: API_PORT,
         token: await ensureApiToken(),
         watch: watchApi

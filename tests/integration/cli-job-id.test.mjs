@@ -36,11 +36,14 @@ test("a job id is a UUID and nothing else", () => {
   }
 });
 
-test("jobFile stays inside the jobs folder and refuses anything else", () => {
+test("a job id that is not a UUID never reaches the database", async () => {
   const id = randomUUID();
-  assert.equal(store.jobFile(id), path.join(JOBS_DIR, `${id}.json`));
-  for (const bad of ["../../evil", "..\\evil", `${id}/../../x`, "", undefined]) {
-    assert.throws(() => store.jobFile(bad), /Invalid job id/, String(bad));
+  assert.equal(await store.readJob(id), null);
+  for (const bad of ["../../evil", "..%5Cevil", `${id}/../../x`, "", undefined]) {
+    assert.equal(await store.readJob(bad), null, String(bad));
+    assert.equal(await store.deleteJob(bad), false, String(bad));
+    await assert.rejects(store.writeJob({ jobId: bad }), /Invalid job id/, String(bad));
+    assert.throws(() => store.updateJob(bad, job => job), /Invalid job id/, String(bad));
   }
 });
 
@@ -63,18 +66,14 @@ test("a bridge message cannot read or write a file outside the jobs folder", asy
 });
 
 test("a real job still receives progress from the bridge", async () => {
-  await mkdir(JOBS_DIR, { recursive: true });
   const jobId = randomUUID();
-  await writeFile(
-    store.jobFile(jobId),
-    JSON.stringify({ jobId, status: "running", started: 0, platform: "Twitter", account: "a" })
-  );
+  await store.writeJob({ jobId, status: "running", started: 0, platform: "Twitter", account: "a" });
   const result = await handleBridgeMessage(
     { type: "JOB_PROGRESS", jobId, state: { started: 3, videoStarted: 2, message: "ok" } },
     new Set()
   );
   assert.deepEqual({ ok: result.ok, type: result.type }, { ok: true, type: "ACK" });
-  const saved = JSON.parse(await readFile(store.jobFile(jobId), "utf8"));
+  const saved = await store.readJob(jobId);
   assert.equal(saved.started, 3);
   assert.equal(saved.videoStarted, 2);
 });
