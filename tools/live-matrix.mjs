@@ -24,8 +24,8 @@ export function summarize(jobs) {
       notes: new Set()
     };
     row.pages++;
-    row.started += job.counts?.started ?? 0;
-    row.skipped += job.counts?.skipped ?? 0;
+    row.started += (job.counts?.started ?? 0) + (job.counts?.videoStarted ?? 0);
+    row.skipped += (job.counts?.skipped ?? 0) + (job.counts?.videoSkipped ?? 0);
     row.failed += job.counts?.failed ?? 0;
     row.statuses.add(job.status);
     if (job.status !== "complete" && job.message) {
