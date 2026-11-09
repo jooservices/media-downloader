@@ -5,6 +5,7 @@ import { repairRootDownloads, finalizeRepairById } from "./repair.mjs";
 import { launchAndMonitor, startDownload, resumeJob } from "./jobs.mjs";
 import { addCommand, addUrls, moveCommand, runningServer, serve, DEFAULT_INBOX } from "./serve.mjs";
 import { installService, removeService } from "./service.mjs";
+import { runMcp } from "./mcp.mjs";
 import { addToWatch, watch } from "./watch.mjs";
 
 const USAGE = [
@@ -14,6 +15,7 @@ const USAGE = [
   "  download <profile-url>            save that account (stories, photos, reels)",
   "  service install                   start the queue at sign-in and open the API",
   "  status                            see the latest jobs",
+  "  mcp                               MCP server on stdin/stdout for AI assistants",
   "",
   "Also: add, serve, move, resume, repair-root, uninstall, help.",
   "A Facebook link also scans Photos, Reels and Videos. Files go to <download folder>/<Site>/<account>.",
@@ -65,6 +67,7 @@ const COMMANDS = {
   watch: args => (args[0] === "add" ? addToWatch(args.slice(1)) : watch()),
   serve: serveCommand,
   service: serviceCommand,
+  mcp: () => runMcp(),
   move: moveCommand,
   help: printUsage,
   "--help": printUsage,

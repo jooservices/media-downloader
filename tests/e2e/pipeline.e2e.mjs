@@ -59,8 +59,8 @@ test(
     await waitFor(() => api.health().catch(() => null), { what: "the API", timeoutMs: 30_000 });
 
     await t.test("the API is closed to callers without the token and to non-JSON bodies", async () => {
-      assert.equal((await api.raw("/jobs")).status, 401);
-      const wrongType = await api.raw("/downloads", {
+      assert.equal((await api.raw("/v1/jobs")).status, 401);
+      const wrongType = await api.raw("/v1/jobs", {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "text/plain" },
         body: JSON.stringify({ url: PROFILE_URL })
@@ -71,12 +71,12 @@ test(
 
     const runJob = async (again, what) => {
       const queued = await api.queue(PROFILE_URL, again);
-      assert.equal(queued.status, 202, JSON.stringify(queued.body));
-      const jobId = queued.body.created[0].jobId;
+      assert.equal(queued.status, 201, JSON.stringify(queued.body));
+      const jobId = queued.body.items[0].id;
       try {
         return await waitFor(
           async () => {
-            const job = (await api.jobs()).jobs.find(item => item.jobId === jobId);
+            const job = (await api.jobs()).items.find(item => item.id === jobId);
             return job && FINISHED.has(job.status) ? job : null;
           },
           { what: `${what} to finish`, timeoutMs: 150_000, everyMs: 1000 }
@@ -91,7 +91,7 @@ test(
     await t.test("a request opens the browser, saves every photo and moves it to the download folder", async () => {
       const job = await runJob(false, "the first download");
       assert.equal(job.status, "complete", `${job.message}\n${diagnostics()}`);
-      assert.equal(job.started, 3);
+      assert.equal(job.counts.started, 3);
       const files = await saved();
       assert.equal(files.length, 3, `${files.join("\n")}\n${diagnostics()}`);
       for (const number of [1, 2, 3]) {
@@ -112,8 +112,8 @@ test(
       const before = await saved();
       const job = await runJob(true, "the second run");
       assert.equal(job.status, "complete", `${job.message}\n${diagnostics()}`);
-      assert.equal(job.started, 0);
-      assert.ok(job.skipped >= 3, `three photos are recognised as already saved (got ${job.skipped})`);
+      assert.equal(job.counts.started, 0);
+      assert.ok(job.counts.skipped >= 3, `three photos are recognised as already saved (got ${job.counts.skipped})`);
       assert.deepEqual(await saved(), before);
     });
 
@@ -121,7 +121,7 @@ test(
       site.posts.push(post(4));
       const job = await runJob(true, "the run after a new post");
       assert.equal(job.status, "complete", `${job.message}\n${diagnostics()}`);
-      assert.equal(job.started, 1);
+      assert.equal(job.counts.started, 1);
       const files = await saved();
       assert.equal(files.length, 4);
       assert.ok(files.some(file => file.includes(post(4).id)));

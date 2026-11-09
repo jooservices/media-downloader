@@ -267,10 +267,10 @@ export function apiClient(apiPort, token) {
   const base = `http://127.0.0.1:${apiPort}`;
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
   return {
-    health: () => fetch(`${base}/health`).then(response => response.json()),
-    jobs: () => fetch(`${base}/jobs`, { headers }).then(response => response.json()),
+    health: () => fetch(`${base}/v1/health`).then(response => response.json()),
+    jobs: () => fetch(`${base}/v1/jobs`, { headers }).then(response => response.json()),
     queue: async (url, again = false) => {
-      const response = await fetch(`${base}/downloads`, {
+      const response = await fetch(`${base}/v1/jobs`, {
         method: "POST",
         headers,
         body: JSON.stringify({ url, again })

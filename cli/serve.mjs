@@ -1,7 +1,7 @@
 // `serve`: keeps the bridge open and works through the queue until stopped.
 // `add`: puts profile URLs in that queue. Both share the job files, so adding works whether or not
 // `serve` is running at that moment.
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import {
   APP_DIR,
@@ -16,6 +16,7 @@ import {
   readJson,
   sleep,
   updateJob,
+  jobFile,
   writeJsonAtomic
 } from "./store.mjs";
 import { ensureConfigFile, loadConfig } from "./config.mjs";
@@ -24,8 +25,30 @@ import { API_PORT, startApiServer } from "./api.mjs";
 import { startBridgeServer } from "./bridge-server.mjs";
 import { resolvedProfile } from "./browsers.mjs";
 import { edgeDownloadsDir, firefoxDownloadDir, moveFinishedFiles } from "./mover.mjs";
+import { addWatch, readWatchList, removeWatch, watchDue } from "./watchlist.mjs";
+
 import { PRUNE_EVERY_MS, prune } from "./prune.mjs";
 import { createSupervisor, recoverInterrupted } from "./supervisor.mjs";
+
+const watchApi = { list: () => readWatchList(), add: url => addWatch([url]), remove: url => removeWatch(url) };
+
+// Cancels a job that is still active (the page closes itself the next time it reports) and removes a finished one.
+async function removeJob(jobId) {
+  const job = await readJson(jobFile(jobId)).catch(() => null);
+  if (!job) {
+    return false;
+  }
+  if (TERMINAL_STATES.has(job.status)) {
+    await unlink(jobFile(jobId)).catch(() => {});
+  } else {
+    await updateJob(jobId, current => {
+      current.status = "paused";
+      current.noRetry = true;
+      current.message = "Cancelled through the API.";
+    });
+  }
+  return true;
+}
 
 const TICK_MS = 2000;
 const MAX_CONSECUTIVE_FAILURES = 20;
@@ -116,7 +139,7 @@ async function buildDeps(log) {
 
 const hasWork = jobs => jobs.some(job => !TERMINAL_STATES.has(job.status));
 
-export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null, dueUrls = null } = {}) {
+export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null, dueUrls = watchDue } = {}) {
   const other = await runningServer();
   if (other) {
     throw new Error(`Another “serve” is already running (process ${other.pid}).`);
@@ -132,7 +155,16 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
   // Everything after the bridge starts is inside the try, so a failed setup step still closes the bridge.
   try {
     servers.push(await startBridgeServer());
-    servers.push(await startApiServer({ addUrls, listJobs, port: API_PORT, token: await ensureApiToken() }));
+    servers.push(
+      await startApiServer({
+        addUrls,
+        listJobs,
+        removeJob,
+        port: API_PORT,
+        token: await ensureApiToken(),
+        watch: watchApi
+      })
+    );
     await writeJsonAtomic(DAEMON_FILE, { pid: process.pid, startedAt: new Date().toISOString(), inbox });
     const deps = await buildDeps(log);
     const recovered = await recoverInterrupted(deps);
@@ -142,9 +174,7 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
     const supervisor = createSupervisor(deps);
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
-    log(
-      `Serving. POST http://127.0.0.1:${API_PORT}/downloads {"url":"https://..."} with the token from ${API_TOKEN_FILE}, or add a URL to ${inbox}.`
-    );
+    log(`Serving. REST API at http://127.0.0.1:${API_PORT}/v1 (token in ${API_TOKEN_FILE}), or add a URL to ${inbox}.`);
 
     let lastPrune = 0;
     const pass = async () => {

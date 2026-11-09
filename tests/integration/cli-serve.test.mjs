@@ -234,7 +234,7 @@ test("serve opens the bridge and API, logs, and leaves a stopped daemon file whe
   const lines = capture(t);
   await serve({ inbox: INBOX, once: true });
   const text = lines.join("");
-  assert.match(text, /Serving\. POST http:\/\/127\.0\.0\.1:\d+\/downloads/);
+  assert.match(text, /Serving\. REST API at http:\/\/127\.0\.0\.1:\d+\/v1/);
   assert.match(text, /Stopped\.\n$/);
   const daemon = await store.readJson(store.DAEMON_FILE);
   assert.equal(daemon.pid, null);
@@ -403,10 +403,10 @@ test("watch add needs URLs, appends the profile pages and lists them", async t =
   await watchModule.addToWatch([ALICE, BOB]);
   await watchModule.addToWatch([ALICE]);
   assert.equal(watchModule.DEFAULT_WATCH, path.join(store.APP_DIR, "watch.txt"));
-  assert.equal(await readFile(watchModule.DEFAULT_WATCH, "utf8"), `${ALICE}\n${BOB}\n${ALICE}\n`);
+  assert.equal(await readFile(watchModule.DEFAULT_WATCH, "utf8"), `${ALICE}\n${BOB}\n`, "an account is listed once");
   assert.match(
     lines.join(""),
-    /Watching 2 page\(s\)\. Start the loop with: node cli\/mediasaver\.mjs watch\n {2}https:\/\/www\.instagram\.com\/alice\/\n/
+    /Watching 2 new page\(s\); 0 already on the list\.\n {2}https:\/\/www\.instagram\.com\/alice\/\n[^]*Watching 0 new page\(s\); 1 already on the list\./
   );
 });
 

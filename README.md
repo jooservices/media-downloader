@@ -101,14 +101,38 @@ Each job is retried a few times when Edge does not answer or the page is closed 
 
 `service install` registers that queue to start when you sign in (the Windows Startup folder, a systemd user service, or a macOS launch agent) and starts it now. Run it from the project folder, or pass the full path to `mediasaver.mjs`. `service remove` unregisters it. It is not a Session 0 Windows service: the download has to open the signed-in browser on the desktop.
 
-While the queue is running, this is enough to request a download. The API listens on loopback only and needs the token that `serve` creates in `api-token` (only `/health` is open); POST bodies must be `application/json`.
+## REST API
+
+While `serve` runs it offers a REST API on `http://127.0.0.1:38542/v1`. It listens on loopback only, rejects any other Host header, sends no CORS headers, and every call except `GET /v1/health` needs the token that `serve` keeps in `api-token` (`Authorization: Bearer <token>`). Bodies are JSON (`Content-Type: application/json`); errors are RFC 9457 `application/problem+json` documents.
+
+| Resource                           | Methods                                                                                                                  |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `/v1/health`                       | `GET` → 200                                                                                                              |
+| `/v1/jobs`                         | `GET` → 200, a page of jobs (`?status=&limit=&offset=`, `Link: rel="next"`); `POST {"url", "again"?}` → 201 + `Location` |
+| `/v1/jobs/{id}`                    | `GET` → 200 · `DELETE` → 204 (cancels an active job, removes a finished one)                                             |
+| `/v1/watches`                      | `GET` → 200 · `POST {"url"}` → 201 + `Location`                                                                          |
+| `/v1/watches/{platform}/{account}` | `GET` → 200 · `DELETE` → 204                                                                                             |
+
+Other answers: 400 malformed JSON or query, 401 no/wrong token, 404 unknown resource, 405 wrong method (with `Allow`), 409 the account is already queued, done or watched (send `"again": true` to run it anew), 413 body too large, 415 not JSON, 422 a link that is not a supported profile.
 
 ```powershell
 $token = (Get-Content "$env:LOCALAPPDATAPageMediaSaverapi-token").Trim()
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:38542/downloads -Headers @{ Authorization = "Bearer $token" } -ContentType application/json -Body '{"url":"https://www.instagram.com/name/"}'
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:38542/v1/jobs -Headers @{ Authorization = "Bearer $token" } -ContentType application/json -Body '{"url":"https://www.instagram.com/name/"}'
 ```
 
-The reply lists the jobs that were queued. A Facebook profile still adds Photos, Reels and Videos. `GET http://127.0.0.1:38542/jobs` shows the latest jobs. A link that already ran is skipped unless the body also has `"again": true`.
+A Facebook profile still adds Photos, Reels and Videos, so `items` can hold several jobs.
+
+## MCP (for AI assistants)
+
+`node cli/mediasaver.mjs mcp` is an MCP server on stdin/stdout. It only calls the REST API above, so the queue (`serve`, or `service install`) must be running. Tools: `download_account`, `list_jobs`, `get_job`, `cancel_job`, `watch_account`, `list_watched`, `unwatch_account`, `queue_health`. In an MCP client's configuration:
+
+```json
+{
+  "mcpServers": {
+    "media-downloader": { "command": "node", "args": ["C:\path\to\media-downloader\cli\mediasaver.mjs", "mcp"] }
+  }
+}
+```
 
 `watch` is `serve` for a fixed list of accounts (`watch add <url>` writes them to `%LOCALAPPDATA%\PageMediaSaver\watch.txt`). Every 6 hours an account whose last scan has finished is queued again, so new stories, highlights, reels and photos are picked up. Anything already saved is skipped. A Facebook profile link is queued as the profile plus its Photos, Reels and Videos tabs. An Instagram profile scan also opens the current story tray and highlight reels. When a job ends, the CLI prints the account folder and how many files were new versus already saved.
 
