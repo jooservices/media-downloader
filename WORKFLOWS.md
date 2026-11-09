@@ -61,7 +61,7 @@ flowchart LR
     C --- C2[Upload to Codecov and SonarQube]
 ```
 
-The required status checks for `master` and `develop` are the job names: `Validate`, `Lint (ESLint)`, `Lint (Prettier)`, `Lint (Docs)`, `Security (Dependencies)`, `Security (Secrets)`, `Security (SAST)`, `Test (Unit)`, `Test (Integration)`, `Test (E2E)` and `Coverage upload`.
+The required status checks for `master` and `develop` are the job names: `Validate`, `Lint (ESLint)`, `Lint (Prettier)`, `Lint (Docs)`, `Security (Dependencies)`, `Security (Secrets)`, `Security (SAST)`, `Test (Unit)`, `Test (Integration)`, `Test (E2E)`, `Container` and `Coverage upload`.
 
 ## CI post-merge (`ci-post-merge.yml`)
 

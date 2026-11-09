@@ -75,6 +75,10 @@ export async function prepareManagedExtension({ target, bridgePort = BRIDGE_PORT
 
 // The first browser on this machine that can run an unpacked extension in a private profile.
 export function findBrowser(platform = process.platform, env = process.env, exists = existsSync) {
+  // PMS_BROWSER names the executable outright (a Chromium installed by a container image, for example).
+  if (env.PMS_BROWSER && exists(env.PMS_BROWSER)) {
+    return { id: "chrome", label: "Chromium", executable: env.PMS_BROWSER };
+  }
   const layout = browserLayout(platform, env);
   for (const id of ["chrome", "edge"]) {
     const found = layout[id].executables.find(candidate => exists(candidate));
@@ -85,7 +89,8 @@ export function findBrowser(platform = process.platform, env = process.env, exis
   return null;
 }
 
-export function managedArgs({ userData, extension, headless }) {
+// PMS_BROWSER_ARGS adds switches the machine needs, such as --no-sandbox inside a container.
+export function managedArgs({ userData, extension, headless, env = process.env }) {
   return [
     `--user-data-dir=${userData}`,
     `--load-extension=${extension}`,
@@ -93,7 +98,10 @@ export function managedArgs({ userData, extension, headless }) {
     "--disable-features=DisableLoadExtensionCommandLineSwitch",
     "--no-first-run",
     "--no-default-browser-check",
-    ...(headless ? ["--headless=new"] : [])
+    ...(headless ? ["--headless=new"] : []),
+    ...String(env.PMS_BROWSER_ARGS || "")
+      .split(/ +/)
+      .filter(Boolean)
   ];
 }
 
@@ -105,6 +113,13 @@ export async function setupManagedBrowser({ browser = findBrowser(), dir = MANAG
   const userData = path.join(dir, "profile");
   const extension = path.join(dir, "extension");
   await mkdir(userData, { recursive: true });
+  // Where the browser saves files before the queue moves them to the download folder.
+  const downloads = path.join(dir, "downloads");
+  await mkdir(path.join(userData, "Default"), { recursive: true });
+  await writeFile(
+    path.join(userData, "Default", "Preferences"),
+    JSON.stringify({ download: { default_directory: downloads, prompt_for_download: false } })
+  );
   const { id } = await prepareManagedExtension({ target: extension, keyDir: dir });
   await writeJsonAtomic(BRIDGE_CONFIG_FILE, { extensionOrigin: `chrome-extension://${id}`, port: BRIDGE_PORT });
   await writeJsonAtomic(EDGE_PROFILE_FILE, {

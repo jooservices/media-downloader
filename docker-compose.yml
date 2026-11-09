@@ -1,0 +1,23 @@
+# docker compose up -d                 run the queue (API on http://127.0.0.1:38542/v1)
+# docker compose --profile login up    sign in once: connect a VNC client to 127.0.0.1:5900
+services:
+  media-downloader:
+    build: .
+    init: true
+    restart: unless-stopped
+    shm_size: 1gb
+    ports:
+      - "127.0.0.1:38542:38542"
+    volumes:
+      - ./data:/data
+      - ./media:/media
+
+  login:
+    build: .
+    profiles: ["login"]
+    command: ["login"]
+    shm_size: 1gb
+    ports:
+      - "127.0.0.1:5900:5900"
+    volumes:
+      - ./data:/data

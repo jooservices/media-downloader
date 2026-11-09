@@ -14,8 +14,11 @@ const require = createRequire(import.meta.url);
 export const { normalizeProfileUrl, accountPages, cliTabMarker, isSignInPage } = require("../lib/urls.js");
 export const { cleanPart: cleanPathPart } = require("../lib/paths.js");
 export const EXTENSION_ROOT = path.resolve(HERE, "..");
-// %LOCALAPPDATA% on Windows; the home folder elsewhere, so `help` and the "Windows only" messages still work.
-export const APP_DIR = path.join(process.env.LOCALAPPDATA || process.env.USERPROFILE || os.homedir(), "PageMediaSaver");
+// PMS_DATA_DIR wins (a container volume, for instance); otherwise %LOCALAPPDATA% on Windows and the home folder
+// elsewhere, so `help` and the "Windows only" messages still work.
+export const APP_DIR =
+  process.env.PMS_DATA_DIR ||
+  path.join(process.env.LOCALAPPDATA || process.env.USERPROFILE || os.homedir(), "PageMediaSaver");
 export const JOBS_DIR = path.join(APP_DIR, "jobs");
 
 // Job ids are random UUIDs made by this CLI. Anything else (a bridge message, a command-line

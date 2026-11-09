@@ -367,3 +367,32 @@ test("status and metrics still answer when the queue offers no details", () =>
     assert.match(metrics.text, /pms_extension_seen_timestamp_seconds 0/);
     assert.doesNotMatch(metrics.text, /pms_jobs\{/);
   }));
+
+test("beyond this computer the API needs a token, and only the hosts it was told about", async () => {
+  const deps = { addUrls: async () => ({}), listJobs: async () => [] };
+  await assert.rejects(startApiServer({ port: 0, bind: "0.0.0.0", ...deps }), /only with an API token/);
+  const server = await startApiServer({
+    port: 0,
+    bind: "0.0.0.0",
+    token: TOKEN,
+    extraHosts: ["api.internal:38542"],
+    ...deps
+  });
+  const { port } = server.address();
+  try {
+    const ask = host =>
+      new Promise((resolve, reject) => {
+        const req = request({ hostname: "127.0.0.1", port, path: "/v1/health", headers: { host } }, response => {
+          response.resume();
+          response.on("end", () => resolve(response.statusCode));
+        });
+        req.on("error", reject);
+        req.end();
+      });
+    assert.equal(await ask(`127.0.0.1:${port}`), 200);
+    assert.equal(await ask("api.internal:38542"), 200);
+    assert.equal(await ask("evil.example"), 403);
+  } finally {
+    await new Promise(resolve => server.close(() => resolve()));
+  }
+});

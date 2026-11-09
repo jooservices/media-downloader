@@ -148,3 +148,33 @@ test("the browser command dispatches setup, login and status and rejects anythin
   await browser.browserCommand(["status"]);
   assert.match(lines.join(""), /"managed": false/);
 });
+
+test("PMS_BROWSER names the browser outright, and PMS_BROWSER_ARGS adds switches such as --no-sandbox", () => {
+  const exists = file => file === "/usr/bin/chromium";
+  const found = browser.findBrowser("linux", { HOME: "/home/u", PMS_BROWSER: "/usr/bin/chromium" }, exists);
+  assert.deepEqual(found, { id: "chrome", label: "Chromium", executable: "/usr/bin/chromium" });
+  assert.equal(
+    browser.findBrowser("linux", { HOME: "/home/u", PMS_BROWSER: "/nope" }, exists),
+    null,
+    "a missing file is not used"
+  );
+
+  const args = browser.managedArgs({
+    userData: "/p",
+    extension: "/e",
+    headless: true,
+    env: { PMS_BROWSER_ARGS: "--no-sandbox   --disable-gpu" }
+  });
+  assert.deepEqual(args.slice(-2), ["--no-sandbox", "--disable-gpu"]);
+  assert.ok(
+    !browser.managedArgs({ userData: "/p", extension: "/e", headless: false, env: {} }).includes("--no-sandbox")
+  );
+});
+
+test("setup tells the browser where to save, so the queue knows where to look", async () => {
+  const dir = path.join(home, "managed-f");
+  await browser.setupManagedBrowser({ browser: FAKE, dir });
+  const preferences = JSON.parse(await readFile(path.join(dir, "profile", "Default", "Preferences"), "utf8"));
+  assert.equal(preferences.download.default_directory, path.join(dir, "downloads"));
+  assert.equal(preferences.download.prompt_for_download, false);
+});

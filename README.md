@@ -113,6 +113,12 @@ node cli/mediasaver.mjs service install  # the queue starts at sign-in and keeps
 
 The queue starts that browser when a job needs it and opens every job in a window of its own (a tab behind another one is slowed down by the browser). It listens for the browser on 127.0.0.1 only. `browser status` says whether it is running; `browser setup --headed` keeps a visible window instead of a headless one. It uses Chrome or Edge, on Windows, macOS and Linux, on Intel, AMD and Apple silicon.
 
+### In a container
+
+`docker compose up -d` runs the queue with Chromium inside (amd64 and arm64). Data lives in `./data`, finished files in `./media`, and the API is on `http://127.0.0.1:38542/v1` (the token is `./data/api-token`). Sign in to the sites once with `docker compose --profile login up`, connect a VNC client to `127.0.0.1:5900`, sign in in the window that appears, then stop it. `GET /v1/status` and `GET /v1/metrics` (Prometheus text) show what the queue and the extension are doing.
+
+Settings for containers and servers: `PMS_DATA_DIR` (where everything is kept), `PMS_DOWNLOAD_DIR` (the download folder when `config.json` names none), `PMS_BROWSER` and `PMS_BROWSER_ARGS` (the browser to run and extra switches), `PMS_API_HOST` and `PMS_API_ALLOWED_HOSTS` (listen beyond this computer, which needs the token, and the Host names to accept).
+
 ## REST API
 
 While `serve` runs it offers a REST API on `http://127.0.0.1:38542/v1`. It listens on loopback only, rejects any other Host header, sends no CORS headers, and every call except `GET /v1/health` needs the token that `serve` keeps in `api-token` (`Authorization: Bearer <token>`). Bodies are JSON (`Content-Type: application/json`); errors are RFC 9457 `application/problem+json` documents.

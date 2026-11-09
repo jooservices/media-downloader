@@ -6,6 +6,7 @@ All notable changes to this project are documented in this file. Format follows 
 
 ### Added
 
+- A container image and `docker-compose.yml` for unattended runs (Chromium inside, amd64 and arm64), a one-time sign-in over VNC, `GET /v1/status` and a Prometheus `GET /v1/metrics`; `PMS_DATA_DIR`, `PMS_DOWNLOAD_DIR`, `PMS_BROWSER`, `PMS_BROWSER_ARGS`, `PMS_API_HOST` and `PMS_API_ALLOWED_HOSTS` configure it
 - Jobs live in one SQLite file (`queue.db`, Node's built-in `node:sqlite`, no new dependency) instead of one JSON file per job, so listing and pruning stay fast however long the queue runs. Jobs saved by an older version are imported the first time, and the old `jobs` folder is kept as `jobs.imported`
 - A RESTful loopback API (`/v1/jobs`, `/v1/watches/{platform}/{account}`) with a bearer token, JSON-only bodies, RFC 9457 problem documents, correct status codes (201 with `Location`, 204, 409, 422, 405 with `Allow`), paging and filtering
 - An MCP server (`mediasaver mcp`, stdio) so an AI assistant can request downloads, read job state and manage watched accounts. It only calls the REST API

@@ -13,6 +13,7 @@ import { normalizeProfileUrl } from "./store.mjs";
 export const API_PORT = Number(process.env.PMS_API_PORT) || 38542;
 export const API_BASE = "/v1";
 const MAX_BODY_BYTES = 8192;
+const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
 const JSON_TYPE = /^application\/json\b/i;
 const JOB_STATUSES = new Set(["queued", "running", "complete", "incomplete", "paused", "error"]);
 const ALREADY_QUEUED = "already queued or done";
@@ -337,8 +338,8 @@ function hasValidToken(request, token) {
 }
 
 // Host, token and body type are checked before any route runs. Returns false after it has answered.
-function admit(request, response, open, { expectedHost, token }) {
-  if (request.headers.host !== expectedHost()) {
+function admit(request, response, open, { allowedHosts, token }) {
+  if (!allowedHosts().includes(request.headers.host)) {
     problem(response, 403, "Only 127.0.0.1 is accepted.");
   } else if (token && !open && !hasValidToken(request, token)) {
     problem(response, 401, "Send the API token as: Authorization: Bearer <token>.", {
@@ -397,15 +398,24 @@ export function startApiServer({
   status = null,
   port = API_PORT,
   token = null,
-  watch = null
+  watch = null,
+  bind = process.env.PMS_API_HOST || "127.0.0.1",
+  extraHosts = (process.env.PMS_API_ALLOWED_HOSTS || "")
+    .split(",")
+    .map(item => item.trim())
+    .filter(Boolean)
 }) {
+  if (!LOOPBACK.has(bind) && !token) {
+    return Promise.reject(new Error("The API can listen beyond this computer only with an API token."));
+  }
   let host = `127.0.0.1:${port}`;
-  const server = createApiServer({ addUrls, listJobs, removeJob, token, watch, status, expectedHost: () => host });
+  const allowedHosts = () => [host, ...extraHosts];
+  const server = createApiServer({ addUrls, listJobs, removeJob, token, watch, status, allowedHosts });
   return new Promise((resolve, reject) => {
     server.once("error", error => {
       reject(error?.code === "EADDRINUSE" ? new Error(`Download API port ${port} is already in use.`) : error);
     });
-    server.listen(port, "127.0.0.1", () => {
+    server.listen(port, bind, () => {
       host = `127.0.0.1:${server.address().port}`;
       resolve(server);
     });
