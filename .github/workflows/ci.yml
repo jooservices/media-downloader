@@ -9,9 +9,9 @@ on:
     branches: [master, develop]
 
 concurrency:
-  # Title/body edits run the full gate in isolation so they cannot cancel a
-  # quality run and cannot publish skipped required checks.
-  group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event.action == 'edited' && github.event.changes.base == null && github.run_id || 'quality' }}
+  # Every event for a PR shares a group, so metadata edits and retargets
+  # supersede older runs without publishing skipped quality checks.
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
