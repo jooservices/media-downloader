@@ -9,6 +9,10 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { normalizeProfileUrl } from "./store.mjs";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const { platformHealth: assessPlatforms } = require("../lib/platform-health.js");
 
 export const API_PORT = Number(process.env.PMS_API_PORT) || 38542;
 export const API_BASE = "/v1";
@@ -287,6 +291,19 @@ async function statusRoute({ response, deps }) {
   send(response, 200, { uptimeSeconds: Math.round((Date.now() - startedAt) / 1000), ...state });
 }
 
+async function platformHealthRoute({ response, deps }) {
+  const items = deps.platformHealth ? await deps.platformHealth() : assessPlatforms(await deps.listJobs());
+  send(response, 200, {
+    items,
+    summary: {
+      total: items.length,
+      ok: items.filter(item => item.state === "ok").length,
+      degraded: items.filter(item => item.state === "degraded").length,
+      broken: items.filter(item => item.state === "broken").length
+    }
+  });
+}
+
 // Prometheus text format: one gauge per job state, whether an extension has reported in, and uptime.
 async function metricsRoute({ response, deps }) {
   const state = deps.status ? await deps.status() : {};
@@ -302,6 +319,15 @@ async function metricsRoute({ response, deps }) {
     "# TYPE pms_uptime_seconds gauge",
     `pms_uptime_seconds ${Math.round((Date.now() - startedAt) / 1000)}`
   );
+  const health = deps.platformHealth ? await deps.platformHealth() : assessPlatforms(await deps.listJobs());
+  lines.push(
+    "# HELP pms_platform_health Platform canary state (ok=0, degraded=1, broken=2).",
+    "# TYPE pms_platform_health gauge"
+  );
+  for (const item of health) {
+    const value = { ok: 0, degraded: 1, broken: 2 }[item.state] ?? 0;
+    lines.push(`pms_platform_health{platform="${item.platform.toLowerCase()}"} ${value}`);
+  }
   const payload = lines.join(String.fromCharCode(10)) + String.fromCharCode(10);
   response.writeHead(200, {
     "Content-Type": "text/plain; version=0.0.4; charset=utf-8",
@@ -314,6 +340,7 @@ async function metricsRoute({ response, deps }) {
 const ROUTES = [
   { pattern: new RegExp(`^${API_BASE}/status$`), GET: statusRoute },
   { pattern: new RegExp(`^${API_BASE}/metrics$`), GET: metricsRoute },
+  { pattern: new RegExp(`^${API_BASE}/health/platforms$`), GET: platformHealthRoute },
   {
     pattern: new RegExp(`^${API_BASE}/health$`),
     open: true,
@@ -396,6 +423,7 @@ export function startApiServer({
   listJobs,
   removeJob = () => Promise.resolve(false),
   status = null,
+  platformHealth = null,
   port = API_PORT,
   token = null,
   watch = null,
@@ -410,7 +438,7 @@ export function startApiServer({
   }
   let host = `127.0.0.1:${port}`;
   const allowedHosts = () => [host, ...extraHosts];
-  const server = createApiServer({ addUrls, listJobs, removeJob, token, watch, status, allowedHosts });
+  const server = createApiServer({ addUrls, listJobs, removeJob, token, watch, status, platformHealth, allowedHosts });
   return new Promise((resolve, reject) => {
     server.once("error", error => {
       reject(error?.code === "EADDRINUSE" ? new Error(`Download API port ${port} is already in use.`) : error);

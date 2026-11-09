@@ -29,9 +29,14 @@ import { resolvedProfile } from "./browsers.mjs";
 import { edgeDownloadsDir, firefoxDownloadDir, moveFinishedFiles } from "./mover.mjs";
 import { addWatch, readWatchList, removeWatch, watchDue } from "./watchlist.mjs";
 
-import { createNotifier } from "./notify.mjs";
+import { createNotifier, createPlatformHealthNotifier } from "./notify.mjs";
 import { PRUNE_EVERY_MS, prune } from "./prune.mjs";
 import { createSupervisor, recoverInterrupted } from "./supervisor.mjs";
+import { queueCanaryAccounts } from "./canary.mjs";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const { platformHealth: assessPlatforms } = require("../lib/platform-health.js");
 
 const watchApi = { list: () => readWatchList(), add: url => addWatch([url]), remove: url => removeWatch(url) };
 
@@ -164,6 +169,7 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
         listJobs,
         removeJob,
         status: () => Promise.resolve({ jobs: queueJobs().counts(), extension: extensionSeen(), pid: process.pid }),
+        platformHealth: async () => assessPlatforms(await listJobs()),
         port: API_PORT,
         token: await ensureApiToken(),
         watch: watchApi
@@ -189,6 +195,12 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
           current.notifiedAt = new Date().toISOString();
         })
     });
+    const healthNotifier = createPlatformHealthNotifier({
+      loadConfig,
+      log,
+      getHealth: async () => assessPlatforms(await listJobs())
+    });
+    let lastCanaryRun = 0;
     let lastPrune = 0;
     const pass = async () => {
       if (Date.now() - lastPrune >= PRUNE_EVERY_MS) {
@@ -199,6 +211,13 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
         }
       }
       const settings = await loadConfig().catch(() => null);
+      if (settings?.canary && Date.now() - lastCanaryRun >= settings.canary.intervalMinutes * 60_000) {
+        lastCanaryRun = Date.now();
+        const probes = await queueCanaryAccounts(settings, await listJobs(), addUrls);
+        if (probes.created.length) {
+          log(`Queued ${probes.created.length} configured platform canary job(s).`);
+        }
+      }
       const { created } = await addUrls(await readUrlFile(inbox), { limit: settings?.limit ?? limit });
       const rescans = dueUrls
         ? await addUrls(await dueUrls(), { force: true, limit: settings?.limit ?? limit })
@@ -209,6 +228,7 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
       }
       await supervisor.tick();
       await notifier.tick();
+      await healthNotifier.tick();
     };
 
     // One bad pass (a file briefly locked, a disk hiccup) must not end an unattended run;

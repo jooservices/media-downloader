@@ -368,6 +368,19 @@ test("status and metrics still answer when the queue offers no details", () =>
     assert.doesNotMatch(metrics.text, /pms_jobs\{/);
   }));
 
+test("GET /v1/health/platforms reports per-platform canary state and metrics export gauges", () =>
+  withServer({}, async ({ call }) => {
+    const health = await call("GET", "/v1/health/platforms");
+    assert.equal(health.status, 200);
+    assert.equal(health.body.items.length, 4);
+    assert.equal(health.body.items.find(item => item.platform === "Instagram").state, "ok");
+    assert.equal(health.body.summary.total, 4);
+    assert.equal((await call("GET", "/v1/health/platforms", { auth: false })).status, 401);
+    assert.equal((await call("POST", "/v1/health/platforms", { body: {} })).status, 405);
+    const metrics = await call("GET", "/v1/metrics", { json: false });
+    assert.match(metrics.text, /^pms_platform_health\{platform="instagram"\} 0$/m);
+  }));
+
 test("beyond this computer the API needs a token, and only the hosts it was told about", async () => {
   const deps = { addUrls: async () => ({}), listJobs: async () => [] };
   await assert.rejects(startApiServer({ port: 0, bind: "0.0.0.0", ...deps }), /only with an API token/);

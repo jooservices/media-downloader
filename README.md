@@ -125,6 +125,7 @@ While `serve` runs it offers a REST API on `http://127.0.0.1:38542/v1`. It liste
 
 | Resource                           | Methods                                                                                                                  |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `/v1/health/platforms`             | `GET` → 200, per-platform canary state, reason, counts, and error classes                                                |
 | `/v1/health`                       | `GET` → 200                                                                                                              |
 | `/v1/jobs`                         | `GET` → 200, a page of jobs (`?status=&limit=&offset=`, `Link: rel="next"`); `POST {"url", "again"?}` → 201 + `Location` |
 | `/v1/jobs/{id}`                    | `GET` → 200 · `DELETE` → 204 (cancels an active job, removes a finished one)                                             |
@@ -140,9 +141,11 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:38542/v1/jobs -Headers @{ A
 
 A Facebook profile still adds Photos, Reels and Videos, so `items` can hold several jobs.
 
+`GET /v1/health/platforms` returns one entry per supported platform with `state` (`ok`, `degraded`, or `broken`), a reason, finished job and media counts, and error classes. It needs the API token. `/v1/metrics` exports `pms_platform_health{platform="..."}` as 0 for ok, 1 for degraded, or 2 for broken.
+
 ## MCP (for AI assistants)
 
-`node cli/mediasaver.mjs mcp` is an MCP server on stdin/stdout. It only calls the REST API above, so the queue (`serve`, or `service install`) must be running. Tools: `download_account`, `list_jobs`, `get_job`, `cancel_job`, `watch_account`, `list_watched`, `unwatch_account`, `queue_health`. In an MCP client's configuration:
+`node cli/mediasaver.mjs mcp` is an MCP server on stdin/stdout. It only calls the REST API above, so the queue (`serve`, or `service install`) must be running. Tools: `download_account`, `list_jobs`, `get_job`, `cancel_job`, `watch_account`, `list_watched`, `unwatch_account`, `queue_health`, `platform_health`. In an MCP client's configuration:
 
 ```json
 {
@@ -165,7 +168,8 @@ On this machine the unpacked extension lives in `C:\Claude\PageMediaSaver`. `npm
   "workers": { "x": 1, "instagram": 1, "facebook": 1 },
   "delaySeconds": { "min": 15, "max": 60 },
   "maxAttempts": 3,
-  "downloadDir": "D:\\Media"
+  "downloadDir": "D:\\Media",
+  "canary": { "accounts": ["https://www.instagram.com/example/"], "intervalMinutes": 360 }
 }
 ```
 
@@ -175,8 +179,9 @@ On this machine the unpacked extension lives in `C:\Claude\PageMediaSaver`. `npm
 | `delaySeconds` | A random pause (between `min` and `max`) before the next account on the same site is opened.                                                                                                                   |
 | `maxAttempts`  | How many times a job that failed for a transient reason is tried (1 to 20).                                                                                                                                    |
 | `downloadDir`  | Where finished files go, as `<downloadDir>\<Site>\<account>\`. A full path, local or a network share. Leave it out to keep files in the browser's Downloads folder. Cannot be a drive root or a system folder. |
+| `canary`       | Optional probes through the normal job queue. `accounts` is a non-empty list of supported profile URLs; `intervalMinutes` is 15–10080 (default 360).                                                           |
 
-**Notifications.** Add `"notify": { "url": "https://ntfy.sh/your-topic" }` to `config.json` and the queue posts a message when a scan saves new files (`new-content`) or stops short, for example because a sign-in has expired or a site changed (`problem`). `format` is `json` (the default; a document with the event, account, counts and time) or `text` (a plain message with a `Title` header, which ntfy shows as is); `events` can list just one of the two kinds. The address must be https, or http on this computer. A job is announced once, and trouble on one site is repeated at most every 6 hours.
+**Notifications.** Add `"notify": { "url": "https://ntfy.sh/your-topic" }` to `config.json` and the queue posts a message when a scan saves new files (`new-content`) or stops short, for example because a sign-in has expired or a site changed (`problem`). `format` is `json` (the default; a document with the event, account, counts and time) or `text` (a plain message with a `Title` header, which ntfy shows as is); `events` can list just one of the two kinds. The address must be https, or http on this computer. A job is announced once, and trouble on one site is repeated at most every 6 hours. Stable platform health transitions are also reported after a one-minute debounce, including recovery to `ok`.
 
 **Download location.** A browser extension can only save inside the browser's own Downloads folder, so the CLI moves finished files afterwards (in the background while `serve` runs, or once with `node .\cli\mediasaver.mjs move`). A file is copied, checked against the original's size and only then removed. An existing file is never overwritten: an identical one is treated as a duplicate and a different one gets a `(1)` suffix. Files still being written, and anything outside the `Instagram`, `Facebook` and `Twitter` folders, are not touched. If a site folder in Downloads is a link to another location, it is left as it is. `downloadDir` must not be, contain or sit inside the Downloads folder.
 

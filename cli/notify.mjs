@@ -98,3 +98,65 @@ export function createNotifier({
     }
   };
 }
+
+export function createPlatformHealthNotifier({
+  loadConfig,
+  getHealth,
+  fetchImpl = fetch,
+  now = () => Date.now(),
+  debounceMs = 60_000,
+  log = () => {}
+}) {
+  const observed = new Map();
+
+  return {
+    async tick() {
+      const notify = (await loadConfig().catch(() => null))?.notify;
+      if (!notify) {
+        return;
+      }
+      const at = now();
+      for (const item of await getHealth()) {
+        const previous = observed.get(item.platform) || { state: "ok", candidate: null, since: at };
+        if (item.state === previous.state) {
+          observed.set(item.platform, { state: item.state, candidate: null, since: at });
+          continue;
+        }
+        if (previous.candidate !== item.state) {
+          observed.set(item.platform, { ...previous, candidate: item.state, since: at });
+          continue;
+        }
+        if (at - previous.since < debounceMs) {
+          continue;
+        }
+        observed.set(item.platform, { state: item.state, candidate: null, since: at });
+        const title = `${item.platform} download health ${item.state}`;
+        const text = item.reason.slice(0, 300);
+        try {
+          const response = await fetchImpl(
+            notify.url,
+            notify.format === "text"
+              ? { method: "POST", headers: { "Content-Type": "text/plain; charset=utf-8", Title: title }, body: text }
+              : {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    event: "platform-health",
+                    title,
+                    text,
+                    platform: item.platform,
+                    state: item.state,
+                    at: new Date(at).toISOString()
+                  })
+                }
+          );
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+        } catch (error) {
+          log(`Could not send a platform health notification: ${error?.message || error}`);
+        }
+      }
+    }
+  };
+}
