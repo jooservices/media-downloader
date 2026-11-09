@@ -121,6 +121,7 @@ test("the running serve answers the REST API: create, read, watch and cancel", a
     const status = await (await call("GET", "/v1/status")).json();
     assert.equal(status.pid, process.pid);
     assert.equal(typeof status.jobs, "object");
+    assert.equal(status.platforms.twitter.configuredWorkers, 1);
     assert.ok(status.jobs.paused >= 1, "the cancelled job is counted");
     assert.ok((await (await call("GET", "/v1/metrics")).text()).includes('pms_jobs{status="paused"}'));
 

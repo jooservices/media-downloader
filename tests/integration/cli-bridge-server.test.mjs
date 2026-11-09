@@ -136,6 +136,17 @@ test("a tagged tab on a sign-in page marks the job as needing login and closes",
   assert.match(job.message, /Instagram asked to sign in/);
 });
 
+test("a tagged tab on a checkpoint page records a detectable challenge outcome", async () => {
+  await putJob(1);
+  await handleBridgeMessage(
+    ready({ cliJobId: id(1), pageUrl: "https://www.facebook.com/checkpoint/1234/" }),
+    new Set()
+  );
+  const job = await read(1);
+  assert.equal(job.needsLogin, true);
+  assert.match(job.message, /checkpoint or security challenge/i);
+});
+
 test("a tagged tab is kept when it runs the job, closed when another tab already does or the page is wrong", async () => {
   await putJob(1, { status: "running", tabId: 7 });
   // The tab running the job may be on any page while it scans.

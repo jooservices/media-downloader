@@ -134,6 +134,17 @@ test("a sign-in wall in the opened tab ends the job, holds the site and keeps th
   assert.ok(env.tabRemoves.includes(100), "the sign-in tab is closed");
 });
 
+test("a checkpoint navigation leaves a challenge signal in the job outcome", async () => {
+  const env = start();
+  await ask(env, { type: "QUEUE_ADD", urls: ["https://www.instagram.com/c/"] });
+  await env.inContext("queueEngine.tick()");
+  env.listeners.tabUpdated[0](100, { url: "https://www.instagram.com/challenge/1234/" });
+  await settle();
+  const [job] = await jobs(env);
+  assert.match(job.message, /checkpoint or security challenge/i);
+  assert.equal(job.status, "queued");
+});
+
 test("telling the extension the user signed in lets the held site start at once", async () => {
   const env = start();
   await ask(env, { type: "QUEUE_ADD", urls: ["https://www.instagram.com/c/"] });

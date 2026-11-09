@@ -105,7 +105,12 @@ function createQueueEngine({ store, settings, login, tabs, now, random, log }) {
   async function tabNavigated(tabId, url) {
     const job = await findByTab(tabId);
     if (job && !isTerminal(job.status) && isSignInPage(url)) {
-      await failJob(job.jobId, "The site asked to sign in.", { needsLogin: true });
+      const pathname = new URL(url).pathname;
+      const securityCheck = /\/(checkpoint|challenge)(\/|$)/i.test(pathname);
+      const message = securityCheck
+        ? "The site showed a checkpoint or security challenge. Sign in to continue."
+        : "The site asked to sign in.";
+      await failJob(job.jobId, message, { needsLogin: true });
       tick().catch(() => undefined);
     }
   }

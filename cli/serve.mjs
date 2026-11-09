@@ -152,6 +152,8 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
   const log = await createLogger();
   const servers = [];
   let stopping = false;
+  let supervisor = null;
+  let notifier = null;
   const stop = () => {
     stopping = true;
   };
@@ -163,7 +165,13 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
         addUrls,
         listJobs,
         removeJob,
-        status: () => Promise.resolve({ jobs: queueJobs().counts(), extension: extensionSeen(), pid: process.pid }),
+        status: () =>
+          Promise.resolve({
+            jobs: queueJobs().counts(),
+            extension: extensionSeen(),
+            pid: process.pid,
+            platforms: supervisor?.platformStatus() ?? {}
+          }),
         port: API_PORT,
         token: await ensureApiToken(),
         watch: watchApi
@@ -175,12 +183,12 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
     if (recovered) {
       log(`Recovered ${recovered} job(s) left by a previous run.`);
     }
-    const supervisor = createSupervisor(deps);
+    supervisor = createSupervisor({ ...deps, onBackoff: event => notifier?.backoff(event) });
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
     log(`Serving. REST API at http://127.0.0.1:${API_PORT}/v1 (token in ${API_TOKEN_FILE}), or add a URL to ${inbox}.`);
 
-    const notifier = createNotifier({
+    notifier = createNotifier({
       loadConfig,
       log,
       changedSince: iso => queueJobs().changedSince(iso),

@@ -8,6 +8,7 @@ importScripts(
   "../../lib/keys.js",
   "../../lib/config.js",
   "../../lib/scheduler.js",
+  "../../lib/rate-limit.js",
   "../../lib/supervisor.js",
   "../../lib/login.js",
   "../../lib/job-progress.js",

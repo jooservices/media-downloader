@@ -190,10 +190,14 @@ async function judgeTaggedTab(message) {
     return CLOSE_TAB;
   }
   if (isSignInPage(message.pageUrl)) {
+    const pathname = new URL(message.pageUrl).pathname;
+    const securityCheck = /\/(checkpoint|challenge)(\/|$)/i.test(pathname);
     await updateJob(tagged.jobId, job => {
       job.status = "error";
       job.needsLogin = true;
-      job.message = `${job.platform} asked to sign in. Sign in with Edge's profile; the queue continues by itself.`;
+      job.message = securityCheck
+        ? `${job.platform} showed a checkpoint or security challenge. Sign in with Edge's profile; the queue continues by itself.`
+        : `${job.platform} asked to sign in. Sign in with Edge's profile; the queue continues by itself.`;
     });
     return CLOSE_TAB;
   }
