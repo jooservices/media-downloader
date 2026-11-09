@@ -181,6 +181,21 @@ test("bulk ledger lookups return saved canonical keys", async () => {
   );
 });
 
+test("a limited cache request checks saved entries in bounded batches", async () => {
+  const env = loadBackground();
+  const oldItems = Array.from({ length: 100 }, (_, index) => photo(`old${String(index).padStart(3, "0")}`));
+  const newItems = Array.from({ length: 10 }, (_, index) => photo(`new${String(index).padStart(3, "0")}`));
+  await found(env, oldItems);
+  await found(env, newItems);
+  for (const item of oldItems) {
+    await env.ledger.add(item.platform + "|image|" + item.id + "|" + item.index);
+  }
+
+  const result = await saveCached(env, { platform: "Twitter", account: "alice", limit: 1 });
+  assert.equal(result.started, 1);
+  assert.equal(env.started[0].url, newItems[0].url);
+});
+
 test("a cached-media request returns promptly when all download slots are busy", async () => {
   let clock = 1_000_000;
   const env = loadBackground({ now: () => clock });

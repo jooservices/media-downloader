@@ -154,23 +154,34 @@ async function downloadCachedMedia({ platform, account, ids, limit }) {
   const availableSlots = Math.max(0, MAX_ACTIVE_DOWNLOADS - Object.keys(pendingDownloads).length);
   const hasLimit = Number.isInteger(limit) && limit >= 0;
   const freshLimit = hasLimit ? Math.min(limit, availableSlots) : availableSlots;
-  const selected = [];
-  let freshCount = 0;
-  const savedKeys = await ledgerHasAny(items.map(item => item.key));
-  for (const item of items) {
-    const alreadyStarted = Object.hasOwn(pendingDownloads, item.key) || savedKeys.has(item.key);
-    if (alreadyStarted) {
-      if (!hasLimit) {
-        selected.push(item);
-      }
-    } else if (freshCount < freshLimit) {
-      selected.push(item);
-      freshCount++;
-    }
-  }
+  const selected = await selectCachedItems(items, pendingDownloads, hasLimit, freshLimit);
   items.splice(0, items.length, ...selected);
   if (!items.length) {
     return { ok: true, started: 0, skipped: 0, failed: 0, pending: 0, errors: [], cached: 0, coveredIds, diag };
   }
   return { ...(await downloadBatch(items)), cached: items.length, coveredIds, diag };
+}
+
+async function selectCachedItems(items, pendingDownloads, hasLimit, freshLimit) {
+  const selected = [];
+  let freshCount = 0;
+  for (let offset = 0; offset < items.length; offset += 100) {
+    const batch = items.slice(offset, offset + 100);
+    const savedKeys = await ledgerHasAny(batch.map(item => item.key));
+    for (const item of batch) {
+      const alreadyStarted = Object.hasOwn(pendingDownloads, item.key) || savedKeys.has(item.key);
+      if (alreadyStarted) {
+        if (!hasLimit) {
+          selected.push(item);
+        }
+      } else if (freshCount < freshLimit) {
+        selected.push(item);
+        freshCount++;
+      }
+    }
+    if (hasLimit && freshCount >= freshLimit) {
+      break;
+    }
+  }
+  return selected;
 }
