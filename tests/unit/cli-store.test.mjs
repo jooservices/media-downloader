@@ -208,6 +208,37 @@ test("prune removes old finished jobs and logs, keeping the newest job of each U
   assert.equal(prune.PRUNE_EVERY_MS, 3600_000);
 });
 
+test("prune retains canary baselines and recent zero-media streaks for health calculation", async () => {
+  await reset();
+  const now = Date.now();
+  const put = async (n, daysAgo, started) => {
+    const stamp = new Date(now - daysAgo * DAY).toISOString();
+    await store.writeJob({
+      jobId: id(n),
+      url: "https://instagram.com/account/",
+      platform: "Instagram",
+      account: "account",
+      status: "complete",
+      started,
+      createdAt: stamp,
+      updatedAt: stamp
+    });
+  };
+  await put(10, 50, 1);
+  await put(11, 40, 0);
+  await put(12, 39, 0);
+  await put(13, 38, 0);
+
+  const result = await prune.prune(now);
+  assert.equal(result.jobs, 0);
+  const { createRequire } = await import("node:module");
+  const { platformHealth } = createRequire(import.meta.url)("../../lib/platform-health.js");
+  const item = platformHealth(await store.listJobs(), ["Instagram"])[0];
+  assert.equal(item.state, "broken");
+  assert.equal(item.consecutiveZeros, 3);
+  assert.equal(item.mediaJobs, 1);
+});
+
 test("prune copes with no folders at all and jobs with unparsable dates", async () => {
   await reset();
   assert.deepEqual(await prune.prune(), { jobs: 0, logs: 0, dir: store.JOBS_DB_FILE });

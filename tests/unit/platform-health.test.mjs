@@ -44,6 +44,15 @@ test("strong hook and selector diagnostics break immediately and error classes a
   assert.equal(errorClass({ message: "The site asked to sign in." }), "authentication");
 });
 
+test("a later successful job clears old hook and selector diagnostics", () => {
+  const item = platformHealth([
+    job(1, { started: 0, status: "error", message: "Selector failed to find media" }),
+    job(2, { started: 2 })
+  ]).find(entry => entry.platform === "Instagram");
+  assert.equal(item.state, "ok");
+  assert.match(item.reason, /found media/);
+});
+
 test("media found honours explicit count and otherwise combines discovered media counters", () => {
   assert.equal(mediaFound({ mediaFound: 4, started: 0 }), 4);
   assert.equal(mediaFound({ started: 1, skipped: 2, videoStarted: 1, videoSkipped: 1 }), 5);
