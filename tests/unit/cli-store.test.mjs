@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -137,6 +137,20 @@ test("ensureApiToken makes one random token, keeps it, and replaces an empty fil
   const fresh = await store.ensureApiToken();
   assert.match(fresh, /^[0-9a-f]{64}$/);
   assert.notEqual(fresh, token);
+});
+
+test("ensureApiToken secures a pre-existing empty token file before writing the secret on POSIX", async t => {
+  if (process.platform === "win32") {
+    return t.skip("POSIX permission bits are not available on Windows");
+  }
+  await reset();
+  await mkdir(store.APP_DIR, { recursive: true });
+  await writeFile(store.API_TOKEN_FILE, "", { mode: 0o644 });
+  await chmod(store.API_TOKEN_FILE, 0o644);
+  const token = await store.ensureApiToken();
+  assert.match(token, /^[0-9a-f]{64}$/);
+  assert.equal((await stat(store.API_TOKEN_FILE)).mode & 0o777, 0o600);
+  assert.equal((await readFile(store.API_TOKEN_FILE, "utf8")).trim(), token);
 });
 
 test("ensureApiToken surfaces an unreadable token file instead of replacing it", async () => {

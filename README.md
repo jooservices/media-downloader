@@ -119,6 +119,8 @@ The queue starts that browser when a job needs it and opens every job in a windo
 
 Settings for containers and servers: `PMS_DATA_DIR` (where everything is kept), `PMS_DOWNLOAD_DIR` (the download folder when `config.json` names none), `PMS_BROWSER` and `PMS_BROWSER_ARGS` (the browser to run and extra switches), `PMS_API_HOST` and `PMS_API_ALLOWED_HOSTS` (listen beyond this computer, which needs the token, and the Host names to accept).
 
+The API token can be replaced with `node cli/mediasaver.mjs api-token rotate`; restart `serve` or the installed service afterwards. Remote binding uses plain HTTP, so place it behind a TLS reverse proxy and restrict access. See [the REST API security notes](docs/security.md) for the threat model and deployment guidance.
+
 ## REST API
 
 While `serve` runs it offers a REST API on `http://127.0.0.1:38542/v1`. It listens on loopback only, rejects any other Host header, sends no CORS headers, and every call except `GET /v1/health` needs the token that `serve` keeps in `api-token` (`Authorization: Bearer <token>`). Bodies are JSON (`Content-Type: application/json`); errors are RFC 9457 `application/problem+json` documents.

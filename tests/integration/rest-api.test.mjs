@@ -139,9 +139,12 @@ test("health needs no token; everything else answers 401 with WWW-Authenticate",
     assert.equal(short.status, 401);
   }));
 
-test("a request for another host is refused, and unknown resources are 404 problems", () =>
+test("a request for another host or Origin is refused, and unknown resources are 404 problems", () =>
   withServer({}, async ({ call }) => {
     assert.equal((await call("GET", "/v1/health", { host: "evil.example" })).status, 403);
+    const origin = await call("GET", "/v1/health", { headers: { origin: "https://attacker.example" } });
+    assert.equal(origin.status, 403);
+    assert.equal(origin.headers["access-control-allow-origin"], undefined);
     const missing = await call("GET", "/v1/nothing");
     assert.equal(missing.status, 404);
     assert.equal(missing.body.title, "Not Found");
@@ -178,6 +181,18 @@ test("GET /v1/jobs lists bounded pages, filters by status and links the next pag
       assert.equal(bad.status, 400, query);
       assert.match(bad.headers["content-type"], /problem\+json/);
     }
+    assert.equal((await call("GET", "/v1/jobs?limit=1&limit=2")).status, 400);
+    assert.equal((await call("GET", "/v1/jobs?unknown=yes")).status, 400);
+  }));
+
+test("HEAD /v1/jobs accepts the same filtered and paginated queries as GET", () =>
+  withServer({}, async ({ call }) => {
+    const get = await call("GET", "/v1/jobs?status=complete&limit=1&offset=0");
+    const head = await call("HEAD", "/v1/jobs?status=complete&limit=1&offset=0");
+    assert.equal(get.status, 200);
+    assert.equal(head.status, get.status);
+    assert.equal(head.text, "");
+    assert.equal(head.headers.link, get.headers.link);
   }));
 
 test("GET /v1/jobs/{id} returns one job or a 404; HEAD has no body", () =>
@@ -208,6 +223,18 @@ test("POST /v1/jobs creates a job: 201 with Location; a known account is a 409 u
     const refused = await call("POST", "/v1/jobs", { body: { url: "https://x.com/nope" } });
     assert.equal(refused.status, 422);
     assert.equal(refused.body.detail, "Use an Instagram/Facebook/X profile URL.");
+    for (const url of [
+      "https://attacker.example/name",
+      "https://127.0.0.1/private",
+      "http://x.com/name",
+      "https://x.com/",
+      "https://user:pass@x.com/name",
+      "https://x.com:8443/name"
+    ]) {
+      assert.equal((await call("POST", "/v1/jobs", { body: { url } })).status, 422, url);
+    }
+    assert.equal((await call("POST", "/v1/jobs", { body: { url: ALICE, extra: true } })).status, 422);
+    assert.equal((await call("POST", "/v1/jobs", { body: { url: ALICE, again: "yes" } })).status, 422);
   }));
 
 test("POST validates the body: 400 for bad JSON, 413 for a huge one, 415 for another type, 422 for wrong values", () =>
@@ -222,7 +249,7 @@ test("POST validates the body: 400 for bad JSON, 413 for a huge one, 415 for ano
     const huge = await call("POST", "/v1/jobs", {
       body: JSON.stringify({ url: `https://x.com/${"a".repeat(9000)}` })
     }).catch(error => ({ status: error.code }));
-    assert.ok(huge.status === 413 || huge.status === "ECONNRESET" || huge.status === "EPIPE", `got ${huge.status}`);
+    assert.equal(huge.status, 413);
     const text = await call("POST", "/v1/jobs", {
       body: '{"url":"https://x.com/a"}',
       headers: { "content-type": "text/plain" }
@@ -230,6 +257,21 @@ test("POST validates the body: 400 for bad JSON, 413 for a huge one, 415 for ano
     assert.equal(text.status, 415);
     const none = await call("POST", "/v1/jobs", { body: '{"url":"https://x.com/a"}', json: false });
     assert.equal(none.status, 415);
+    const suffix = await call("POST", "/v1/jobs", {
+      body: { url: ALICE },
+      headers: { "content-type": "application/json-malicious" }
+    });
+    assert.equal(suffix.status, 415);
+    const structuredSuffix = await call("POST", "/v1/jobs", {
+      body: { url: ALICE },
+      headers: { "content-type": "application/json+foo" }
+    });
+    assert.equal(structuredSuffix.status, 415);
+    const charset = await call("POST", "/v1/jobs", {
+      body: { url: ALICE },
+      headers: { "content-type": "application/json; charset=utf-8" }
+    });
+    assert.equal(charset.status, 201);
   }));
 
 test("DELETE /v1/jobs/{id} answers 204 for a known job and 404 for an unknown one", () =>
@@ -252,11 +294,40 @@ test("a method the resource does not offer is 405 with Allow; OPTIONS lists the 
     assert.equal((await call("DELETE", "/v1/jobs")).status, 405);
     const health = await call("POST", "/v1/health", { body: {} });
     assert.equal(health.status, 405);
+    assert.equal(health.headers.allow, "OPTIONS, HEAD, GET");
+    const healthWithoutType = await call("POST", "/v1/health");
+    assert.equal(healthWithoutType.status, 405);
+    assert.equal(healthWithoutType.headers.allow, "OPTIONS, HEAD, GET");
+    const putWithQuery = await call("PUT", "/v1/jobs?limit=1");
+    assert.equal(putWithQuery.status, 405);
+    assert.equal(putWithQuery.headers.allow, "OPTIONS, HEAD, GET, POST");
     const options = await call("OPTIONS", "/v1/jobs");
     assert.equal(options.status, 204);
     assert.equal(options.headers.allow, "OPTIONS, HEAD, GET, POST");
     assert.equal(options.headers["access-control-allow-origin"], undefined, "no CORS");
   }));
+
+test("an IPv6 loopback bind accepts its bracketed Host header", async () => {
+  const { deps } = backend();
+  const server = await startApiServer({ port: 0, bind: "::1", token: TOKEN, ...deps });
+  const { port } = server.address();
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const req = request(
+        { hostname: "::1", port, path: "/v1/health", headers: { host: `[::1]:${port}` } },
+        response => {
+          response.resume();
+          response.on("end", () => resolve(response.statusCode));
+        }
+      );
+      req.on("error", reject);
+      req.end();
+    });
+    assert.equal(result, 200);
+  } finally {
+    await new Promise(resolve => server.close(() => resolve()));
+  }
+});
 
 test("watches: create (201 + Location), conflict, list, get, delete", () =>
   withServer({}, async ({ call, state }) => {
@@ -265,7 +336,9 @@ test("watches: create (201 + Location), conflict, list, get, delete", () =>
     assert.equal(created.headers.location, "/v1/watches/instagram/alice");
     assert.deepEqual(created.body.pages, [ALICE]);
     assert.equal((await call("POST", "/v1/watches", { body: { url: ALICE } })).status, 409);
-    assert.equal((await call("POST", "/v1/watches", { body: { url: "https://x.com/bad" } })).status, 422);
+    const rejected = await call("POST", "/v1/watches", { body: { url: "https://x.com/bad" } });
+    assert.equal(rejected.status, 500);
+    assert.equal(rejected.body.detail, "The request failed.", "backend error details stay private");
     assert.equal((await call("POST", "/v1/watches", { body: "nope" })).status, 400);
     assert.equal((await call("POST", "/v1/watches", { body: {} })).status, 422);
 
@@ -284,6 +357,34 @@ test("watches: create (201 + Location), conflict, list, get, delete", () =>
     assert.deepEqual(state.watched, []);
     assert.equal((await call("DELETE", "/v1/watches/instagram/alice")).status, 404);
     assert.equal((await call("PUT", "/v1/watches/instagram/alice", { body: {} })).status, 405);
+  }));
+
+test("encoded watch account identifiers round-trip through their self links", () =>
+  withServer({}, async ({ call }) => {
+    const created = await call("POST", "/v1/watches", {
+      body: { url: "https://www.facebook.com/%E4%BD%A0%E5%A5%BD/" }
+    });
+    assert.equal(created.status, 201);
+    const self = created.body.links.self;
+    assert.equal(created.headers.location, self);
+    assert.equal((await call("GET", self)).status, 200);
+    const list = await call("GET", "/v1/watches");
+    assert.equal(list.body.items[0].links.self, self);
+    assert.equal((await call("DELETE", self)).status, 204);
+  }));
+
+test("punctuated watch identifiers round-trip through their self links", () =>
+  withServer({}, async ({ call }) => {
+    const created = await call("POST", "/v1/watches", {
+      body: { url: "https://www.facebook.com/a!b/" }
+    });
+    assert.equal(created.status, 201);
+    const self = created.body.links.self;
+    assert.equal(created.headers.location, self);
+    const list = await call("GET", "/v1/watches");
+    assert.equal(list.body.items[0].links.self, self);
+    assert.equal((await call("GET", self)).status, 200);
+    assert.equal((await call("DELETE", self)).status, 204);
   }));
 
 test("an account with several pages is one watch, removed in one call", () =>
@@ -381,6 +482,68 @@ test("status and metrics still answer when the queue offers no details", () =>
     assert.doesNotMatch(metrics.text, /pms_jobs\{/);
   }));
 
+test("the API limits request bursts with a problem response", () =>
+  withServer({ rateLimit: 2 }, async ({ call }) => {
+    assert.equal((await call("GET", "/v1/health", { auth: false })).status, 200);
+    assert.equal((await call("GET", "/v1/health", { auth: false })).status, 200);
+    const limited = await call("GET", "/v1/health", { auth: false });
+    assert.equal(limited.status, 429);
+    assert.equal(limited.headers["retry-after"], "60");
+    assert.match(limited.headers["content-type"], /problem\+json/);
+    assert.equal(limited.body.title, "Too Many Requests");
+    assert.equal(limited.body.status, 429);
+  }));
+
+test("rejected and unauthenticated bursts cannot exhaust the authenticated request quota", () =>
+  withServer({ rateLimit: 2 }, async ({ call }) => {
+    for (let index = 0; index < 3; index++) {
+      const rejected = await call("GET", "/v1/jobs?unsupported=1", {
+        headers: { origin: "https://attacker.example" }
+      });
+      assert.equal(rejected.status, index < 2 ? 403 : 429);
+    }
+    for (let index = 0; index < 2; index++) {
+      const rejected = await call("GET", "/v1/jobs", { auth: false });
+      assert.equal(rejected.status, 401);
+    }
+    assert.equal((await call("GET", "/v1/jobs")).status, 200);
+    assert.equal((await call("GET", "/v1/jobs")).status, 200);
+    const limited = await call("GET", "/v1/jobs");
+    assert.equal(limited.status, 429);
+    assert.equal(limited.body.title, "Too Many Requests");
+  }));
+
+test("failed authentication limits also block a valid token after the failure threshold", () =>
+  withServer({ rateLimit: 2 }, async ({ call }) => {
+    for (let index = 0; index < 3; index++) {
+      const invalid = await call("GET", "/v1/jobs", { headers: { authorization: `Bearer wrong-${index}` } });
+      assert.equal(invalid.status, index < 2 ? 401 : 429);
+    }
+
+    const valid = await call("GET", "/v1/jobs");
+    assert.equal(valid.status, 429);
+    assert.equal(valid.body.title, "Too Many Requests");
+    assert.equal(valid.body.detail, "Too many failed authentication attempts. Try again later.");
+    assert.equal(valid.headers["retry-after"], "60");
+  }));
+
+test("unknown routes still enforce Host, Origin, authentication, and rate limits", () =>
+  withServer({ rateLimit: 1 }, async ({ call }) => {
+    const hostile = await call("GET", "/v1/unknown", {
+      headers: { origin: "https://attacker.example" }
+    });
+    assert.equal(hostile.status, 403);
+    const hostileLimited = await call("GET", "/v1/another-unknown", {
+      headers: { origin: "https://attacker.example" }
+    });
+    assert.equal(hostileLimited.status, 429);
+
+    const unknown = await call("GET", "/v1/unknown");
+    assert.equal(unknown.status, 404);
+    const unknownLimited = await call("GET", "/v1/another-unknown");
+    assert.equal(unknownLimited.status, 429);
+  }));
+
 test("beyond this computer the API needs a token, and only the hosts it was told about", async () => {
   const deps = { addUrls: async () => ({}), listJobs: async () => [] };
   await assert.rejects(startApiServer({ port: 0, bind: "0.0.0.0", ...deps }), /only with an API token/);
@@ -402,7 +565,7 @@ test("beyond this computer the API needs a token, and only the hosts it was told
         req.on("error", reject);
         req.end();
       });
-    assert.equal(await ask(`127.0.0.1:${port}`), 200);
+    assert.equal(await ask(`127.0.0.1:${port}`), 403, "a remote bind does not implicitly trust loopback Host values");
     assert.equal(await ask("api.internal:38542"), 200);
     assert.equal(await ask("evil.example"), 403);
   } finally {
