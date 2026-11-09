@@ -298,13 +298,40 @@ test("the page's cached media is requested with the scan's remaining limit", asy
     type: "DOWNLOAD_CACHED_MEDIA",
     platform: "TikTok",
     account: "someone",
-    limit: null
+    limit: 8
   });
 
   page.ns.scan.state.limit = 5;
   page.ns.scan.state.started = 1;
   await page.ns.videoSources.collectPageMedia("TikTok", "someone");
   assert.equal(page.sent.filter(message => message.type === "DOWNLOAD_CACHED_MEDIA").at(-1).limit, 4);
+});
+
+test("Facebook and TikTok cache requests start at most eight page-data files per pass", async () => {
+  for (const [platform, url, account] of [
+    ["Facebook", "https://www.facebook.com/someone/", "someone"],
+    ["TikTok", "https://www.tiktok.com/@someone", "someone"]
+  ]) {
+    const page = menuPage({ url, onSend: settled({ DOWNLOAD_CACHED_MEDIA: () => ({ ok: true }) }) });
+    if (platform === "Facebook") {
+      page.document.querySelectorAll = selector =>
+        selector === "a[href]" ? [{ href: "https://www.facebook.com/reel/123" }] : [];
+    }
+    await page.ns.videoSources.collectPageMedia(platform, account);
+    const request = page.sent.find(message => message.type === "DOWNLOAD_CACHED_MEDIA");
+    assert.ok(request, platform);
+    assert.equal(request.limit, 8, platform);
+  }
+});
+
+test("other platforms keep the unlimited page-data request when the scan has no limit", async () => {
+  const page = menuPage({
+    url: "https://x.com/someone/",
+    onSend: settled({ DOWNLOAD_CACHED_MEDIA: () => ({ ok: true }) })
+  });
+  await page.ns.videoSources.collectPageMedia("Twitter", "someone");
+  const request = page.sent.find(message => message.type === "DOWNLOAD_CACHED_MEDIA");
+  assert.equal(request.limit, null);
 });
 
 test("nothing is asked for once the limit is used up, or when a post page names no id", async () => {

@@ -14,6 +14,7 @@ globalThis.PageMediaSaver ??= {};
   const MENU_BUTTONS_TRIED = 2;
   const MAX_POSTS_OPENED_PER_PASS = 3;
   const POST_DATA_ATTEMPTS = 5;
+  const MAX_PAGE_DATA_FILES_PER_PASS = 8;
 
   // A whole number in [0, max) from the platform's random source.
   function randomBelow(max) {
@@ -337,13 +338,16 @@ globalThis.PageMediaSaver ??= {};
     const budget = limitRemaining();
     const ids = pageVideoIds(platform);
     const asked = budget > 0 && !(ids && !ids.length);
+    const cacheBudget = ["Facebook", "TikTok"].includes(platform)
+      ? Math.min(budget, MAX_PAGE_DATA_FILES_PER_PASS)
+      : budget;
     const cached = asked
       ? await requestCachedMedia({
           type: "DOWNLOAD_CACHED_MEDIA",
           platform,
           account,
           ids,
-          limit: Number.isFinite(budget) ? budget : null
+          limit: Number.isFinite(cacheBudget) ? cacheBudget : null
         })
       : null;
     if (cached?.error) {
