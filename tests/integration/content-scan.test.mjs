@@ -422,3 +422,21 @@ test("an empty page with a password box says the site wants a sign-in", async ()
   assert.equal(state.status, "incomplete");
   assert.match(state.message, /asking for a sign-in/);
 });
+
+test("an empty page says what the page-world hook could read, or that it never reported in", async () => {
+  const hooked = scanPage({
+    tweak: sandbox => {
+      Object.defineProperty(sandbox.document, "documentElement", {
+        get: () => ({
+          scrollHeight: 800,
+          getAttribute: name => (name === "data-pms-hook" ? '{"documents":4,"found":0}' : null)
+        })
+      });
+    }
+  });
+  const withHook = await start(hooked);
+  assert.match(withHook.message, /data hook read 4 response\(s\) and found 0 photo\(s\) or video\(s\)/);
+
+  const silent = await start(scanPage());
+  assert.match(silent.message, /data hook did not report in/);
+});

@@ -386,3 +386,28 @@ test("bridge: at most 100 entries are forwarded, and a rejected send is swallowe
   assert.equal(sent[0].media.length, 100);
   assert.ok(sent[0].media.every(entry => entry.kind === "photo"));
 });
+
+test("hook: its counters are left on the root element for the scan to read", async () => {
+  const attributes = {};
+  const root = {
+    setAttribute: (name, value) => {
+      attributes[name] = value;
+    }
+  };
+  const fetchImpl = async () => textResponse(JSON.stringify({ data: { node: igPost("ABCDEFGHIJK") } }));
+  const { page } = loadHook({
+    fetchImpl,
+    document: { documentElement: root, querySelectorAll: () => [], readyState: "complete" }
+  });
+  assert.deepEqual(JSON.parse(attributes["data-pms-hook"]), { documents: 0, found: 0 }, "it reports in when it starts");
+  await page.fetch("https://www.instagram.com/api/graphql");
+  await tick();
+  assert.deepEqual(JSON.parse(attributes["data-pms-hook"]), { documents: 1, found: 1 });
+});
+
+test("hook: a page without a root element yet does not break it", () => {
+  const { page } = loadHook({
+    document: { documentElement: null, querySelectorAll: () => [], readyState: "complete" }
+  });
+  assert.equal(page.__pageMediaSaverMediaHook, true);
+});

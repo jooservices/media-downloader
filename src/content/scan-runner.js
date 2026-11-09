@@ -262,6 +262,16 @@ globalThis.PageMediaSaver ??= {};
   const unavailableNote = () =>
     autoState.unavailable ? ` (${autoState.unavailable} of them the site no longer serves)` : "";
 
+  // What the page-world hook reports about the data it could read, for the "nothing found" message.
+  function hookDiagnostics() {
+    try {
+      const stats = JSON.parse(document.documentElement.getAttribute("data-pms-hook"));
+      return `The page's data hook read ${stats.documents} response(s) and found ${stats.found} photo(s) or video(s) in them.`;
+    } catch {
+      return "The page's data hook did not report in, so the page's data could not be read.";
+    }
+  }
+
   // The scroll loop ended because four checks found no older rows.
   async function finishGrid() {
     await settleDownloads();
@@ -274,7 +284,7 @@ globalThis.PageMediaSaver ??= {};
     if (nothingFound) {
       message = document.querySelector('input[type="password"]')
         ? "The site is asking for a sign-in, so nothing could be read. Sign in to it in this browser; the queue goes on by itself."
-        : "No photos or videos were found on this page. Sign in to the site in this browser, or the site may have changed how it sends its data.";
+        : `No photos or videos were found on this page. Sign in to the site in this browser, or the site may have changed how it sends its data. ${hookDiagnostics()}`;
     } else if (repairShort) {
       message = `Repair incomplete: matched ${repairFound.length} of ${repairTargets.length} source images. Original files were left in Downloads.`;
     } else if (hasOutstanding()) {

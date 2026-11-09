@@ -18,6 +18,18 @@
   const CHANNEL = "page-media-saver:media";
   const announced = new Set();
 
+  // The scan runs in another world but shares the page's DOM, so the hook leaves its counters on the root
+  // element. When a scan finds nothing, they tell whether the hook ran and what it could read.
+  const stats = { documents: 0, found: 0 };
+  function publishStats() {
+    try {
+      global.document?.documentElement?.setAttribute("data-pms-hook", JSON.stringify(stats));
+    } catch {
+      /* the page has no root element yet; the next response sets it */
+    }
+  }
+  publishStats();
+
   function parseJsonLoose(text) {
     const body = String(text).replace(/^for \(;;\);/, "");
     try {
@@ -41,6 +53,7 @@
 
   function publishDocuments(documents) {
     const fresh = [];
+    stats.documents += documents.length;
     for (const document of documents) {
       let found = [];
       try {
@@ -48,6 +61,7 @@
       } catch {
         /* an unexpected shape must not break the page */
       }
+      stats.found += found.length;
       for (const entry of found) {
         const key = `${entry.platform}:${entry.kind}:${entry.id}:${entry.index}`;
         if (announced.has(key)) {
@@ -57,6 +71,7 @@
         fresh.push(entry);
       }
     }
+    publishStats();
     if (fresh.length) {
       global.postMessage({ channel: CHANNEL, media: fresh }, global.location.origin);
     }
