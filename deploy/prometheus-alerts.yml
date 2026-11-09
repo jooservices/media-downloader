@@ -1,0 +1,38 @@
+groups:
+  - name: media-downloader
+    rules:
+      - alert: MediaDownloaderTargetDown
+        expr: up{job="media-downloader"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Media Downloader API is unreachable
+          description: Prometheus has failed to scrape the Media Downloader API for at least two minutes.
+
+      - alert: MediaDownloaderExtensionDisconnected
+        expr: pms_extension_seen_timestamp_seconds == 0 or time() - pms_extension_seen_timestamp_seconds > 900
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Browser extension has not reported recently
+          description: No extension heartbeat has arrived for at least 20 minutes. Check the browser and extension connection.
+
+      - alert: MediaDownloaderQueueBacklog
+        expr: pms_jobs{status="queued"} > 25
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Media Downloader queue is backed up
+          description: The queued job count has stayed above 25 for at least 15 minutes.
+
+      - alert: MediaDownloaderNoScrapeData
+        expr: absent(pms_uptime_seconds)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Media Downloader metrics are missing
+          description: Prometheus has no Media Downloader uptime metric. Check the target, token, and scrape configuration.
