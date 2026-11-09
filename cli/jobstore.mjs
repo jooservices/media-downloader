@@ -207,12 +207,29 @@ export function createJobStore({ file, legacyDir = null }) {
       return sqliteCall(() => db.prepare("DELETE FROM jobs WHERE id = ?").run(String(jobId).toLowerCase()).changes > 0);
     },
     // Newest first.
-    list({ status = null, limit = null, offset = 0 } = {}) {
-      const where = status ? "WHERE status = ?" : "";
-      const paging = limit ? "LIMIT ? OFFSET ?" : "";
-      const params = [...(status ? [status] : []), ...(limit ? [limit, offset] : [])];
+    list({ status = null, limit = null, offset = 0, after = null } = {}) {
+      const clauses = [];
+      const params = [];
+      if (status) {
+        clauses.push("status = ?");
+        params.push(status);
+      }
+      if (after) {
+        clauses.push("id > ?");
+        params.push(after);
+      }
+      const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+      const ordering = after ? "id" : "created_at DESC, id";
+      let paging = "";
+      if (limit) {
+        paging = after ? "LIMIT ?" : "LIMIT ? OFFSET ?";
+        params.push(limit);
+        if (!after) {
+          params.push(offset);
+        }
+      }
       return sqliteCall(() =>
-        rowsOf(db, `SELECT data FROM jobs ${where} ORDER BY created_at DESC, id ${paging}`, ...params)
+        rowsOf(db, `SELECT data FROM jobs ${where} ORDER BY ${ordering} ${paging}`, ...params)
       ).map(parse);
     },
     workWindow(now = new Date().toISOString()) {
@@ -232,7 +249,18 @@ export function createJobStore({ file, legacyDir = null }) {
           JOB_PAGE_SIZE
         )
       );
-      return [...running, ...queued].map(parse);
+      const opened = sqliteCall(() =>
+        rowsOf(
+          db,
+          `SELECT data FROM (
+            SELECT data, ROW_NUMBER() OVER (PARTITION BY platform ORDER BY created_at, id) AS rank
+            FROM jobs WHERE status = 'queued' AND json_extract(data, '$.openedAt') IS NOT NULL
+          ) WHERE rank <= ?`,
+          JOB_PAGE_SIZE
+        )
+      );
+      const byId = new Map([...running, ...opened, ...queued].map(row => [JSON.parse(row.data).jobId, row]));
+      return [...byId.values()].map(parse);
     },
     prune(cutoff, terminalStates) {
       const terminal = [...terminalStates];
@@ -269,15 +297,47 @@ export function createJobStore({ file, legacyDir = null }) {
         rowsOf(
           db,
           `SELECT data FROM jobs WHERE status IN ('queued', 'running') AND platform = ?
-            AND (json_extract(data, '$.account') = ? COLLATE NOCASE
-              OR (json_extract(data, '$.mediaPage') = 1 AND url = ?))
+            AND ((? IS NOT NULL AND url = ? COLLATE NOCASE)
+              OR (? IS NULL AND json_extract(data, '$.account') = ? COLLATE NOCASE))
           ORDER BY created_at, id LIMIT ?`,
           platform,
-          account,
+          pageUrl ?? null,
           pageUrl,
+          pageUrl ?? null,
+          account,
           limit
         )
       ).map(parse);
+    },
+    watchHistory(urls, perUrl = 4) {
+      const history = [];
+      for (const url of urls) {
+        const active = sqliteCall(() =>
+          rowsOf(
+            db,
+            "SELECT data FROM jobs WHERE url = ? COLLATE NOCASE AND status IN ('queued', 'running') LIMIT 1",
+            url
+          )
+        );
+        const recentlyUpdated = sqliteCall(() =>
+          rowsOf(
+            db,
+            "SELECT data FROM jobs WHERE url = ? COLLATE NOCASE ORDER BY updated_at DESC, id DESC LIMIT 1",
+            url
+          )
+        );
+        const recent = sqliteCall(() =>
+          rowsOf(
+            db,
+            "SELECT data FROM jobs WHERE url = ? COLLATE NOCASE ORDER BY created_at DESC, id DESC LIMIT ?",
+            url,
+            perUrl
+          )
+        );
+        const byId = new Map([...active, ...recentlyUpdated, ...recent].map(row => [JSON.parse(row.data).jobId, row]));
+        history.push(...[...byId.values()].map(parse));
+      }
+      return history;
     },
     runningJobs(limit = JOB_PAGE_SIZE) {
       return sqliteCall(() =>

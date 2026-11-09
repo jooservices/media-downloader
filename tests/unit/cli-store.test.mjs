@@ -376,7 +376,7 @@ test("eligible queued jobs are selected after any number of delayed or awaiting-
       status: "queued",
       platform: "Instagram",
       createdAt: new Date(Date.parse(now) + n).toISOString(),
-      ...(n % 2 ? { notBefore: "2026-06-02T00:00:00.000Z" } : { openedAt: now })
+      notBefore: "2026-06-02T00:00:00.000Z"
     });
   }
   jobs.write({
@@ -388,6 +388,17 @@ test("eligible queued jobs are selected after any number of delayed or awaiting-
   assert.deepEqual(
     jobs.workWindow(now).map(job => job.jobId),
     [id(502)]
+  );
+});
+
+test("the work window retains opened queued jobs for worker accounting", async () => {
+  await reset();
+  const jobs = store.jobs();
+  jobs.write({ jobId: id(1), status: "queued", platform: "Instagram", openedAt: "2026-06-01T00:00:00Z" });
+  jobs.write({ jobId: id(2), status: "queued", platform: "Instagram", createdAt: "2026-06-01T00:00:01Z" });
+  assert.deepEqual(
+    jobs.workWindow("2026-06-01T00:00:00Z").map(job => job.jobId),
+    [id(1), id(2)]
   );
 });
 
@@ -409,7 +420,47 @@ test("pending notifications, bridge matches, and running jobs have bounded store
   });
   assert.equal(jobs.pendingNotifications(120).length, 59, "announced jobs fall out of the bounded pending set");
   assert.equal(jobs.matchingJobs("Instagram", "alice").length, 60);
+  for (let n = 121; n <= 621; n++) {
+    jobs.write({
+      jobId: id(n),
+      status: "queued",
+      platform: "Instagram",
+      account: "alice",
+      url: `https://www.instagram.com/other-${n}/`,
+      createdAt: new Date(Date.UTC(2026, 5, n)).toISOString()
+    });
+  }
+  jobs.write({
+    jobId: id(622),
+    status: "queued",
+    platform: "Instagram",
+    account: "alice",
+    url: "https://www.instagram.com/alice/",
+    createdAt: "2026-12-01T00:00:00.000Z"
+  });
+  assert.deepEqual(
+    jobs.matchingJobs("Instagram", "alice", "https://www.instagram.com/alice/").map(job => job.jobId),
+    [id(622)]
+  );
+  assert.equal(jobs.watchHistory(["https://www.instagram.com/alice/"]).length, 1);
   assert.equal(jobs.runningJobs().length, 0);
+});
+
+test("watch history stays capped per URL as the job ledger grows", async () => {
+  await reset();
+  const jobs = store.jobs();
+  for (let n = 1; n <= 620; n++) {
+    jobs.write({
+      jobId: id(n),
+      status: "complete",
+      url: "https://www.instagram.com/alice/",
+      createdAt: new Date(Date.UTC(2025, 0, n)).toISOString(),
+      updatedAt: new Date(Date.UTC(2025, 0, n)).toISOString()
+    });
+  }
+  const latest = jobs.watchHistory(["https://www.instagram.com/alice/"]);
+  assert.equal(latest.length, 4);
+  assert.equal(latest[0].jobId, id(620));
 });
 
 test("a corrupt database is backed up and fails with an actionable startup error", async () => {

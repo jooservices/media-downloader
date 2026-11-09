@@ -92,6 +92,16 @@ test("the oldest waiting job for the page starts and is claimed so a second tab 
   assert.equal(third.type, "JOB_CONNECTED", "both jobs are taken");
 });
 
+test("PAGE_READY finds a later tagged page after hundreds of older jobs for other URLs", async () => {
+  for (let n = 1; n <= 501; n++) {
+    await putJob(n, { url: `https://www.instagram.com/other-${n}/` });
+  }
+  await putJob(502, { openedAt: "2026-01-01T00:00:00.000Z" });
+  const result = await handleBridgeMessage(ready({ cliJobId: id(502) }), new Set());
+  assert.equal(result.type, "START_JOB");
+  assert.equal(result.job.jobId, id(502));
+});
+
 test("a page for another site, account or address does not match the job", async () => {
   await putJob(1);
   for (const other of [

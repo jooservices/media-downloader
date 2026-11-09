@@ -90,6 +90,7 @@ export function jobs() {
 export const listJobs = options => Promise.resolve().then(() => jobs().list(options));
 export const matchingJobs = (platform, account, pageUrl) =>
   Promise.resolve().then(() => jobs().matchingJobs(platform, account, pageUrl));
+export const watchHistory = urls => Promise.resolve().then(() => jobs().watchHistory(urls));
 export const hasJobUrl = url => Promise.resolve().then(() => jobs().hasUrl(url));
 
 export const readJob = jobId => Promise.resolve().then(() => (isJobId(jobId) ? jobs().read(jobId) : null));
