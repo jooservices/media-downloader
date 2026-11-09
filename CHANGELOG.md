@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file. Format follows 
 
 ### Added
 
+- A RESTful loopback API (`/v1/jobs`, `/v1/watches/{platform}/{account}`) with a bearer token, JSON-only bodies, RFC 9457 problem documents, correct status codes (201 with `Location`, 204, 409, 422, 405 with `Allow`), paging and filtering
+- An MCP server (`mediasaver mcp`, stdio) so an AI assistant can request downloads, read job state and manage watched accounts. It only calls the REST API
+- `serve` rescans the watched accounts by itself; `watch` is the same queue reading the watch list as its inbox
+- `browser setup | login | status`: a browser profile owned by the queue. Jobs open as their own windows of one long-lived browser through its debugging port, so the queue can run without anyone's desktop session. Sign in to each site once with `browser login`
+- Old finished jobs (30 days) and logs (14 days) are removed while the queue runs; the newest job of each link is kept
+- An end-to-end suite (`npm run test:e2e`) drives the real queue, API, browser and extension against a fake X site; the coverage floor is now 90%
 - One profile link is the whole account. An Instagram profile opens its current stories and highlight reels as well as the grid. A Facebook profile is also scanned on its Photos, Reels and Videos tabs
 - `watch` rescans the accounts in `%LOCALAPPDATA%\PageMediaSaver\watch.txt` every 6 hours (`watch add <url>` remembers them). Files already saved are skipped
 - After a pass, the CLI reports the account folder and how many files were new versus already saved
@@ -13,7 +19,7 @@ All notable changes to this project are documented in this file. Format follows 
 - The CLI runs on Windows, macOS and Linux with Edge, Chrome or Firefox. `install`, `install chrome` or `install firefox` remembers which profile has the extension loaded
 - A site is one record in `lib/sites.js` (hosts, URL shapes, sign-in, download labels). The scanners look that record up instead of branching on the site name
 - TikTok profiles (`/@name`) and single video or photo posts can be saved while you are signed in. The largest file the page lists is kept; cover images are not
-- `service install` starts the queue at sign-in. While it runs, `POST http://127.0.0.1:38542/downloads` with `{"url":"https://..."}` queues that account. The API listens on loopback only
+- `service install` starts the queue at sign-in
 - Instagram stories: `/stories/<username>/` and `/stories/<username>/<id>/` can be scanned on their own. Only the largest photo or video the story data lists is saved
 - A dashboard (the extension's options page, opened on first install and from the popup): paste profile links, see each profile's progress, pause, stop, retry or remove, and change workers per site, the pause between profiles, retries and files per profile. English and Vietnamese
 - The extension runs its own download queue, so no Node.js or command line is needed for normal use

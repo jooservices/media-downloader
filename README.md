@@ -101,6 +101,18 @@ Each job is retried a few times when Edge does not answer or the page is closed 
 
 `service install` registers that queue to start when you sign in (the Windows Startup folder, a systemd user service, or a macOS launch agent) and starts it now. Run it from the project folder, or pass the full path to `mediasaver.mjs`. `service remove` unregisters it. It is not a Session 0 Windows service: the download has to open the signed-in browser on the desktop.
 
+## Unattended runs: a browser owned by the queue
+
+Normally the queue opens jobs in the browser you use every day, so the computer must be awake and signed in. For a machine that runs around the clock, give the queue a browser of its own:
+
+```
+node cli/mediasaver.mjs browser setup    # private profile + a copy of the extension with a fixed id
+node cli/mediasaver.mjs browser login    # a window opens on each site's sign-in page: sign in once, then close it
+node cli/mediasaver.mjs service install  # the queue starts at sign-in and keeps its own headless browser
+```
+
+The queue starts that browser when a job needs it and opens every job in a window of its own (a tab behind another one is slowed down by the browser). It listens for the browser on 127.0.0.1 only. `browser status` says whether it is running; `browser setup --headed` keeps a visible window instead of a headless one. It uses Chrome or Edge, on Windows, macOS and Linux, on Intel, AMD and Apple silicon.
+
 ## REST API
 
 While `serve` runs it offers a REST API on `http://127.0.0.1:38542/v1`. It listens on loopback only, rejects any other Host header, sends no CORS headers, and every call except `GET /v1/health` needs the token that `serve` keeps in `api-token` (`Authorization: Bearer <token>`). Bodies are JSON (`Content-Type: application/json`); errors are RFC 9457 `application/problem+json` documents.
@@ -188,7 +200,7 @@ src/
   content/     page scripts: page info, photo collectors, video sources, scan runner
   page/        runs in the page world: response parsers per platform, hook, bridge to the extension
   popup/       popup UI
-cli/        mediasaver.mjs (entry) · args · jobs · bridge-server · edge · repair · status · store
+cli/        mediasaver.mjs (entry) · serve · api (REST) · mcp · watch/watchlist · browser/managed (queue-owned browser) · jobs · bridge-server · edge · mover · prune · repair · status · store
 tests/      node --test; fixtures/ holds real captured site responses
 ```
 
