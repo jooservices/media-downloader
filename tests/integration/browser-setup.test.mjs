@@ -121,8 +121,9 @@ test("login opens the managed profile with a window on every sign-in page; it ne
   assert.ok(!launched[0].args.includes("--headless=new"), "a window is needed to sign in");
   assert.ok(launched[0].args.includes("--load-extension=" + path.join(home, "managed-d", "extension")));
   assert.deepEqual(launched[0].args.slice(-pages.length), pages);
-  assert.ok(pages.includes("https://www.instagram.com/accounts/login/"));
-  assert.ok(pages.every(page => page.startsWith("https://")));
+  const instagramLogin = pages.map(page => new URL(page)).find(page => page.hostname === "www.instagram.com");
+  assert.equal(instagramLogin?.pathname, "/accounts/login/");
+  assert.ok(pages.every(page => new URL(page).protocol === "https:"));
 });
 
 test("status says whether a managed browser is configured and whether it answers", async () => {
