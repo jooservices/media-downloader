@@ -265,6 +265,47 @@ test("older completed jobs do not reset escalation and cooldown state survives s
   assert.equal(escalated.platformStatus().instagram.backoffUntil, "2026-01-01T00:30:00.000Z");
 });
 
+test("a late signal for an opening already counted does not escalate after supervisor recreation", async () => {
+  let saved = null;
+  const env = setup({}, [
+    queued("1", "Instagram", "a", {
+      status: "error",
+      attempts: 1,
+      openingId: "opening-1",
+      message: "HTTP 429 Too Many Requests"
+    })
+  ]);
+  const makeSupervisor = () =>
+    createSupervisor({
+      now: () => Date.parse("2026-01-01T00:00:00Z"),
+      random: () => 0,
+      log: () => {},
+      loadConfig: async () => parseConfig({ delaySeconds: { min: 0, max: 0 } }),
+      listJobs: async () => [...env.store.values()],
+      updateJob: async (id, mutate) => mutate(env.store.get(id)),
+      loadBackoffState: async () => saved,
+      saveBackoffState: async state => {
+        saved = structuredClone(state);
+      },
+      openJob: async () => {}
+    });
+
+  const first = makeSupervisor();
+  await first.tick();
+  assert.equal(first.platformStatus().instagram.backoffLevel, 1);
+  assert.equal(saved.countedOpenings["1"], "opening-1");
+
+  Object.assign(env.job("1"), {
+    status: "incomplete",
+    rateLimitOutcomeId: "opening-1:rate-limit:429",
+    message: "The platform returned HTTP 429."
+  });
+  const restarted = makeSupervisor();
+  await restarted.tick();
+  assert.equal(restarted.platformStatus().instagram.backoffLevel, 1);
+  assert.equal(restarted.platformStatus().instagram.backoffUntil, "2026-01-01T00:15:00.000Z");
+});
+
 test("upgrade ignores an old throttling outcome when a newer clean outcome exists", async () => {
   const env = setup({}, [
     queued("1", "Instagram", "old-failure", {

@@ -142,6 +142,30 @@ test("a late rate-limit signal after an incomplete scan was requeued pauses its 
   assert.equal(env.storage.rateLimitBackoffs.platforms.Twitter.level, 1);
 });
 
+test("a late signal does not count the same extension opening twice after worker restart", async () => {
+  const env = start({
+    tabResponder: () => ({ ok: true, state: { running: true } }),
+    storage: { queueSettings: { workers: { x: 2 }, delaySeconds: { min: 0, max: 0 }, maxAttempts: 3 } }
+  });
+  await ask(env, { type: "QUEUE_ADD", urls: ["https://x.com/alice"] });
+  await env.inContext("queueEngine.tick()");
+  const job = Object.values(env.storage.queueJobs)[0];
+  Object.assign(job, { status: "error", message: "HTTP 429 Too Many Requests" });
+  await env.inContext("queueEngine.tick()");
+  assert.equal(env.storage.rateLimitBackoffs.platforms.Twitter.level, 1);
+  assert.equal((await only(env)).status, "queued");
+
+  await ask(env, { type: "PLATFORM_RATE_LIMIT", status: 429 }, { tab: { id: 100, url: PAGE.pageUrl } });
+  const restarted = start({ storage: env.storage });
+  await restarted.inContext("queueEngine.tick()");
+
+  assert.equal(restarted.storage.rateLimitBackoffs.platforms.Twitter.level, 1);
+  assert.equal(
+    restarted.storage.rateLimitBackoffs.platforms.Twitter.until,
+    env.storage.rateLimitBackoffs.platforms.Twitter.until
+  );
+});
+
 test("a rate-limit signal arriving before an extension tab is associated reaches back-off state", async () => {
   const env = start({
     tabResponder: () => ({ ok: true, state: { running: true } }),

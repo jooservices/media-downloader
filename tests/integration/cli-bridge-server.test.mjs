@@ -226,6 +226,45 @@ test("a late rate-limit signal after an incomplete CLI attempt was requeued paus
   assert.equal(supervisor.platformStatus().instagram.backoffLevel, 1);
 });
 
+test("a late signal does not count the same CLI opening twice after supervisor restart", async () => {
+  await putJob(1, {
+    status: "error",
+    tabId: 7,
+    attempts: 1,
+    openingId: "opening-1",
+    openedAt: "2026-01-01T00:00:00.000Z",
+    message: "HTTP 429 Too Many Requests"
+  });
+  let saved = null;
+  const makeSupervisor = () =>
+    createSupervisor({
+      now: () => Date.parse("2026-01-01T00:01:00Z"),
+      random: () => 0,
+      log: () => {},
+      loadConfig: async () => parseConfig({ workers: { instagram: 2 }, delaySeconds: { min: 0, max: 0 } }),
+      loadBackoffState: async () => saved,
+      saveBackoffState: async state => {
+        saved = structuredClone(state);
+      },
+      listJobs: store.listJobs,
+      updateJob: store.updateJob,
+      openJob: async () => {}
+    });
+
+  const first = makeSupervisor();
+  await first.tick();
+  assert.equal(first.platformStatus().instagram.backoffLevel, 1);
+  assert.equal((await read(1)).status, "queued");
+
+  await handleBridgeMessage({ type: "JOB_RATE_LIMIT", jobId: id(1), status: 429 }, new Set());
+  assert.equal((await read(1)).rateLimitOutcomeId, "opening-1:rate-limit:429");
+
+  const restarted = makeSupervisor();
+  await restarted.tick();
+  assert.equal(restarted.platformStatus().instagram.backoffLevel, 1);
+  assert.equal(restarted.platformStatus().instagram.backoffUntil, "2026-01-01T00:16:00.000Z");
+});
+
 test("a buffered rate limit still reaches supervisor status when CLI scan startup fails", async () => {
   await putJob(1, { attempts: 1, openedAt: "2026-01-01T00:00:00.000Z" });
   const claimed = new Set();
