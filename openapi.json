@@ -928,8 +928,18 @@
             "type": ["string", "null"]
           },
           "notify": {
-            "type": ["object", "null"]
+            "oneOf": [{ "$ref": "#/components/schemas/NotificationConfig" }, { "type": "null" }]
           }
+        },
+        "additionalProperties": false
+      },
+      "NotificationConfig": {
+        "type": "object",
+        "required": ["enabled", "format", "events"],
+        "properties": {
+          "enabled": { "type": "boolean", "const": true },
+          "format": { "type": "string", "enum": ["json", "text"] },
+          "events": { "type": "array", "items": { "type": "string" } }
         },
         "additionalProperties": false
       },

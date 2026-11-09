@@ -1,5 +1,6 @@
 ﻿import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -15,9 +16,11 @@ const inputJob = { jobId: ID, status: "queued", platform: "Instagram", account: 
 function dependencies() {
   const jobs = [inputJob];
   const watched = [];
+  const webhookUrl = `https://hooks.example/${randomUUID()}`;
   return {
     jobs,
     watched,
+    webhookUrl,
     addUrls: async (urls, options) => {
       if (urls[0].includes("known") && !options.force) {
         return { created: [], skipped: [{ raw: urls[0], reason: "already queued or done" }] };
@@ -54,7 +57,7 @@ function dependencies() {
       maxAttempts: 3,
       limit: null,
       downloadDir: null,
-      notify: null
+      notify: { url: webhookUrl, format: "json", events: ["problem"] }
     })
   };
 }
@@ -129,7 +132,7 @@ async function withAdapters(run) {
     }
   };
   try {
-    await run({ direct, tool, watched: deps.watched });
+    await run({ direct, tool, watched: deps.watched, webhookUrl: deps.webhookUrl });
   } finally {
     await new Promise(resolve => server.close(resolve));
     await rm(temp, { recursive: true, force: true });
@@ -543,10 +546,14 @@ test("every REST operation is reachable through an MCP tool", () => {
   );
   const idSchema = TOOLS.find(tool => tool.name === "get_job").inputSchema.properties.id;
   assert.match(ID.toUpperCase(), new RegExp(idSchema.pattern));
+  for (const name of ["get_watched", "unwatch_account"]) {
+    const platformSchema = TOOLS.find(tool => tool.name === name).inputSchema.properties.platform;
+    assert.match("Instagram", new RegExp(platformSchema.pattern), `${name} accepts REST case normalization`);
+  }
 });
 
 test("the same REST and MCP scenarios produce equal data and mapped errors", () =>
-  withAdapters(async ({ direct, tool, watched }) => {
+  withAdapters(async ({ direct, tool, watched, webhookUrl }) => {
     const cases = [
       [["GET", "/v1/config"], ["get_config"]],
       [["GET", "/v1/status"], ["get_status"]],
@@ -567,16 +574,16 @@ test("the same REST and MCP scenarios produce equal data and mapped errors", () 
       ],
       [["GET", "/v1/watches"], ["list_watched"]],
       [
-        ["GET", "/v1/watches/instagram/alice"],
-        ["get_watched", { platform: "instagram", account: "alice" }]
+        ["GET", "/v1/watches/Instagram/alice"],
+        ["get_watched", { platform: "Instagram", account: "alice" }]
       ],
       [
         ["DELETE", `/v1/jobs/${ID.toUpperCase()}`],
         ["cancel_job", { id: ID.toUpperCase() }]
       ],
       [
-        ["DELETE", "/v1/watches/instagram/alice"],
-        ["unwatch_account", { platform: "instagram", account: "alice" }]
+        ["DELETE", "/v1/watches/Instagram/alice"],
+        ["unwatch_account", { platform: "Instagram", account: "alice" }]
       ]
     ];
     for (const [[method, endpoint, body], [name, args]] of cases) {
@@ -592,8 +599,22 @@ test("the same REST and MCP scenarios produce equal data and mapped errors", () 
       if (rest.status === 204) {
         continue;
       }
-      assert.deepEqual(agent.body, rest.body, `${name} response body`);
+      const actualBody =
+        name === "get_metrics"
+          ? agent.body.replace(/pms_uptime_seconds \d+/, "pms_uptime_seconds <uptime>")
+          : agent.body;
+      const expectedBody =
+        name === "get_metrics" ? rest.body.replace(/pms_uptime_seconds \d+/, "pms_uptime_seconds <uptime>") : rest.body;
+      assert.deepEqual(actualBody, expectedBody, `${name} response body`);
     }
+    const restConfig = await direct("GET", "/v1/config");
+    const mcpConfig = await tool("get_config");
+    assert.equal(restConfig.body.notify.enabled, true);
+    assert.equal(restConfig.body.notify.format, "json");
+    assert.deepEqual(restConfig.body.notify.events, ["problem"]);
+    assert.equal(Object.hasOwn(restConfig.body.notify, "url"), false);
+    assert.equal(JSON.stringify(restConfig.body).includes(webhookUrl), false);
+    assert.equal(JSON.stringify(mcpConfig.body).includes(webhookUrl), false);
     const restError = await direct("GET", "/v1/jobs/55555555-5555-4555-8555-555555555555");
     const mcpError = await tool("get_job", { id: "55555555-5555-4555-8555-555555555555" });
     assert.equal(mcpError.status, restError.status);
@@ -627,6 +648,16 @@ test("the same REST and MCP scenarios produce equal data and mapped errors", () 
       assert.equal(agent.status, rest.status, `invalid MCP arguments ${JSON.stringify(args)}`);
       assert.equal(agent.body.title, rest.body.title, `invalid MCP arguments ${JSON.stringify(args)} title`);
       assert.match(agent.body.detail, /.+/, `invalid MCP arguments ${JSON.stringify(args)} detail`);
+    }
+    for (const [query, args] of [
+      ["?limit=0", { limit: 0 }],
+      ["?status=bad", { status: "bad" }]
+    ]) {
+      const rest = await direct("GET", `/v1/jobs${query}`);
+      const agent = await tool("list_jobs", args);
+      assert.equal(rest.status, 400);
+      assert.equal(agent.status, rest.status, `invalid list filters ${query} status`);
+      assert.equal(agent.body.title, rest.body.title, `invalid list filters ${query} title`);
     }
     const hugeUrl = `https://x.com/${"a".repeat(9000)}`;
     const oversizedRest = await direct("POST", "/v1/jobs", { url: hugeUrl });

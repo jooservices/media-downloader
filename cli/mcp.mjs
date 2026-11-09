@@ -159,7 +159,8 @@ export const TOOLS = [
       properties: {
         platform: {
           type: "string",
-          enum: ["instagram", "facebook", "twitter", "tiktok"],
+          pattern:
+            "^[iI][nN][sS][tT][aA][gG][rR][aA][mM]$|^[fF][aA][cC][eE][bB][oO][oO][kK]$|^[tT][wW][iI][tT][tT][eE][rR]$|^[tT][iI][kK][tT][oO][kK]$",
           description: "Platform id shown by list_watched."
         },
         account: { type: "string", minLength: 1, description: "Account name shown by list_watched." }
@@ -182,7 +183,8 @@ export const TOOLS = [
       properties: {
         platform: {
           type: "string",
-          enum: ["instagram", "facebook", "twitter", "tiktok"],
+          pattern:
+            "^[iI][nN][sS][tT][aA][gG][rR][aA][mM]$|^[fF][aA][cC][eE][bB][oO][oO][kK]$|^[tT][wW][iI][tT][tT][eE][rR]$|^[tT][iI][kK][tT][oO][kK]$",
           description: "Platform id shown by list_watched."
         },
         account: { type: "string", minLength: 1, description: "Account name as shown by list_watched." }
@@ -330,7 +332,8 @@ export function createMcpServer({ fetchApi }) {
     const args = params.arguments ?? {};
     const validation = validateValue(args, tool.inputSchema, "arguments");
     if (validation) {
-      return { result: textResult(validation, true) };
+      const mapped = tool.name === "list_jobs" ? validation.replace(/^\d+ [^:]+:/, "400 Bad Request:") : validation;
+      return { result: textResult(mapped, true) };
     }
     try {
       const [method, path, body] = tool.request(args);

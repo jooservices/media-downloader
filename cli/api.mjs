@@ -327,7 +327,11 @@ async function statusRoute({ response, deps }) {
 }
 
 async function configRoute({ response, deps }) {
-  send(response, 200, await deps.config());
+  const config = await deps.config();
+  send(response, 200, {
+    ...config,
+    notify: config.notify ? { enabled: true, format: config.notify.format, events: config.notify.events } : null
+  });
 }
 
 // Prometheus text format: one gauge per job state, whether an extension has reported in, and uptime.

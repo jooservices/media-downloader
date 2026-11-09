@@ -68,7 +68,7 @@ test("setup copies the extension with a fixed key, records the profile and the b
   assert.equal(manifest.name, "Page Media Saver");
   assert.match(
     await readFile(path.join(dir, "extension", "src", "background", "bridge-client.js"), "utf8"),
-    /127\.0\.0\.1:38541/
+    new RegExp(`127\\.0\\.0\\.1:${process.env.PMS_BRIDGE_PORT || store.BRIDGE_PORT}`)
   );
 
   assert.deepEqual(await store.readJson(store.BRIDGE_CONFIG_FILE), {

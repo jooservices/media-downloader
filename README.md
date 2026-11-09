@@ -136,7 +136,7 @@ While `serve` runs it offers a REST API on `http://127.0.0.1:38542/v1`. It liste
 
 Other answers: 400 malformed JSON or query, 401 no/wrong token, 404 unknown resource, 405 wrong method (with `Allow`), 409 the account is already queued, done or watched (send `"again": true` to run it anew), 413 body too large, 415 not JSON, 422 a link that is not a supported profile.
 
-The complete request, response, status-code, and schema contract is in [openapi.json](openapi.json). Contract tests compare its operations to the server route registry.
+The `/v1/config` response redacts notification webhook URLs and returns only whether notifications are enabled, their format, and selected events. The complete request, response, status-code, and schema contract is in [openapi.json](openapi.json). Contract tests compare its operations to the server route registry.
 
 ```powershell
 $token = (Get-Content "$env:LOCALAPPDATAPageMediaSaverapi-token").Trim()
