@@ -431,15 +431,29 @@ test("rejected and unauthenticated bursts cannot exhaust the authenticated reque
       });
       assert.equal(rejected.status, index < 2 ? 403 : 429);
     }
-    for (let index = 0; index < 3; index++) {
+    for (let index = 0; index < 2; index++) {
       const rejected = await call("GET", "/v1/jobs", { auth: false });
-      assert.equal(rejected.status, index < 2 ? 401 : 429);
+      assert.equal(rejected.status, 401);
     }
     assert.equal((await call("GET", "/v1/jobs")).status, 200);
     assert.equal((await call("GET", "/v1/jobs")).status, 200);
     const limited = await call("GET", "/v1/jobs");
     assert.equal(limited.status, 429);
     assert.equal(limited.body.title, "Too Many Requests");
+  }));
+
+test("failed authentication limits also block a valid token after the failure threshold", () =>
+  withServer({ rateLimit: 2 }, async ({ call }) => {
+    for (let index = 0; index < 3; index++) {
+      const invalid = await call("GET", "/v1/jobs", { headers: { authorization: `Bearer wrong-${index}` } });
+      assert.equal(invalid.status, index < 2 ? 401 : 429);
+    }
+
+    const valid = await call("GET", "/v1/jobs");
+    assert.equal(valid.status, 429);
+    assert.equal(valid.body.title, "Too Many Requests");
+    assert.equal(valid.body.detail, "Too many failed authentication attempts. Try again later.");
+    assert.equal(valid.headers["retry-after"], "60");
   }));
 
 test("beyond this computer the API needs a token, and only the hosts it was told about", async () => {

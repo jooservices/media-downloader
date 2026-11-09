@@ -403,14 +403,19 @@ function hasValidToken(request, token) {
 
 function createLimiter() {
   const windows = new Map();
-  return (request, now, limit, category) => {
+  return (request, now, limit, category, consume = true) => {
     const key = `${request.socket.remoteAddress || "unknown"}:${category}`;
     let entry = windows.get(key);
+    if (!consume && (!entry || now - entry.started >= RATE_WINDOW_MS)) {
+      return false;
+    }
     if (!entry || now - entry.started >= RATE_WINDOW_MS) {
       entry = { started: now, count: 0 };
       windows.set(key, entry);
     }
-    entry.count++;
+    if (consume) {
+      entry.count++;
+    }
     if (windows.size > 2048) {
       for (const [address, window] of windows) {
         if (now - window.started >= RATE_WINDOW_MS) {
@@ -428,6 +433,14 @@ function rateLimited(request, response, deps, category) {
     return false;
   }
   problem(response, 429, "Too many requests. Try again later.", { "Retry-After": "60" });
+  return true;
+}
+
+function failedAuthLimited(request, response, deps) {
+  if (!deps.limiter(request, Date.now(), deps.rateLimit, "unauthenticated", false)) {
+    return false;
+  }
+  problem(response, 429, "Too many failed authentication attempts. Try again later.", { "Retry-After": "60" });
   return true;
 }
 
@@ -461,17 +474,22 @@ function admit(request, response, open, deps) {
     });
     return false;
   }
-  if (token && !open && !hasValidToken(request, token)) {
-    rejectRequest({
-      request,
-      response,
-      deps,
-      category: "unauthenticated",
-      status: 401,
-      detail: "Send the API token as: Authorization: Bearer <token>.",
-      headers: { "WWW-Authenticate": 'Bearer realm="media-downloader"' }
-    });
-    return false;
+  if (token && !open) {
+    if (failedAuthLimited(request, response, deps)) {
+      return false;
+    }
+    if (!hasValidToken(request, token)) {
+      rejectRequest({
+        request,
+        response,
+        deps,
+        category: "unauthenticated",
+        status: 401,
+        detail: "Send the API token as: Authorization: Bearer <token>.",
+        headers: { "WWW-Authenticate": 'Bearer realm="media-downloader"' }
+      });
+      return false;
+    }
   }
   if (rateLimited(request, response, deps, token && !open ? "authenticated" : "accepted")) {
     return false;
