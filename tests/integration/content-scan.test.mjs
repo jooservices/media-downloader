@@ -411,3 +411,14 @@ test("a grid whose photos were all saved before is a success", async () => {
   assert.equal(state.status, "complete");
   assert.match(state.message, /Four end checks found no older rows/);
 });
+
+test("an empty page with a password box says the site wants a sign-in", async () => {
+  const page = scanPage({
+    tweak: sandbox => {
+      sandbox.document.querySelector = selector => (selector.includes("password") ? {} : null);
+    }
+  });
+  const state = await start(page);
+  assert.equal(state.status, "incomplete");
+  assert.match(state.message, /asking for a sign-in/);
+});

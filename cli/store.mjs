@@ -34,6 +34,7 @@ export const LOGS_DIR = path.join(APP_DIR, "logs");
 export const EDGE_PROFILE_FILE = path.join(APP_DIR, "edge-profile.json");
 export const BRIDGE_CONFIG_FILE = path.join(APP_DIR, "bridge-config.json");
 export const REPAIR_MANIFEST_FILE = path.join(APP_DIR, "repair-root-manifest.json");
+export const EXPECTED_VERSION_FILE = path.join(APP_DIR, "expected-extension-version");
 export const API_TOKEN_FILE = path.join(APP_DIR, "api-token");
 // PMS_BRIDGE_PORT lets tests run beside a live queue without touching its port.
 export const BRIDGE_PORT = Number(process.env.PMS_BRIDGE_PORT) || 38541;

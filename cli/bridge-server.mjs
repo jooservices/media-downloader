@@ -1,8 +1,9 @@
 // The loopback server the extension talks to while a job runs.
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { unlink } from "node:fs/promises";
+import { readFile, unlink } from "node:fs/promises";
 import {
+  EXPECTED_VERSION_FILE,
   QUEUE_FILE,
   BRIDGE_CONFIG_FILE,
   BRIDGE_PORT,
@@ -60,6 +61,25 @@ function readBody(request, response) {
   });
 }
 
+// `sync-edge` leaves the version it just copied in a file. An extension that reports another version (or none)
+// is told to reload; the file goes away as soon as an extension reports the expected version.
+async function outdatedExtension(message) {
+  let expected;
+  try {
+    expected = (await readFile(EXPECTED_VERSION_FILE, "utf8")).trim();
+  } catch {
+    return false;
+  }
+  if (!expected) {
+    return false;
+  }
+  if (message?.version === expected) {
+    await unlink(EXPECTED_VERSION_FILE).catch(() => {});
+    return false;
+  }
+  return true;
+}
+
 function createBridgeServer(config) {
   const claimedJobs = new Set();
   let bridgeMessageQueue = Promise.resolve();
@@ -82,7 +102,10 @@ function createBridgeServer(config) {
         () => undefined,
         () => undefined
       );
-      respondJson(response, 200, await operation, { "Cache-Control": "no-store" });
+      const result = await operation;
+      respondJson(response, 200, (await outdatedExtension(message)) ? { ...result, reload: true } : result, {
+        "Cache-Control": "no-store"
+      });
     } catch (error) {
       // The detail stays in this process's log; the caller only learns that the message failed.
       console.error(`Bridge message failed: ${error?.message || String(error)}`);

@@ -9,8 +9,10 @@ const JOB = { jobId: "job-1", url: "https://x.com/alice/", repairBasenames: ["a.
 // A bridge that answers each POST from a script (a function of the posted message), recording them all.
 function bridge(answer = () => ({ ok: true })) {
   const posted = [];
+  const versions = [];
   const fetchImpl = async (_url, init) => {
-    const message = JSON.parse(init.body);
+    const { version, ...message } = JSON.parse(init.body);
+    versions.push(version);
     posted.push(message);
     const reply = await answer(message);
     if (reply instanceof Error) {
@@ -26,7 +28,7 @@ function bridge(answer = () => ({ ok: true })) {
         : async () => reply.body ?? reply
     };
   };
-  return { posted, fetchImpl, types: () => posted.map(message => message.type) };
+  return { posted, versions, fetchImpl, types: () => posted.map(message => message.type) };
 }
 
 // The tab the CLI named is on `url`, and the page answers the start message with `pageReply`.
@@ -332,4 +334,55 @@ test("the bridge state is still tracked when saving it fails", async () => {
   env.inContext(`chrome.storage.local.set = async () => { throw new Error("quota"); }`);
   assert.equal(plain(await env.send({ ...PAGE }, sender)).ok, true);
   assert.equal(env.inContext("nativeBridgeState.state"), "connected");
+});
+
+test("every message to the CLI carries the extension's version", async () => {
+  const { fetchImpl, versions } = bridge();
+  const env = loadBackground({ fetchImpl });
+  await env.send({ ...PAGE }, sender);
+  await settle();
+  assert.deepEqual(versions, ["9.9.9"]);
+});
+
+test("when the CLI says a newer copy is on disk, the extension reloads itself once it is idle", async () => {
+  const { fetchImpl } = bridge(() => ({ ok: true, reload: true }));
+  const env = loadBackground({ fetchImpl });
+  env.inContext(`globalThis.setTimeout = fn => { fn(); return 0; };`);
+  await env.send({ ...PAGE }, sender);
+  await settle();
+  await settle();
+  assert.equal(env.runtimeReloads.count, 1);
+});
+
+test("a reload waits while a job is running in some tab, and is asked for again later", async () => {
+  const { fetchImpl } = bridge(() => ({ ok: true, reload: true }));
+  const env = loadBackground({ fetchImpl });
+  env.inContext(`globalThis.setTimeout = fn => { fn(); return 0; };`);
+  env.storage.activeCliJobs = { 7: "job-1" };
+  await env.send({ ...PAGE }, sender);
+  await settle();
+  await settle();
+  assert.equal(env.runtimeReloads.count, 0, "a running scan is never cut off");
+  env.storage.activeCliJobs = {};
+  await env.send({ ...PAGE }, sender);
+  await settle();
+  await settle();
+  assert.equal(env.runtimeReloads.count, 1);
+});
+
+test("a reload that cannot read its state is skipped, and without the flag nothing reloads", async () => {
+  const broken = loadBackground({ fetchImpl: bridge(() => ({ ok: true, reload: true })).fetchImpl });
+  broken.inContext(
+    `globalThis.setTimeout = fn => { fn(); return 0; }; chrome.storage.local.get = async () => { throw new Error("no storage"); };`
+  );
+  await broken.send({ ...PAGE }, sender);
+  await settle();
+  await settle();
+  assert.equal(broken.runtimeReloads.count, 0);
+
+  const calm = loadBackground({ fetchImpl: bridge().fetchImpl });
+  calm.inContext(`globalThis.setTimeout = fn => { fn(); return 0; };`);
+  await calm.send({ ...PAGE }, sender);
+  await settle();
+  assert.equal(calm.runtimeReloads.count, 0);
 });

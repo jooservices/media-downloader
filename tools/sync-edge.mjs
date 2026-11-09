@@ -5,6 +5,7 @@ import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { EXPECTED_VERSION_FILE } from "../cli/store.mjs";
 import { extensionFiles } from "./build.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -51,7 +52,7 @@ async function destinationVersion(destination, fallback) {
   }
 }
 
-export async function syncEdge(destination, root = ROOT) {
+export async function syncEdge(destination, root = ROOT, expectedVersionFile = EXPECTED_VERSION_FILE) {
   if (path.resolve(destination) === path.resolve(root)) {
     throw new Error("Refusing to sync a folder onto itself.");
   }
@@ -68,6 +69,13 @@ export async function syncEdge(destination, root = ROOT) {
       await copyFile(path.join(root, file), target);
     }
   }
+  // Tell a running queue which version the browser should now be running, so the extension reloads itself.
+  await mkdir(path.dirname(expectedVersionFile), { recursive: true });
+  await writeFile(
+    expectedVersionFile,
+    `${version}
+`
+  );
   return { version, count: files.length };
 }
 
@@ -76,5 +84,5 @@ if (isDirectRun) {
   const destination = process.argv[2] || "C:\\Claude\\PageMediaSaver";
   const result = await syncEdge(destination);
   process.stdout.write(`Synced ${result.count} files to ${destination} as version ${result.version}.\n`);
-  process.stdout.write("Reload Page Media Saver in edge://extensions before the new code runs.\n");
+  process.stdout.write("A running Page Media Saver reloads itself the next time it is idle.\n");
 }

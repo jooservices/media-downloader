@@ -272,8 +272,9 @@ globalThis.PageMediaSaver ??= {};
     const nothingFound = !autoState.repairMode && seen === 0;
     let message;
     if (nothingFound) {
-      message =
-        "No photos or videos were found on this page. Sign in to the site in this browser, or the site may have changed how it sends its data.";
+      message = document.querySelector('input[type="password"]')
+        ? "The site is asking for a sign-in, so nothing could be read. Sign in to it in this browser; the queue goes on by itself."
+        : "No photos or videos were found on this page. Sign in to the site in this browser, or the site may have changed how it sends its data.";
     } else if (repairShort) {
       message = `Repair incomplete: matched ${repairFound.length} of ${repairTargets.length} source images. Original files were left in Downloads.`;
     } else if (hasOutstanding()) {
