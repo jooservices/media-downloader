@@ -206,6 +206,22 @@ test("a cached-media request returns promptly when all download slots are busy",
   assert.equal(env.started.length, 9);
 });
 
+test("a cached-media request does not wait for page data still being stored", async () => {
+  const env = loadBackground();
+  await found(env, [video("queued01")]);
+  env.inContext("mediaCacheQueue = new Promise(() => {})");
+
+  const request = saveCached(env, { platform: "Twitter", account: "alice" });
+  const returnedQuickly = await Promise.race([
+    request.then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 100))
+  ]);
+  const result = await request;
+  assert.equal(returnedQuickly, true);
+  assert.equal(result.started, 1);
+  assert.equal(env.started[0].filename, "Twitter/Alice/video_queued01_1280x720.mp4");
+});
+
 test("a limit that is not a whole number is ignored", async () => {
   const env = loadBackground();
   await found(env, [photo("nl001"), photo("nl002")]);

@@ -133,7 +133,6 @@ async function downloadCachedMedia({ platform, account, ids, limit }) {
   if (!platforms.PLATFORMS.includes(platform)) {
     return { ok: false, error: "Unsupported platform for cached media." };
   }
-  await mediaCacheQueue;
   const { mediaCache = {} } = await chrome.storage.local.get({ mediaCache: {} });
   const wantedIds = Array.isArray(ids) ? new Set(ids.map(String)) : null;
   const wantedAccount = account ? cleanPart(account).toLowerCase() : null;
