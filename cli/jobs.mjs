@@ -34,6 +34,11 @@ function describeLimit(limit) {
   return limit ? ` (limit ${limit} files)` : "";
 }
 
+// Extra command-line switches kept with the saved browser profile (for example a private profile folder for tests).
+function extraBrowserArgs(saved) {
+  return Array.isArray(saved?.extraArgs) ? saved.extraArgs.filter(arg => typeof arg === "string") : [];
+}
+
 export async function openJobInEdge(job, spawnProcess = spawn) {
   const saved = await readJson(EDGE_PROFILE_FILE);
   if (!saved?.profileDirectory && !saved?.profilePath) {
@@ -50,11 +55,15 @@ export async function openJobInEdge(job, spawnProcess = spawn) {
   }
   // The marker lets the extension recognise this tab as the CLI's and close it when it is done with it.
   const pageUrl = `${job.url}${cliTabMarker(job.jobId)}`;
-  const browserProcess = spawnProcess(executable, launchArgs(profile.browser, profile, pageUrl), {
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true
-  });
+  const browserProcess = spawnProcess(
+    executable,
+    [...extraBrowserArgs(saved), ...launchArgs(profile.browser, profile, pageUrl)],
+    {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true
+    }
+  );
   browserProcess.once("error", async error => {
     const failedJob = {
       ...job,

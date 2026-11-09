@@ -129,6 +129,10 @@ export async function startBridgeServer() {
   });
 }
 
+// A claim lasts for one opening of the job. When the queue retries a job it opens it again with a new
+// `openedAt`, so the new attempt can be claimed; a second tab for the same opening still cannot.
+const claimKey = job => `${job.jobId}|${job.openedAt || ""}`;
+
 // Does the page that announced itself belong to this job?
 function pageMatchesJob(message, job) {
   let sameUrl;
@@ -183,11 +187,11 @@ async function handlePageReady(message, claimedJobs) {
   const matching = (await listJobs())
     .filter(job => !TERMINAL_STATES.has(job.status) && pageMatchesJob(message, job))
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
-  const waiting = matching.find(job => job.status === "queued" && !claimedJobs.has(job.jobId));
+  const waiting = matching.find(job => job.status === "queued" && !claimedJobs.has(claimKey(job)));
   if (!waiting) {
     return { ok: true, type: matching.length ? "JOB_CONNECTED" : "NO_JOB" };
   }
-  claimedJobs.add(waiting.jobId);
+  claimedJobs.add(claimKey(waiting));
   const started = await updateJob(waiting.jobId, job => {
     if (job.mediaPage) {
       job.account = String(message.account || job.account);

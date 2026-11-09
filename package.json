@@ -33,7 +33,8 @@
     "sync-edge": "node tools/sync-edge.mjs",
     "audit": "npm audit --audit-level=high",
     "ci": "npm run validate && npm run lint && npm run test:coverage",
-    "prepare": "simple-git-hooks"
+    "prepare": "simple-git-hooks",
+    "test:e2e": "node --test --test-reporter=spec --test-timeout=420000 \"tests/e2e/*.e2e.mjs\""
   },
   "simple-git-hooks": {
     "commit-msg": "npx --no-install commitlint --config .github/commitlint.config.mjs --edit \"$1\"",

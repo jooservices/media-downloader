@@ -8,4 +8,5 @@ description = "Allowlisted files"
 paths = [
   '''(.*?)(png|jpg|gif|svg)$''',
   '''^package-lock\.json$''',
+  '''^tests/e2e/fixtures/test-key\.pem$''',
 ]

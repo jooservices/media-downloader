@@ -312,3 +312,23 @@ test("the bridge refuses to start without a matching install, or when its port i
     await new Promise(resolve => blocker.close(resolve));
   }
 });
+
+test("a retried job can be claimed again by the page of its new attempt, but not twice for one attempt", async () => {
+  const claimed = new Set();
+  await putJob(41, { openedAt: "2026-01-01T00:00:00.000Z" });
+  const first = await handleBridgeMessage(ready({ tabId: 1 }), claimed);
+  assert.equal(first.type, "START_JOB");
+  // A second tab for the same opening only connects to the running job.
+  await store.updateJob(id(41), job => {
+    job.status = "queued";
+  });
+  assert.equal((await handleBridgeMessage(ready({ tabId: 2 }), claimed)).type, "JOB_CONNECTED");
+  // The queue retries: the job is queued again and opened anew.
+  await store.updateJob(id(41), job => {
+    job.status = "queued";
+    job.openedAt = "2026-01-01T00:05:00.000Z";
+  });
+  const retry = await handleBridgeMessage(ready({ tabId: 3 }), claimed);
+  assert.equal(retry.type, "START_JOB");
+  assert.equal(retry.tabId, 3);
+});
