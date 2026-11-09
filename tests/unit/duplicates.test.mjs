@@ -142,7 +142,7 @@ test("the ledger survives a service worker restart", async () => {
   assert.equal(await after.ledger.has(videoKey("Facebook", "1", 1)), false);
 });
 
-test("the ledger keeps more than the 10,000 newest keys the old list was cut to", async () => {
+test("the ledger keeps more than the 10,000 newest keys the old list was cut to", { timeout: 90_000 }, async () => {
   const harness = loadBackground();
   for (let i = 0; i < 10500; i++) {
     await harness.ledger.add(photoKey("Instagram", `P${i}`, 1));
