@@ -232,6 +232,40 @@ test("a cached-media request returns promptly when all download slots are busy",
   assert.equal(env.started.length, 9);
 });
 
+test("a full image batch does not block a cached-media message behind it", async () => {
+  const env = loadBackground();
+  await found(env, [video("afterfull")]);
+  await env.send({
+    type: "DOWNLOAD_ITEMS",
+    items: Array.from({ length: 8 }, (_, index) => ({
+      platform: "Twitter",
+      account: "alice",
+      key: `Twitter|image|busy${index}|1`,
+      url: `https://pbs.twimg.com/media/busy${index}.jpg`
+    }))
+  });
+
+  const fullBatch = env.send({
+    type: "DOWNLOAD_ITEMS",
+    items: Array.from({ length: 20 }, (_, index) => ({
+      platform: "Twitter",
+      account: "alice",
+      key: `Twitter|image|later${index}|1`,
+      url: `https://pbs.twimg.com/media/later${index}.jpg`
+    }))
+  });
+  const cachedRequest = saveCached(env, { platform: "Twitter", account: "alice", limit: 1 });
+  const returnedQuickly = await Promise.race([
+    cachedRequest.then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 100))
+  ]);
+  const [batchResult, result] = await Promise.all([fullBatch, cachedRequest]);
+  assert.equal(returnedQuickly, true);
+  assert.equal(result.started, 0);
+  assert.equal(batchResult.pending, 8);
+  assert.equal(env.started.length, 8);
+});
+
 test("a cached-media request does not wait for page data still being stored", async () => {
   const env = loadBackground();
   await found(env, [video("queued01")]);

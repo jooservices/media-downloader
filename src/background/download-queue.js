@@ -20,7 +20,6 @@ const isUnavailableError = error => UNAVAILABLE_ERRORS.has(error);
 
 const FINISHED_STATES = ["complete", "interrupted"];
 const MAX_BATCH_ITEMS = 300;
-const SLOT_WAIT_MS = 60000;
 
 // Runs `update` on the stored url -> [file name targets] map, one operation at a time.
 const withDownloadTargets = update =>
@@ -272,20 +271,6 @@ async function isSaved(state, key) {
 
 const isInNativeFlow = (state, key) => Object.values(state.nativePending).some(entry => entry?.key === key);
 
-// At most MAX_ACTIVE_DOWNLOADS run at once; wait up to a minute for a free slot.
-async function waitForSlot(state, item) {
-  const deadline = Date.now() + SLOT_WAIT_MS;
-  let current = state;
-  while (Object.keys(current.pending).length >= MAX_ACTIVE_DOWNLOADS && Date.now() < deadline) {
-    await pause(500);
-    current = await reconcileDownloads();
-    if (await isSaved(current, item.key)) {
-      break;
-    }
-  }
-  return current;
-}
-
 function saveTarget(item) {
   const fallback = `photo.${imageExtension(item.url)}`;
   const filename = withResolution(cleanPart(item.filename || fallback, fallback), item.width, item.height);
@@ -333,18 +318,10 @@ async function processBatchItem(initialState, item) {
   if (previousAttempts >= MAX_ATTEMPTS) {
     return { state: initialState, skipped: 1, failed: 1 };
   }
-  const state = await waitForSlot(initialState, item);
-  if (await isSaved(state, item.key)) {
-    return { state, skipped: 1 };
+  if (Object.keys(initialState.pending).length >= MAX_ACTIVE_DOWNLOADS) {
+    return { state: initialState, full: true };
   }
-  if (Object.keys(state.pending).length >= MAX_ACTIVE_DOWNLOADS) {
-    return {
-      state,
-      failed: 1,
-      error: "Too many downloads are still pending; this item will be retried on the next scan."
-    };
-  }
-  return startItemDownload(state, item, previousAttempts + 1);
+  return startItemDownload(initialState, item, previousAttempts + 1);
 }
 
 async function downloadBatch(inputItems) {
@@ -356,6 +333,9 @@ async function downloadBatch(inputItems) {
   let state = await reconcileDownloads();
   for (const item of inputItems.slice(0, MAX_BATCH_ITEMS)) {
     const result = await processBatchItem(state, item);
+    if (result.full) {
+      break;
+    }
     state = result.state;
     total.started += result.started ?? 0;
     total.skipped += result.skipped ?? 0;
