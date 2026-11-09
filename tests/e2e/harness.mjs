@@ -2,8 +2,8 @@
 // real extension loaded, and the real `serve` process. Nothing here touches the user's own browser,
 // folders or ports.
 import { spawn, spawnSync } from "node:child_process";
-import { createHash, generateKeyPairSync } from "node:crypto";
-import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { prepareManagedExtension } from "../../cli/browser.mjs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createServer as createHttpsServer } from "node:https";
 import net from "node:net";
@@ -14,15 +14,6 @@ import { fileURLToPath } from "node:url";
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const FIXTURES = path.join(ROOT, "tests", "e2e", "fixtures");
-async function copyTree(from, to) {
-  await mkdir(to, { recursive: true });
-  for (const entry of await readdir(from, { withFileTypes: true })) {
-    const source = path.join(from, entry.name);
-    const target = path.join(to, entry.name);
-    await (entry.isDirectory() ? copyTree(source, target) : copyFile(source, target));
-  }
-}
-
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 export async function freePort() {
@@ -164,28 +155,6 @@ export async function startFakeSites(state) {
   return { port: server.address().port, close: () => new Promise(resolve => server.close(resolve)) };
 }
 
-// The unpacked extension, copied so its bridge port can point at this run's `serve`, with a fixed key so its id is known.
-export async function prepareExtension(directory, bridgePort) {
-  await mkdir(directory, { recursive: true });
-  for (const item of ["lib", "src"]) {
-    await copyTree(path.join(ROOT, item), path.join(directory, item));
-  }
-  const clientFile = path.join(directory, "src", "background", "bridge-client.js");
-  const client = await readFile(clientFile, "utf8");
-  if (!client.includes("127.0.0.1:38541")) {
-    throw new Error("The bridge address changed; update the end-to-end harness.");
-  }
-  await writeFile(clientFile, client.replace("127.0.0.1:38541", `127.0.0.1:${bridgePort}`));
-  const { publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-  const der = publicKey.export({ type: "spki", format: "der" });
-  const manifest = JSON.parse(await readFile(path.join(ROOT, "manifest.json"), "utf8"));
-  manifest.key = der.toString("base64");
-  await writeFile(path.join(directory, "manifest.json"), JSON.stringify(manifest, null, 2));
-  const hash = createHash("sha256").update(der).digest("hex").slice(0, 32);
-  const id = [...hash].map(char => String.fromCodePoint(97 + Number.parseInt(char, 16))).join("");
-  return { id };
-}
-
 function browserArgs({ userData, extension, sitesPort }) {
   const hosts = ["x.com", "www.x.com", "pbs.twimg.com"].map(host => `MAP ${host} 127.0.0.1:${sitesPort}`).join(", ");
   return [
@@ -202,6 +171,7 @@ function browserArgs({ userData, extension, sitesPort }) {
 }
 
 export async function createSandbox({ bridgePort, apiPort, sitesPort, executable, config = {} }) {
+  const debugPort = await freePort();
   const root = await mkdtemp(path.join(os.tmpdir(), "pms-e2e-"));
   const localAppData = path.join(root, "localappdata");
   const appDir = path.join(localAppData, "PageMediaSaver");
@@ -217,7 +187,7 @@ export async function createSandbox({ bridgePort, apiPort, sitesPort, executable
     path.join(userData, "Default", "Preferences"),
     JSON.stringify({ download: { default_directory: downloads, prompt_for_download: false } })
   );
-  const { id } = await prepareExtension(extension, bridgePort);
+  const { id } = await prepareManagedExtension({ target: extension, bridgePort, keyDir: root });
   await writeFile(
     path.join(appDir, "bridge-config.json"),
     JSON.stringify({ extensionOrigin: `chrome-extension://${id}`, port: bridgePort })
@@ -233,6 +203,7 @@ export async function createSandbox({ bridgePort, apiPort, sitesPort, executable
       profileDirectory: "Default",
       userData,
       executable,
+      debugPort,
       extraArgs: browserArgs({ userData, extension, sitesPort })
     })
   );

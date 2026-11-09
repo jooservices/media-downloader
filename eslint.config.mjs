@@ -134,7 +134,7 @@ export default [
   },
   {
     files: ["cli/**/*.mjs", "tools/**/*.mjs", "tests/**/*.mjs", "eslint.config.mjs", ".github/**/*.mjs"],
-    rules: { "n/no-unsupported-features/node-builtins": ["error", { version: ">=22" }] }
+    rules: { "n/no-unsupported-features/node-builtins": ["error", { version: ">=22.4" }] }
   },
   {
     // Tests build fake pages and fake DOMs on purpose.

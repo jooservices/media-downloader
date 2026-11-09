@@ -1,4 +1,5 @@
 // Starting, monitoring and resuming a download job.
+import { openInManagedBrowser } from "./managed.mjs";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -39,7 +40,7 @@ function extraBrowserArgs(saved) {
   return Array.isArray(saved?.extraArgs) ? saved.extraArgs.filter(arg => typeof arg === "string") : [];
 }
 
-export async function openJobInEdge(job, spawnProcess = spawn) {
+export async function openJobInEdge(job, spawnProcess = spawn, managedOptions = {}) {
   const saved = await readJson(EDGE_PROFILE_FILE);
   if (!saved?.profileDirectory && !saved?.profilePath) {
     throw new Error(INSTALL_HINT);
@@ -55,6 +56,14 @@ export async function openJobInEdge(job, spawnProcess = spawn) {
   }
   // The marker lets the extension recognise this tab as the CLI's and close it when it is done with it.
   const pageUrl = `${job.url}${cliTabMarker(job.jobId)}`;
+  // A managed browser stays running and is told to open a tab; any other profile gets a fresh launch.
+  if (Number.isInteger(saved.debugPort)) {
+    await openInManagedBrowser(
+      { executable, args: extraBrowserArgs(saved), port: saved.debugPort, url: pageUrl },
+      managedOptions
+    );
+    return;
+  }
   const browserProcess = spawnProcess(
     executable,
     [...extraBrowserArgs(saved), ...launchArgs(profile.browser, profile, pageUrl)],

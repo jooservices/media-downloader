@@ -42,7 +42,7 @@ The `serve`/`add` command-line queue described further down is an optional extra
 ## Requirements
 
 - Microsoft Edge, Chrome, or Firefox 128 or newer
-- Node.js `>= 22` only for the optional CLI and for development
+- Node.js `>= 22.4` only for the optional CLI and for development
 - The CLI runs on Windows, macOS and Linux. `install` uses whichever of those browsers already has the extension loaded; `install chrome` or `install firefox` picks one
 
 ## Development
@@ -69,7 +69,7 @@ When it is published as an unlisted or public store listing, installing becomes 
 
 ### Optional: the command line
 
-Only needed for scripts, `--limit` runs or saving to a network folder. It requires Node.js `>= 22`.
+Only needed for scripts, `--limit` runs or saving to a network folder. It requires Node.js `>= 22.4`.
 
 4. In PowerShell, from the extracted folder, run `node .\cli\mediasaver.mjs install`. This records the loaded extension ID and signed-in Edge profile for the current Windows user; it does not need administrator access.
 5. Run `node .\cli\mediasaver.mjs download <profile-or-post-URL>`. The CLI opens the URL in the existing Edge profile and runs a local bridge on `127.0.0.1:38541`. The extension accepts bridge requests only from its configured extension origin. It scrolls Instagram/Facebook grids and X profile timelines, including X's `/media` tab; a direct Instagram post/reel, Facebook video/reel, or X status URL is scanned once. It saves visible photos and eligible video downloads, skips duplicates, limits concurrent downloads, retries interrupted image downloads up to three times, and waits for native video downloads to settle. You can switch to another Edge tab while the job runs. Keep the CLI process open until the job completes. Use `node .\cli\mediasaver.mjs status` to check progress and `node .\cli\mediasaver.mjs resume` to reconnect to a queued or interrupted job.

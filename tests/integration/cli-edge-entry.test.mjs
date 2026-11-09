@@ -113,3 +113,78 @@ test("add queues a link without a running queue and says how to start it; servic
     await rm(home, { recursive: true, force: true });
   }
 });
+
+function firefoxProfiles(home) {
+  if (process.platform === "win32") {
+    return path.join(home, "Mozilla", "Firefox", "Profiles");
+  }
+  if (process.platform === "darwin") {
+    return path.join(home, "Library", "Application Support", "Firefox", "Profiles");
+  }
+  return path.join(home, ".mozilla", "firefox");
+}
+
+test("install finds the extension in a Firefox profile too, and records a moz-extension origin", async () => {
+  const { home, env } = await fakeHome({ loaded: false });
+  try {
+    const profile = path.join(firefoxProfiles(home), "abc.default");
+    await mkdir(profile, { recursive: true });
+    await writeFile(
+      path.join(profile, "extensions.json"),
+      JSON.stringify({ addons: [{ id: "page-media-saver@jooservices.dev", path: ROOT }] })
+    );
+    const installed = run(env, "install", "firefox");
+    assert.equal(installed.status, 0, installed.stderr);
+    assert.match(installed.stdout, /Using Firefox, profile abc\.default/);
+    const bridge = JSON.parse(await readFile(path.join(home, "PageMediaSaver", "bridge-config.json"), "utf8"));
+    assert.equal(bridge.extensionOrigin, "moz-extension://page-media-saver@jooservices.dev");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("serve needs a path after --inbox, and move needs a download folder in the settings", async () => {
+  const { home, env } = await fakeHome({ loaded: false });
+  try {
+    const inbox = run(env, "serve", "--inbox");
+    assert.equal(inbox.status, 1);
+    assert.match(inbox.stderr, /--inbox needs a file path/);
+    const move = run(env, "move");
+    assert.equal(move.status, 1);
+    assert.match(move.stderr, /Set downloadDir/);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("download hands its link to a running queue instead of fighting it for the bridge", async () => {
+  const { home, env } = await fakeHome({ loaded: false });
+  try {
+    const app = path.join(home, "PageMediaSaver");
+    await mkdir(app, { recursive: true });
+    // The test runner stands in for a running `serve`: any other live process id counts.
+    await writeFile(path.join(app, "daemon.json"), JSON.stringify({ pid: process.pid }));
+    const queued = run(env, "download", "https://www.instagram.com/someone/");
+    assert.equal(queued.status, 0, queued.stderr);
+    assert.match(queued.stdout, /Instagram\/someone was added to its queue/);
+    const again = run(env, "download", "https://www.instagram.com/someone/");
+    assert.equal(again.status, 0);
+    assert.match(again.stdout, /added to its queue/, "an explicit download always runs again");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("status, resume and the repair commands report instead of crashing when nothing is set up", async () => {
+  const { home, env } = await fakeHome({ loaded: false });
+  try {
+    assert.equal(run(env, "status").status, 0);
+    assert.equal(run(env, "resume").status, 1);
+    assert.equal(run(env, "repair-root").status, 1);
+    assert.equal(run(env, "finalize-repair").status, 1);
+    assert.equal(run(env, "browser", "status").status, 0);
+    assert.equal(run(env, "browser", "nonsense").status, 1);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
