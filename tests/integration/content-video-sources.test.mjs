@@ -331,6 +331,7 @@ test("a background that does not answer leaves the cache request empty-handed", 
   const page = menuPage({ onSend: () => Promise.reject(new Error("asleep")) });
   const result = await page.ns.videoSources.collectPageMedia("Twitter", "NASA");
   assert.deepEqual(plain(result), { videoArticlesSeen: 0, videoDownloadsClicked: 0, videoDownloadsSkipped: 0 });
+  assert.deepEqual(plain(page.ns.videoSources.cacheDiagnostics()), { asked: true, ids: null, error: "asleep" });
 });
 
 // ---- opening grid posts ------------------------------------------------------------------

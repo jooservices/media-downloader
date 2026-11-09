@@ -325,22 +325,32 @@ globalThis.PageMediaSaver ??= {};
   // data responses first; the on-page menu flow only handles videos the cache missed.
   let lastCacheDiag = null;
 
+  async function requestCachedMedia(message) {
+    try {
+      return await chrome.runtime.sendMessage(message);
+    } catch (error) {
+      return { error: String(error?.message || error).slice(0, 120) };
+    }
+  }
+
   async function collectPageMedia(platform, account) {
     const budget = limitRemaining();
     const ids = pageVideoIds(platform);
     const asked = budget > 0 && !(ids && !ids.length);
     const cached = asked
-      ? await chrome.runtime
-          .sendMessage({
-            type: "DOWNLOAD_CACHED_MEDIA",
-            platform,
-            account,
-            ids,
-            limit: Number.isFinite(budget) ? budget : null
-          })
-          .catch(() => null)
+      ? await requestCachedMedia({
+          type: "DOWNLOAD_CACHED_MEDIA",
+          platform,
+          account,
+          ids,
+          limit: Number.isFinite(budget) ? budget : null
+        })
       : null;
-    lastCacheDiag = cached ? cached.diag : { asked, ids: ids ? ids.length : null, noReply: true };
+    if (cached?.error) {
+      lastCacheDiag = { asked, ids: ids ? ids.length : null, error: cached.error };
+    } else {
+      lastCacheDiag = cached?.diag || { asked, ids: ids ? ids.length : null, noReply: true };
+    }
     let cachedStarted = cached?.started || 0;
     if (siteOf(platform)?.opensGridPosts) {
       cachedStarted += await openGridPosts(account, budget - cachedStarted, cached?.coveredIds);
