@@ -135,7 +135,8 @@ test("a rate-limit signal before page readiness is saved and attached when the C
   withTab(env);
 
   assert.deepEqual(plain(await env.send({ type: "PLATFORM_RATE_LIMIT", status: 429 }, sender)), { ok: true });
-  assert.deepEqual(env.storage.pendingCliRateLimits, { 7: 429 });
+  assert.equal(env.storage.pendingCliRateLimits[7].status, 429);
+  assert.ok(Number.isFinite(env.storage.pendingCliRateLimits[7].at));
   await env.send({ ...PAGE }, sender);
 
   assert.deepEqual(plain(env.storage.activeCliJobs), { 7: "job-1" });
@@ -146,6 +147,45 @@ test("a rate-limit signal before page readiness is saved and attached when the C
   );
   assert.equal(posted[1].jobId, "job-1");
   assert.equal(posted[1].status, 429);
+});
+
+test("an expired buffered rate limit is discarded instead of attached to a later job", async () => {
+  const { fetchImpl, posted } = bridge(request =>
+    request.type === "PAGE_READY" ? { ok: true, type: "START_JOB", job: JOB, tabId: 7 } : { ok: true }
+  );
+  const env = loadBackground({ fetchImpl });
+  withTab(env);
+
+  await env.send({ type: "PLATFORM_RATE_LIMIT", status: 429 }, sender);
+  env.storage.pendingCliRateLimits[7].at = Date.now() - 60_001;
+  await env.send({ ...PAGE }, sender);
+
+  assert.deepEqual(plain(env.storage.pendingCliRateLimits), {});
+  assert.deepEqual(
+    posted.map(message => message.type),
+    ["PAGE_READY"]
+  );
+});
+
+test("a failed buffered signal flush does not stop the scan from starting", async () => {
+  const { fetchImpl, posted } = bridge(request => {
+    if (request.type === "PAGE_READY") {
+      return { ok: true, type: "START_JOB", job: JOB, tabId: 7 };
+    }
+    if (request.type === "JOB_RATE_LIMIT") {
+      return new Error("Failed to fetch");
+    }
+    return { ok: true };
+  });
+  const env = loadBackground({ fetchImpl });
+  const sent = withTab(env);
+
+  await env.send({ type: "PLATFORM_RATE_LIMIT", status: 429 }, sender);
+  await env.send({ ...PAGE }, sender);
+
+  assert.ok(sent().some(item => item.message.type === "AUTO_START_CLI"));
+  assert.equal(env.storage.pendingCliRateLimits[7].status, 429);
+  assert.ok(posted.some(message => message.type === "JOB_RATE_LIMIT"));
 });
 
 test("a buffered rate limit is attached before a CLI scan that fails to start", async () => {
@@ -192,12 +232,15 @@ test("a start answer is reported as a job error when the tab moved on, the page 
     moved.posted.filter(message => message.type === "JOB_ERROR").map(message => message.error),
     ["The tab URL changed before the download started."]
   );
+  assert.deepEqual(plain(movedEnv.storage.activeCliJobs), {});
+  assert.equal(plain(movedEnv.storage.recentlyCompletedCliJobs)[7].jobId, JOB.jobId);
 
   const refused = bridge(request => (request.type === "PAGE_READY" ? start() : { ok: true }));
   const refusedEnv = loadBackground({ fetchImpl: refused.fetchImpl });
   withTab(refusedEnv, { pageReply: { ok: false, error: "Not a profile" } });
   await refusedEnv.send({ ...PAGE }, sender);
   assert.equal(refused.posted.find(message => message.type === "JOB_ERROR").error, "Not a profile");
+  assert.deepEqual(plain(refusedEnv.storage.activeCliJobs), {});
 
   const silent = bridge(request => (request.type === "PAGE_READY" ? start() : { ok: true }));
   const silentEnv = loadBackground({ fetchImpl: silent.fetchImpl });

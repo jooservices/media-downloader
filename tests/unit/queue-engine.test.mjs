@@ -179,7 +179,8 @@ test("a rate-limit signal arriving before an extension tab is associated reaches
   const tab = { tab: { id: 100, url: PAGE.pageUrl } };
 
   assert.deepEqual(plain(await ask(env, { type: "PLATFORM_RATE_LIMIT", status: 429 }, tab)), { ok: true });
-  assert.deepEqual(plain(env.storage.pendingCliRateLimits), { 100: 429 });
+  assert.equal(plain(env.storage.pendingCliRateLimits)[100].status, 429);
+  assert.ok(Number.isFinite(plain(env.storage.pendingCliRateLimits)[100].at));
   env.inContext("globalThis.__resolveQueueTab()");
   await env.inContext("queueEngine.tick()");
 

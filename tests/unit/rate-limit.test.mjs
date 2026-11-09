@@ -27,5 +27,7 @@ test("ignores ordinary outcomes and only classifies failed or incomplete jobs", 
     assert.equal(isRateLimitOutcome({ status, message: "HTTP 429" }), false);
   }
   assert.equal(isRateLimitOutcome({ status: "error", message: "Page did not answer" }), false);
+  assert.equal(isRateLimitOutcome({ status: "error", message: "Saved 429 files" }), false);
+  assert.equal(isRateLimitOutcome({ status: "incomplete", message: "HTTP status 420" }), true);
   assert.equal(isRateLimitOutcome(null), false);
 });

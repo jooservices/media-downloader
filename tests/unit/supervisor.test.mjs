@@ -345,6 +345,53 @@ test("upgrade ignores an old throttling outcome when a newer clean outcome exist
   assert.equal(env.supervisor.platformStatus().instagram.backoffUntil, null);
 });
 
+test("bootstrap uses the same fingerprint as live outcome processing", async () => {
+  const env = setup({}, [
+    queued("1", "Instagram", "old-failure", {
+      status: "error",
+      attempts: 1,
+      openingId: "old-opening",
+      rateLimitOutcomeId: "old-opening:rate-limit:429",
+      message: "HTTP 429",
+      outcomeAt: "2025-12-31T20:00:00.000Z",
+      updatedAt: "2025-12-31T20:00:00.000Z"
+    }),
+    queued("2", "Instagram", "healthy", {
+      status: "complete",
+      outcomeAt: "2025-12-31T23:59:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    })
+  ]);
+
+  await env.tick();
+
+  assert.equal(env.supervisor.platformStatus().instagram.backoffLevel, 0);
+});
+
+test("an unreadable saved back-off state is ignored after one logged attempt", async () => {
+  let reads = 0;
+  const logs = [];
+  const supervisor = createSupervisor({
+    now: () => Date.parse("2026-01-01T00:00:00Z"),
+    random: () => 0,
+    log: message => logs.push(message),
+    loadConfig: async () => parseConfig({ delaySeconds: { min: 0, max: 0 } }),
+    loadBackoffState: async () => {
+      reads++;
+      throw new Error("invalid JSON");
+    },
+    listJobs: async () => [],
+    updateJob: async () => null,
+    openJob: async () => {}
+  });
+
+  await supervisor.tick();
+  await supervisor.tick();
+
+  assert.equal(reads, 1);
+  assert.equal(logs.filter(message => /saved back-off state is unreadable/.test(message)).length, 1);
+});
+
 test("counts the attempt and marks the job as opened", async () => {
   const env = setup({}, [queued("1", "Twitter", "a")]);
   await env.tick();
