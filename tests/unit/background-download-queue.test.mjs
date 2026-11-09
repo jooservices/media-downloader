@@ -52,6 +52,22 @@ test("a photo starts into its platform and account folder, with its size in the 
   assert.deepEqual(plain(env.storage.pendingDownloads), { "Twitter|image|1|1": 1 });
 });
 
+test("a download batch replies without searching for downloads it just started", async () => {
+  const env = loadBackground();
+  env.inContext(
+    "chrome.downloads.search = async () => new Promise(resolve => { globalThis.__resolveDownloadSearch = resolve })"
+  );
+  const request = download(env, [photo(1)]);
+  const returnedQuickly = await Promise.race([
+    request.then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 100))
+  ]);
+  env.inContext("globalThis.__resolveDownloadSearch?.([])");
+  const result = plain(await request);
+  assert.equal(returnedQuickly, true);
+  assert.deepEqual([result.started, result.pending], [1, 1]);
+});
+
 test("a photo with no file name is named after its type, and overwrite is honoured", async () => {
   const env = loadBackground();
   await download(env, [photo(1, { filename: "", overwrite: true, url: "https://pbs.twimg.com/media/x.png" })]);

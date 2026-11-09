@@ -364,7 +364,6 @@ async function downloadBatch(inputItems) {
       errors.push(result.error);
     }
   }
-  state = await reconcileDownloads();
   return { ok: true, ...total, pending: Object.keys(state.pending).length, errors: errors.slice(0, 10) };
 }
 
