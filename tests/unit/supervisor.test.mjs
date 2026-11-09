@@ -109,6 +109,17 @@ test("a page that never answers fails after 90 s, then the job is retried after 
   assert.equal(env.job("1").attempts, 2);
 });
 
+test("ACK reaper expires only after 90 seconds and safely retries an unanswered page", async () => {
+  const env = setup({}, [queued("1", "Twitter", "a")]);
+  await env.tick();
+  env.advance(ACK_TIMEOUT_MS);
+  assert.equal((await env.tick()).expired, 0, "the exact ACK deadline is still eligible");
+  env.advance(1);
+  assert.equal((await env.tick()).expired, 1);
+  assert.equal(env.job("1").status, "queued", "an unacknowledged job is retried");
+  assert.equal(env.job("1").noRetry, undefined);
+});
+
 test("stops retrying after maxAttempts", async () => {
   const env = setup({ maxAttempts: 2 }, [queued("1", "Twitter", "a")]);
   for (let round = 0; round < 2; round++) {
@@ -130,6 +141,18 @@ test("a running job that stops reporting is ended as incomplete", async () => {
   env.advance(STALE_RUNNING_MS + 1000);
   assert.equal((await env.tick()).expired, 1);
   assert.equal(env.job("1").status, "incomplete");
+});
+
+test("stale-running reaper boundary: 15 minutes is allowed, one millisecond more is parked", async () => {
+  const env = setup({}, [queued("1", "Twitter", "a", { status: "running", openedAt: "2026-01-01T00:00:00Z" })]);
+  env.job("1").updatedAt = "2026-01-01T00:00:00Z";
+  env.advance(STALE_RUNNING_MS);
+  assert.equal((await env.tick()).expired, 0);
+  env.advance(1);
+  assert.equal((await env.tick()).expired, 1);
+  assert.equal(env.job("1").status, "incomplete");
+  assert.equal(env.job("1").noRetry, true, "a quiet but live page is not launched twice");
+  assert.equal((await env.tick()).requeued, 0);
 });
 
 test("shouldRetry: errors yes, incomplete only if something was saved, complete and paused never", () => {
@@ -234,6 +257,7 @@ test("on start, jobs left running by a dead process are ended and unanswered one
   };
   assert.equal(await recoverInterrupted(deps), 2);
   assert.equal(env.job("1").status, "incomplete");
+  assert.equal(env.job("1").noRetry, true);
   assert.match(env.job("1").message, /interrupted/);
   assert.equal(env.job("2").openedAt, null);
   assert.equal(env.job("3").status, "queued");

@@ -9,6 +9,7 @@ const home = await mkdtemp(path.join(os.tmpdir(), "pms-store-"));
 process.env.LOCALAPPDATA = home;
 process.env.USERPROFILE = home;
 const store = await import("../../cli/store.mjs");
+const { sqliteCall } = await import("../../cli/jobstore.mjs");
 const config = await import("../../cli/config.mjs");
 const prune = await import("../../cli/prune.mjs");
 const { DEFAULT_LIMIT, parseDownloadArgs } = await import("../../cli/args.mjs");
@@ -229,6 +230,26 @@ test("prune copes with no folders at all and jobs with unparsable dates", async 
   assert.ok(await store.readJob(id(1)), "nothing was removed");
 });
 
+test("SQLite pruning keeps an older duplicate whose stored timestamp cannot be parsed", async () => {
+  await reset();
+  await store.writeJob({
+    jobId: id(1),
+    url: "https://x.com/a/",
+    status: "complete",
+    createdAt: "2020-01-01T00:00:00.000Z",
+    updatedAt: "not-a-date"
+  });
+  await store.writeJob({
+    jobId: id(2),
+    url: "https://x.com/a/",
+    status: "complete",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z"
+  });
+  assert.equal((await prune.prune(Date.parse("2026-11-09T00:00:00.000Z"))).jobs, 0);
+  assert.ok(await store.readJob(id(1)), "an invalid timestamp is never considered expired");
+});
+
 test("download args: URL, default limit, --limit N, --limit=N and --unlimited", () => {
   assert.deepEqual(parseDownloadArgs(["https://x.com/a"]), { url: "https://x.com/a", limit: DEFAULT_LIMIT });
   assert.equal(parseDownloadArgs(["--limit", "25", "u"]).limit, 25);
@@ -294,6 +315,69 @@ test("the job store pages, filters, counts, updates one job at a time and delete
   assert.equal(jobs.remove(id(1)), true);
   assert.equal(jobs.count(), 3);
   assert.equal(jobs.file, store.JOBS_DB_FILE);
+  assert.equal(jobs.hasUrl("https://x.com/1"), false);
+  jobs.write({ jobId: id(5), url: "https://X.com/Alice/" });
+  assert.equal(jobs.hasUrl("https://x.com/alice/"), true, "URL existence uses the indexed case-insensitive key");
+  assert.deepEqual(jobs.integrityCheck(), ["ok"]);
+});
+
+test("SQLite busy and locked errors retry with backoff, while other errors pass through", () => {
+  let attempts = 0;
+  const result = sqliteCall(() => {
+    attempts++;
+    if (attempts < 3) {
+      throw Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR" });
+    }
+    return "written";
+  });
+  assert.equal(result, "written");
+  assert.equal(attempts, 3);
+
+  attempts = 0;
+  assert.throws(
+    () =>
+      sqliteCall(() => {
+        attempts++;
+        throw Object.assign(new Error("busy"), { code: "SQLITE_BUSY" });
+      }),
+    error => error.code === "SQLITE_BUSY"
+  );
+  assert.equal(attempts, 5, "the busy operation is retried four times after its first attempt");
+  assert.throws(
+    () =>
+      sqliteCall(() => {
+        throw new Error("disk full");
+      }),
+    /disk full/
+  );
+});
+
+test("the supervisor work window excludes history and selects queued jobs oldest first", async () => {
+  await reset();
+  const jobs = store.jobs();
+  jobs.write({ jobId: id(1), status: "complete", createdAt: "2026-01-01" });
+  jobs.write({ jobId: id(2), status: "queued", createdAt: "2026-02-01" });
+  jobs.write({ jobId: id(3), status: "running", createdAt: "2026-03-01" });
+  jobs.write({ jobId: id(4), status: "queued", createdAt: "2026-04-01" });
+  assert.deepEqual(
+    jobs.workWindow().map(job => job.jobId),
+    [id(3), id(2), id(4)],
+    "bounded active work is ordered without loading finished history"
+  );
+});
+
+test("a corrupt database is backed up and fails with an actionable startup error", async () => {
+  await reset();
+  await store.writeJob({ jobId: id(1), status: "queued" });
+  store.closeJobStore();
+  await writeFile(store.JOBS_DB_FILE, "not a sqlite database");
+  await assert.rejects(store.listJobs(), /SQLite queue database is corrupt; backup saved to .*\.bak/);
+  const backups = (await readdir(store.APP_DIR)).filter(
+    name => name.startsWith("queue.db.corrupt-") && name.endsWith(".bak")
+  );
+  assert.equal(backups.length, 1);
+  assert.equal(await readFile(path.join(store.APP_DIR, backups[0]), "utf8"), "not a sqlite database");
+  await reset();
 });
 
 test("closeJobStore lets the store open again, and the database can be copied while it is closed", async () => {

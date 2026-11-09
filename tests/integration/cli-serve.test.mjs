@@ -28,6 +28,8 @@ process.env.HOME = home;
 process.env.PMS_BRIDGE_PORT = String(BRIDGE_PORT);
 process.env.PMS_API_PORT = String(API_PORT);
 const store = await import("../../cli/store.mjs");
+const { createSupervisor, recoverInterrupted } = await import("../../cli/supervisor.mjs");
+const { parseConfig } = await import("../../cli/config.mjs");
 const serveModule = await import("../../cli/serve.mjs");
 const watchModule = await import("../../cli/watch.mjs");
 const { addUrls, addCommand, moveCommand, readUrlFile, runningServer, serve } = serveModule;
@@ -92,11 +94,11 @@ async function putJob(n, url, status, daysAgo = 0, extra = {}) {
 }
 
 // SIGINT handlers added by the code under test; calling one is what Ctrl+C does, without signalling anyone.
-function interrupter() {
-  const before = new Set(process.listeners("SIGINT"));
+function interrupterFor(signal) {
+  const before = new Set(process.listeners(signal));
   return async () => {
     for (;;) {
-      const added = process.listeners("SIGINT").find(listener => !before.has(listener));
+      const added = process.listeners(signal).find(listener => !before.has(listener));
       if (added) {
         return added;
       }
@@ -259,6 +261,21 @@ test("serve opens the bridge and API, logs, and leaves a stopped daemon file whe
   }
 });
 
+test("serve rotates an oversized daily log and keeps a bounded active log", async t => {
+  await installBridge();
+  await noBrowser();
+  const today = new Date().toISOString().slice(0, 10);
+  const activeLog = path.join(store.LOGS_DIR, `serve-${today}.log`);
+  await mkdir(store.LOGS_DIR, { recursive: true });
+  await writeFile(activeLog, "x".repeat(2 * 1024 * 1024));
+  capture(t);
+  await serve({ inbox: INBOX, once: true });
+  const logs = await readdir(store.LOGS_DIR);
+  assert.equal(logs.filter(name => name.startsWith(`serve-${today}.log.`) && name.endsWith(".bak")).length, 1);
+  assert.ok((await stat(activeLog)).size < 2 * 1024 * 1024);
+  assert.match(await readFile(activeLog, "utf8"), /Serving\./);
+});
+
 test("serve queues the inbox URLs with the configured limit, and a job that cannot be opened ends as an error", async t => {
   await installBridge();
   await noBrowser();
@@ -308,6 +325,53 @@ test("serve recovers interrupted jobs and removes old ones", async t => {
   const left = (await store.listJobs()).map(job => job.jobId).sort();
   assert.ok(left.includes(id(2)) && left.includes(id(3)));
   assert.ok(!left.includes(id(1)), "the older of two finished jobs of a URL was pruned");
+  const recovered = await store.readJob(id(3));
+  assert.equal(recovered.status, "incomplete");
+  assert.equal(recovered.noRetry, true, "a possibly active browser scan is held for explicit review");
+});
+
+test("chaos restart parks a running job instead of executing it twice", async () => {
+  await store.writeJob({
+    jobId: id(77),
+    url: ALICE,
+    platform: "Twitter",
+    account: "alice",
+    status: "queued",
+    createdAt: new Date().toISOString(),
+    attempts: 0
+  });
+  let fakeExtensionRuns = 0;
+  const config = parseConfig({ delaySeconds: { min: 0, max: 0 } });
+  const makeSupervisor = () =>
+    createSupervisor({
+      now: Date.now,
+      random: () => 0,
+      log: () => {},
+      loadConfig: async () => config,
+      listJobs: store.listJobs,
+      updateJob: store.updateJob,
+      openJob: async job => {
+        fakeExtensionRuns++;
+        await store.updateJob(job.jobId, current => {
+          current.status = "running";
+          current.started = 1;
+        });
+      }
+    });
+  await makeSupervisor().tick();
+  assert.equal(fakeExtensionRuns, 1, "the fake extension acknowledged and began the scan");
+
+  // Drop every supervisor object and its open SQLite handle to model an abrupt process death.
+  store.closeJobStore();
+  assert.equal(store.jobs().read(id(77)).status, "running");
+  const recovered = await recoverInterrupted({ listJobs: store.listJobs, updateJob: store.updateJob });
+  assert.equal(recovered, 1);
+  await makeSupervisor().tick();
+
+  const final = await store.readJob(id(77));
+  assert.equal(final.status, "incomplete");
+  assert.equal(final.noRetry, true);
+  assert.equal(fakeExtensionRuns, 1, "the fake extension's first execution is never replayed");
 });
 
 test("serve refuses to start while another serve is running", async () => {
@@ -404,13 +468,26 @@ test("Ctrl+C stops serve after the current pass", async t => {
   await installBridge();
   await noBrowser();
   const lines = capture(t);
-  const nextHandler = interrupter();
+  const nextHandler = interrupterFor("SIGINT");
   const done = serve({ inbox: INBOX });
   const stop = await nextHandler();
   stop();
   await done;
   assert.match(lines.join(""), /Stopped\./);
   assert.equal((await store.readJson(store.DAEMON_FILE)).pid, null);
+});
+
+test("SIGTERM stops accepting work, closes the database, and records a clean stop", async t => {
+  await installBridge();
+  await noBrowser();
+  capture(t);
+  const nextHandler = interrupterFor("SIGTERM");
+  const done = serve({ inbox: INBOX });
+  const stop = await nextHandler();
+  stop();
+  await done;
+  assert.equal((await store.readJson(store.DAEMON_FILE)).pid, null);
+  assert.equal(store.jobs().integrityCheck()[0], "ok", "the SQLite store reopens cleanly after shutdown");
 });
 
 test("watch add needs URLs, appends the profile pages and lists them", async t => {
@@ -434,7 +511,7 @@ test("watch scans the listed pages that are due and leaves recently scanned ones
   await writeFile(watchModule.DEFAULT_WATCH, `${ALICE}\n${BOB}\n`);
   await putJob(1, BOB, "complete", 0); // scanned a moment ago: not due for hours
   const lines = capture(t);
-  const nextHandler = interrupter();
+  const nextHandler = interrupterFor("SIGINT");
   const done = watchModule.watch();
   const stop = await nextHandler();
   while ((await store.listJobs()).filter(job => job.url === ALICE).length === 0) {

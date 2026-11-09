@@ -1,7 +1,8 @@
 // `serve`: keeps the bridge open and works through the queue until stopped.
 // `add`: puts profile URLs in that queue. Both share the job files, so adding works whether or not
 // `serve` is running at that moment.
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFileSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   APP_DIR,
@@ -12,6 +13,8 @@ import {
   LOGS_DIR,
   TERMINAL_STATES,
   listJobs,
+  closeJobStore,
+  hasJobUrl,
   accountPages,
   readJson,
   sleep,
@@ -57,6 +60,34 @@ const TICK_MS = 2000;
 const MAX_CONSECUTIVE_FAILURES = 20;
 export const DEFAULT_INBOX = path.join(APP_DIR, "inbox.txt");
 
+function createServerCloser(servers) {
+  let closing = null;
+  return () => {
+    closing ??= Promise.all(servers.map(server => new Promise(resolve => server.close(() => resolve()))));
+    return closing;
+  };
+}
+
+function installShutdownSignals(stop) {
+  const signals = process.platform === "win32" ? ["SIGINT", "SIGTERM", "SIGBREAK"] : ["SIGINT", "SIGTERM"];
+  for (const signal of signals) {
+    process.once(signal, stop);
+  }
+  return () => signals.forEach(signal => process.removeListener(signal, stop));
+}
+
+async function parkRunningJobs() {
+  for (const job of await Promise.resolve()
+    .then(() => queueJobs().list({ status: "running" }))
+    .catch(() => [])) {
+    await updateJob(job.jobId, current => {
+      current.status = "incomplete";
+      current.noRetry = true;
+      current.message = "The queue stopped while this scan was active; review it before retrying.";
+    }).catch(() => {});
+  }
+}
+
 function isProcessAlive(pid) {
   try {
     process.kill(pid, 0);
@@ -71,24 +102,45 @@ export async function runningServer() {
   return info?.pid && info.pid !== process.pid && isProcessAlive(info.pid) ? info : null;
 }
 
+const MAX_LOG_BYTES = 2 * 1024 * 1024;
+const MAX_ROTATED_LOGS = 3;
+
 async function createLogger() {
   await mkdir(LOGS_DIR, { recursive: true });
   return message => {
     const stamp = new Date().toISOString();
-    const line = `[${stamp}] ${message}`;
+    const line = `[${stamp}] ${String(message).slice(0, 2000)}`;
     process.stdout.write(`${line}\n`);
-    // One file per day, chosen when the line is written, so a long run rolls over at midnight.
-    appendFile(path.join(LOGS_DIR, `serve-${stamp.slice(0, 10)}.log`), `${line}\n`).catch(() => {});
+    // One file per day with a size cap. Synchronous appends avoid accumulating pending writes.
+    const file = path.join(LOGS_DIR, `serve-${stamp.slice(0, 10)}.log`);
+    try {
+      if (statSync(file).size >= MAX_LOG_BYTES) {
+        const rotated = `${file}.${Date.now()}.bak`;
+        renameSync(file, rotated);
+        const old = readdirSync(LOGS_DIR)
+          .filter(name => name.startsWith(`serve-${stamp.slice(0, 10)}.log.`) && name.endsWith(".bak"))
+          .sort();
+        while (old.length >= MAX_ROTATED_LOGS) {
+          const expired = old.shift();
+          unlinkSync(path.join(LOGS_DIR, expired));
+        }
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        return;
+      }
+    }
+    try {
+      appendFileSync(file, `${line}\n`);
+    } catch {
+      // A full or temporarily unavailable disk must not stop queue processing.
+    }
   };
 }
-
-// Same profile URL, however it was typed: no query string, one trailing slash, any letter case.
-const sameUrl = (a, b) => a.toLowerCase() === b.toLowerCase();
 
 // Creates a job for each URL that has none yet. A URL that already ran (even if it failed) is left
 // alone, so the inbox file can keep growing without anything being downloaded twice.
 export async function addUrls(urls, { limit = null, force = false } = {}) {
-  const known = (await listJobs()).map(job => job.url);
   const created = [];
   const skipped = [];
   for (const raw of urls) {
@@ -100,12 +152,11 @@ export async function addUrls(urls, { limit = null, force = false } = {}) {
       continue;
     }
     for (const url of pages) {
-      if (!force && known.some(existing => sameUrl(existing, url))) {
+      if (!force && (await hasJobUrl(url))) {
         skipped.push({ raw: url, reason: "already queued or done" });
         continue;
       }
       created.push(await createJob(url, limit));
-      known.push(url);
     }
   }
   return { created, skipped };
@@ -119,7 +170,7 @@ export async function readUrlFile(file) {
     .filter(line => line.startsWith("https://"));
 }
 
-async function buildDeps(log) {
+async function buildDeps(log, isStopping = () => false) {
   const profile = resolvedProfile((await readJson(EDGE_PROFILE_FILE)) || {}, process.platform, process.env);
   return {
     now: Date.now,
@@ -127,6 +178,8 @@ async function buildDeps(log) {
     log,
     loadConfig,
     listJobs,
+    listWorkJobs: () => queueJobs().workWindow(),
+    isStopping,
     updateJob,
     openJob: openJobInEdge,
     moveFiles: async destRoot =>
@@ -140,7 +193,10 @@ async function buildDeps(log) {
   };
 }
 
-const hasWork = jobs => jobs.some(job => !TERMINAL_STATES.has(job.status));
+const hasWork = () => {
+  const counts = queueJobs().counts();
+  return Number(counts.queued || 0) + Number(counts.running || 0) > 0;
+};
 
 export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null, dueUrls = watchDue } = {}) {
   const other = await runningServer();
@@ -152,8 +208,11 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
   const log = await createLogger();
   const servers = [];
   let stopping = false;
+  let removeShutdownSignals = () => {};
+  const closeServers = createServerCloser(servers);
   const stop = () => {
     stopping = true;
+    void closeServers();
   };
   // Everything after the bridge starts is inside the try, so a failed setup step still closes the bridge.
   try {
@@ -170,14 +229,13 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
       })
     );
     await writeJsonAtomic(DAEMON_FILE, { pid: process.pid, startedAt: new Date().toISOString(), inbox });
-    const deps = await buildDeps(log);
+    const deps = await buildDeps(log, () => stopping);
     const recovered = await recoverInterrupted(deps);
     if (recovered) {
       log(`Recovered ${recovered} job(s) left by a previous run.`);
     }
     const supervisor = createSupervisor(deps);
-    process.once("SIGINT", stop);
-    process.once("SIGTERM", stop);
+    removeShutdownSignals = installShutdownSignals(stop);
     log(`Serving. REST API at http://127.0.0.1:${API_PORT}/v1 (token in ${API_TOKEN_FILE}), or add a URL to ${inbox}.`);
 
     const notifier = createNotifier({
@@ -207,8 +265,13 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
       if (queued) {
         log(`Queued ${queued} URL(s) from the inbox.`);
       }
+      if (stopping) {
+        return;
+      }
       await supervisor.tick();
-      await notifier.tick();
+      if (!stopping) {
+        await notifier.tick();
+      }
     };
 
     // One bad pass (a file briefly locked, a disk hiccup) must not end an unattended run;
@@ -225,18 +288,19 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
           throw error;
         }
       }
-      if (once && !failures && !hasWork(await listJobs())) {
+      if (once && !failures && !hasWork()) {
         break;
       }
       await sleep(TICK_MS);
     }
   } finally {
-    process.removeListener("SIGINT", stop);
-    process.removeListener("SIGTERM", stop);
-    await Promise.all(servers.map(server => new Promise(resolve => server.close(() => resolve()))));
+    removeShutdownSignals?.();
+    await closeServers();
+    await parkRunningJobs();
     if (servers.length) {
       await writeJsonAtomic(DAEMON_FILE, { pid: null, stoppedAt: new Date().toISOString() });
     }
+    closeJobStore();
     log("Stopped.");
   }
 }
