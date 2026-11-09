@@ -412,17 +412,25 @@ globalThis.PageMediaSaver ??= {};
       return 0;
     }
     let started = 0;
+    // Stories can take minutes on an account with many highlights; say where the scan is so the job does not look stuck.
+    const report = text => {
+      scanState().message = text;
+      ns.scan.publishAutoState();
+    };
     const tray = storyLink(account);
     if (tray) {
+      report("Saving the current stories…");
       started += await saveOpenedTray(tray, account);
     }
     let opened = 0;
-    for (const link of highlightLinks()) {
+    const highlights = highlightLinks();
+    for (const link of highlights) {
       if (opened >= MAX_HIGHLIGHTS || limitRemaining() <= 0 || ns.scan.stopRequested) {
         break;
       }
       openedHighlights.add(link.href);
       opened++;
+      report(`Saving highlights (${opened} of ${Math.min(highlights.length, MAX_HIGHLIGHTS)})…`);
       started += await saveOpenedTray(link, account);
     }
     return started;
