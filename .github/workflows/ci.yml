@@ -9,8 +9,8 @@ on:
     branches: [master, develop]
 
 concurrency:
-  # An unrelated `edited` event is a no-op and must not cancel a real gate.
-  # Give it a run-specific group while keeping all quality runs grouped by PR/ref.
+  # Title/body edits run the full gate in isolation so they cannot cancel a
+  # quality run and cannot publish skipped required checks.
   group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event.action == 'edited' && github.event.changes.base == null && github.run_id || 'quality' }}
   cancel-in-progress: true
 
@@ -20,8 +20,6 @@ permissions:
 jobs:
   validate:
     name: Validate
-    # `edited` covers base-branch changes, but not title/body edits.
-    if: github.event.action != 'edited' || github.event.changes.base != null
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
