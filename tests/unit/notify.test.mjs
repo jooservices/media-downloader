@@ -107,7 +107,7 @@ function notifierWith({ notify, jobs, now = () => new Date("2026-01-01T00:00:00Z
   const logs = [];
   const notifier = createNotifier({
     loadConfig: async () => ({ notify }),
-    changedSince: () => jobs,
+    pendingNotifications: () => jobs,
     markNotified: async id => {
       marked.push(id);
     },
@@ -183,7 +183,7 @@ test("a broken settings file or a failing web address is logged and does not sto
     loadConfig: async () => {
       throw new Error("config.json is broken");
     },
-    changedSince: () => [job({ started: 1 })],
+    pendingNotifications: () => [job({ started: 1 })],
     markNotified: async () => {}
   });
   await broken.tick();
@@ -191,7 +191,7 @@ test("a broken settings file or a failing web address is logged and does not sto
   const logs = [];
   const failing = createNotifier({
     loadConfig: async () => ({ notify: NOTIFY }),
-    changedSince: () => [job({ jobId: id(1), started: 1 })],
+    pendingNotifications: () => [job({ jobId: id(1), started: 1 })],
     markNotified: async () => {},
     fetchImpl: async () => {
       throw new Error("ECONNREFUSED");
