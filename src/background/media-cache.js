@@ -156,8 +156,9 @@ async function downloadCachedMedia({ platform, account, ids, limit }) {
   const freshLimit = hasLimit ? Math.min(limit, availableSlots) : availableSlots;
   const selected = [];
   let freshCount = 0;
+  const savedKeys = await ledgerHasAny(items.map(item => item.key));
   for (const item of items) {
-    const alreadyStarted = Object.hasOwn(pendingDownloads, item.key) || (await ledgerHas(item.key));
+    const alreadyStarted = Object.hasOwn(pendingDownloads, item.key) || savedKeys.has(item.key);
     if (alreadyStarted) {
       if (!hasLimit) {
         selected.push(item);

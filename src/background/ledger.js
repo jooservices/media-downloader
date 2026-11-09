@@ -66,6 +66,22 @@ async function ledgerHas(key) {
   return false;
 }
 
+async function ledgerHasAny(keys) {
+  const wanted = [...new Set(keys)];
+  if (!wanted.length) {
+    return new Set();
+  }
+  const candidates = [...new Set(wanted.flatMap(key => [key, PageMediaLib.keys.toCanonicalKey(key)]))];
+  const transaction = (await openLedger()).transaction(LEDGER_STORE, "readonly");
+  const store = transaction.objectStore(LEDGER_STORE);
+  const records = await Promise.all(candidates.map(candidate => requestResult(store.get(candidate))));
+  await transactionDone(transaction);
+  const foundCandidates = new Set(candidates.filter((_, index) => records[index]));
+  return new Set(
+    wanted.filter(key => foundCandidates.has(key) || foundCandidates.has(PageMediaLib.keys.toCanonicalKey(key)))
+  );
+}
+
 async function ledgerAdd(key) {
   const db = await openLedger();
   const transaction = db.transaction(LEDGER_STORE, "readwrite");

@@ -170,6 +170,17 @@ test("the limit counts only items that are not already saved or pending", async 
   });
 });
 
+test("bulk ledger lookups return saved canonical keys", async () => {
+  const env = loadBackground();
+  await env.ledger.add("Twitter|image|saved01|1");
+  await env.ledger.add("Twitter:alice:video:legacy01");
+
+  assert.deepEqual(
+    [...(await env.ledger.hasAny(["Twitter|image|saved01|1", "Twitter|video|missing1|1", "Twitter|video|legacy01|1"]))],
+    ["Twitter|image|saved01|1", "Twitter|video|legacy01|1"]
+  );
+});
+
 test("a cached-media request returns promptly when all download slots are busy", async () => {
   let clock = 1_000_000;
   const env = loadBackground({ now: () => clock });

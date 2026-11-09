@@ -192,6 +192,7 @@ export function loadBackground({
   const inContext = code => vm.runInContext(code, context);
   const ledger = {
     has: key => inContext(`ledgerHas(${JSON.stringify(key)})`),
+    hasAny: keys => inContext(`ledgerHasAny(${JSON.stringify(keys)})`),
     add: key => inContext(`ledgerAdd(${JSON.stringify(key)})`),
     count: () => inContext("ledgerCount()")
   };
