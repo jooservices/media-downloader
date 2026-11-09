@@ -179,6 +179,21 @@ test("progress reports update the job and a final one clears the queue file", as
   assert.equal(await store.readJson(store.QUEUE_FILE), null, "a finished active job is released");
 });
 
+test("progress for a cancelled, finished or removed job tells the page to stop and changes nothing", async () => {
+  await putJob(1, { status: "paused", message: "Cancelled through the API." });
+  const cancelled = await handleBridgeMessage(
+    { type: "JOB_PROGRESS", jobId: id(1), state: { started: 9, message: "Scanning" } },
+    new Set()
+  );
+  assert.deepEqual(cancelled, { ok: true, type: "STOP_JOB", close: true });
+  const job = await read(1);
+  assert.equal(job.status, "paused");
+  assert.equal(job.message, "Cancelled through the API.");
+
+  const removed = await handleBridgeMessage({ type: "JOB_PROGRESS", jobId: id(2), state: {} }, new Set());
+  assert.deepEqual(removed, { ok: true, type: "STOP_JOB", close: true });
+});
+
 test("a finished job that is not the active one leaves the queue file alone", async () => {
   await putJob(1, { status: "running" });
   await putJob(2, { status: "running" });

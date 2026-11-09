@@ -292,6 +292,18 @@ test("a finished job is reported, its tab forgotten and closed; an unidentified 
   assert.deepEqual(env.tabRemoves, [7], "no tab to close");
 });
 
+test("a job the CLI cancelled stops its scan, is forgotten and has its tab closed", async () => {
+  const { fetchImpl } = bridge(() => ({ ok: true, type: "STOP_JOB", close: true }));
+  const env = loadBackground({ fetchImpl, storage: { activeCliJobs: { 7: "job-1" } } });
+  assert.deepEqual(plain(await env.send({ type: "AUTO_PROGRESS", state: { jobId: "job-1" } }, sender)), { ok: true });
+  assert.deepEqual(plain(env.storage.activeCliJobs), {});
+  assert.deepEqual(env.tabRemoves, [7]);
+  assert.ok(env.tabMessages.some(entry => JSON.stringify(entry).includes("AUTO_STOP")));
+  // A page whose tab cannot be identified has nothing to stop.
+  await env.send({ type: "AUTO_PROGRESS", state: { jobId: "job-1" } });
+  assert.deepEqual(env.tabRemoves, [7]);
+});
+
 test("closing a finished tab copes with a browser without tabs.remove or one that rejects", async () => {
   const { fetchImpl } = bridge(() => ({ ok: true, close: true }));
   const env = loadBackground({ fetchImpl });

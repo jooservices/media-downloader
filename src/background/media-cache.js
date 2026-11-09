@@ -114,6 +114,17 @@ function ownerMatches(entry, wantedAccount) {
   return !entry.owner || !wantedAccount || entry.owner.toLowerCase() === wantedAccount;
 }
 
+function cacheDiagnostics(mediaCache, platform, wantedIds, wantedAccount, selected) {
+  const platformEntries = Object.values(mediaCache).filter(entry => entry.platform === platform);
+  return {
+    cached: platformEntries.length,
+    owned: platformEntries.filter(entry => entry.owner && ownerMatches(entry, wantedAccount)).length,
+    idMatched: wantedIds ? platformEntries.filter(entry => wantedIds.has(entry.id)).length : null,
+    wantedIds: wantedIds ? wantedIds.size : null,
+    selected
+  };
+}
+
 // `ids` (post or media ids read from the page's own links) selects entries on
 // pages where the cached owner is unknown; without them only entries whose
 // cached owner matches `account` are saved, so unrelated feed media never lands
@@ -134,6 +145,8 @@ async function downloadCachedMedia({ platform, account, ids, limit }) {
         : Boolean(entry.owner) && ownerMatches(entry, wantedAccount))
   );
   const coveredIds = [...new Set(entries.map(entry => entry.id))];
+  // What the cache held for this page, so a scan that saves nothing can say why.
+  const diag = cacheDiagnostics(mediaCache, platform, wantedIds, wantedAccount, entries.length);
   const items = entries.map(entry => cachedMediaItem(entry, account));
   // Items already saved or pending are skipped by downloadBatch, so only they may
   // use the allowance: trim to the not-yet-started ones before applying `limit`.
@@ -151,7 +164,7 @@ async function downloadCachedMedia({ platform, account, ids, limit }) {
     items.splice(0, items.length, ...fresh);
   }
   if (!items.length) {
-    return { ok: true, started: 0, skipped: 0, failed: 0, pending: 0, errors: [], cached: 0, coveredIds };
+    return { ok: true, started: 0, skipped: 0, failed: 0, pending: 0, errors: [], cached: 0, coveredIds, diag };
   }
-  return { ...(await downloadBatch(items)), cached: items.length, coveredIds };
+  return { ...(await downloadBatch(items)), cached: items.length, coveredIds, diag };
 }

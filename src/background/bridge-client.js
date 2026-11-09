@@ -220,10 +220,16 @@ function handleBridgeProgress(message, sender) {
     jobId: message.state.jobId,
     state: message.state
   })
-    .then(() => {
+    .then(async result => {
       bridgeLostSince = null;
-      if (finished) {
-        closeFinishedTab(sender?.tab?.id);
+      const tabId = sender?.tab?.id;
+      if (result?.type === "STOP_JOB" && Number.isInteger(tabId)) {
+        // The CLI cancelled or removed this job: stop its scan and close its tab.
+        await takeCliJob(tabId).catch(() => {});
+        chrome.tabs.sendMessage(tabId, { type: "AUTO_STOP" }).catch(() => {});
+        closeFinishedTab(tabId);
+      } else if (finished) {
+        closeFinishedTab(tabId);
       }
       return { ok: true };
     })

@@ -165,7 +165,8 @@ test("the limit counts only items that are not already saved or pending", async 
     pending: 0,
     errors: [],
     cached: 0,
-    coveredIds: ["lim001", "lim002", "lim003", "lim004"]
+    coveredIds: ["lim001", "lim002", "lim003", "lim004"],
+    diag: { cached: 4, owned: 4, idMatched: null, wantedIds: null, selected: 4 }
   });
 });
 

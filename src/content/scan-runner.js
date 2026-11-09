@@ -59,6 +59,12 @@ globalThis.PageMediaSaver ??= {};
     autoState.message = autoState.repairMode
       ? `Repair download running · ${repairFound.length}/${repairTargets.length} source images matched · ${pending} pending · ${failed} failed · ${rounds} passes.`
       : `Automatic download running · ${started} photos and ${videoStarted} page-data files started · ${pending} pending · ${failed} failed · ${skippedCount()} skipped · ${rounds} passes. Use Stop automatic download to pause.`;
+    // Nothing seen after a few passes: say what the page looks like, so the cause can be read from the job.
+    const seen = started + videoStarted + skippedCount() + pending + failed;
+    if (!autoState.repairMode && rounds >= 3 && seen === 0) {
+      const signIn = document.querySelector('input[type="password"]') ? " A password box is on the page." : "";
+      autoState.message += ` Nothing found yet. Page: ${location.href}.${signIn} ${hookDiagnostics()} Cache: ${JSON.stringify(ns.videoSources.cacheDiagnostics?.() ?? null)}`;
+    }
     publishAutoState();
   }
 

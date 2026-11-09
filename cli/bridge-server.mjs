@@ -247,6 +247,13 @@ async function handleJobUpdate(message) {
   if (!isJobId(jobId)) {
     return { ok: false, error: "Invalid job id." };
   }
+  // A job that was cancelled, finished or removed must not keep a scan running in its tab: tell the page to stop.
+  if (message.type === "JOB_PROGRESS") {
+    const known = await readJob(jobId);
+    if (!known || TERMINAL_STATES.has(known.status)) {
+      return { ok: true, type: "STOP_JOB", close: true };
+    }
+  }
   const job = await updateJob(jobId, current => {
     if (message.type === "JOB_ERROR") {
       applyError(current, message.error);

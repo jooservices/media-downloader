@@ -323,6 +323,8 @@ globalThis.PageMediaSaver ??= {};
 
   // Saves the photos and videos the platform already delivered to this page in its own
   // data responses first; the on-page menu flow only handles videos the cache missed.
+  let lastCacheDiag = null;
+
   async function collectPageMedia(platform, account) {
     const budget = limitRemaining();
     const ids = pageVideoIds(platform);
@@ -338,6 +340,7 @@ globalThis.PageMediaSaver ??= {};
           })
           .catch(() => null)
       : null;
+    lastCacheDiag = cached ? cached.diag : { asked, ids: ids ? ids.length : null, noReply: true };
     let cachedStarted = cached?.started || 0;
     if (siteOf(platform)?.opensGridPosts) {
       cachedStarted += await openGridPosts(account, budget - cachedStarted, cached?.coveredIds);
@@ -427,6 +430,7 @@ globalThis.PageMediaSaver ??= {};
 
   ns.videoSources = {
     collectPageMedia,
+    cacheDiagnostics: () => lastCacheDiag,
     collectNativeVideoDownloads,
     domVideoIds,
     pageVideoIds,
