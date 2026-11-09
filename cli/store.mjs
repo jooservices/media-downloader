@@ -132,7 +132,13 @@ export async function ensureApiToken() {
     const existing = (await readFile(API_TOKEN_FILE, "utf8")).trim();
     if (process.platform !== "win32") {
       // writeFile's mode only applies on creation; an empty pre-existing file may be permissive.
-      await chmod(API_TOKEN_FILE, 0o600);
+      try {
+        await chmod(API_TOKEN_FILE, 0o600);
+      } catch (error) {
+        if (!new Set(["EPERM", "EACCES"]).has(error?.code)) {
+          throw error;
+        }
+      }
     }
     if (existing) {
       return existing;

@@ -42,6 +42,7 @@ test("the local MCP client follows an IPv6 API bind", async () => {
   const tokenFile = path.join(home, "api-token");
   await writeFile(tokenFile, "tok-123\n");
   const previousBind = process.env.PMS_API_HOST;
+  const previousAllowedHosts = process.env.PMS_API_ALLOWED_HOSTS;
   const calls = [];
   process.env.PMS_API_HOST = "::1";
   try {
@@ -55,11 +56,53 @@ test("the local MCP client follows an IPv6 API bind", async () => {
     });
     await fetchApi("GET", "/v1/health");
     assert.equal(calls[0][0], "http://[::1]:1234/v1/health");
+    assert.equal(calls[0][1].headers.Host, undefined);
   } finally {
     if (previousBind === undefined) {
       delete process.env.PMS_API_HOST;
     } else {
       process.env.PMS_API_HOST = previousBind;
+    }
+    if (previousAllowedHosts === undefined) {
+      delete process.env.PMS_API_ALLOWED_HOSTS;
+    } else {
+      process.env.PMS_API_ALLOWED_HOSTS = previousAllowedHosts;
+    }
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("the local MCP client uses a configured Host for a wildcard API bind", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "pms-mcp-allowed-host-"));
+  const tokenFile = path.join(home, "api-token");
+  await writeFile(tokenFile, "tok-123\n");
+  const previousBind = process.env.PMS_API_HOST;
+  const previousAllowedHosts = process.env.PMS_API_ALLOWED_HOSTS;
+  const calls = [];
+  process.env.PMS_API_HOST = "0.0.0.0";
+  process.env.PMS_API_ALLOWED_HOSTS = "api.local.test:1234";
+  try {
+    const fetchApi = localApi({
+      port: 1234,
+      tokenFile,
+      fetchImpl: async (...args) => {
+        calls.push(args);
+        return new Response(null);
+      }
+    });
+    await fetchApi("GET", "/v1/health");
+    assert.equal(calls[0][0], "http://127.0.0.1:1234/v1/health");
+    assert.equal(calls[0][1].headers.Host, "api.local.test:1234");
+  } finally {
+    if (previousBind === undefined) {
+      delete process.env.PMS_API_HOST;
+    } else {
+      process.env.PMS_API_HOST = previousBind;
+    }
+    if (previousAllowedHosts === undefined) {
+      delete process.env.PMS_API_ALLOWED_HOSTS;
+    } else {
+      process.env.PMS_API_ALLOWED_HOSTS = previousAllowedHosts;
     }
     await rm(home, { recursive: true, force: true });
   }

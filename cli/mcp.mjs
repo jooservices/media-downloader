@@ -279,16 +279,33 @@ export function createMcpServer({ fetchApi }) {
 export function localApi({ port = API_PORT, tokenFile = API_TOKEN_FILE, fetchImpl = fetch } = {}) {
   return async (method, path, body) => {
     const token = (await readFile(tokenFile, "utf8")).trim();
-    const configuredBind = process.env.PMS_API_HOST;
+    const configuredBind = process.env.PMS_API_HOST || "127.0.0.1";
     let host = "127.0.0.1";
     if (configuredBind === "::1") {
       host = "[::1]";
     } else if (configuredBind === "localhost") {
       host = "localhost";
+    } else if (configuredBind === "::") {
+      host = "[::1]";
+    } else if (configuredBind !== "0.0.0.0") {
+      host = configuredBind.includes(":") ? `[${configuredBind}]` : configuredBind;
+    }
+    const headers = { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) };
+    if (!new Set(["127.0.0.1", "::1", "localhost"]).has(configuredBind)) {
+      const allowedHosts = (process.env.PMS_API_ALLOWED_HOSTS || "")
+        .split(",")
+        .map(item => item.trim())
+        .filter(item => item.endsWith(`:${port}`));
+      if (!allowedHosts.length) {
+        throw new Error(
+          `PMS_API_ALLOWED_HOSTS must include a local MCP Host value ending in :${port} when PMS_API_HOST is non-loopback.`
+        );
+      }
+      headers.Host = allowedHosts[0];
     }
     return fetchImpl(`http://${host}:${port}${path}`, {
       method,
-      headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+      headers,
       body: body ? JSON.stringify(body) : undefined
     });
   };
