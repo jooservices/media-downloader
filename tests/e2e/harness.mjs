@@ -48,18 +48,45 @@ export async function waitFor(check, { timeoutMs = 60_000, everyMs = 500, what =
   throw new Error(`Timed out after ${timeoutMs} ms waiting for ${what}.`);
 }
 
-// The Chromium that Playwright installed, or the one named by PMS_E2E_CHROMIUM. Null when there is none.
-export async function chromiumPath() {
-  if (process.env.PMS_E2E_CHROMIUM) {
-    return existsSync(process.env.PMS_E2E_CHROMIUM) ? process.env.PMS_E2E_CHROMIUM : null;
+// Chromium-based browsers that can run the extension headless in a private profile, best first.
+function browserCandidates() {
+  const env = process.env;
+  const roots = [env.ProgramFiles, env["ProgramFiles(x86)"], env.LOCALAPPDATA].filter(Boolean);
+  return [
+    env.PMS_E2E_CHROMIUM,
+    ...roots.flatMap(root => [
+      path.join(root, "Microsoft", "Edge", "Application", "msedge.exe"),
+      path.join(root, "Google", "Chrome", "Application", "chrome.exe")
+    ]),
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/google-chrome",
+    "/usr/bin/microsoft-edge",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+  ].filter(Boolean);
+}
+
+function runs(executable) {
+  if (!existsSync(executable)) {
+    return false;
   }
+  const result = spawnSync(executable, ["--version"], { encoding: "utf8", timeout: 20_000 });
+  // Chrome-style browsers print nothing for --version on Windows; a broken install cannot even be started.
+  return !result.error && result.status === 0;
+}
+
+// The browser the end-to-end tests drive: PMS_E2E_CHROMIUM, the Chromium that Playwright installed if it
+// starts, or a Chromium-based browser already on this machine. Null when none works.
+export async function chromiumPath() {
+  const candidates = browserCandidates();
   try {
     const { chromium } = await import("playwright");
-    const found = chromium.executablePath();
-    return existsSync(found) ? found : null;
+    candidates.splice(process.env.PMS_E2E_CHROMIUM ? 1 : 0, 0, chromium.executablePath());
   } catch {
-    return null;
+    // Playwright is optional: any installed browser will do.
   }
+  return candidates.find(runs) ?? null;
 }
 
 function crc32(buffer) {
@@ -166,6 +193,7 @@ function browserArgs({ userData, extension, sitesPort }) {
     `--load-extension=${extension}`,
     `--disable-extensions-except=${extension}`,
     "--headless=new",
+    "--disable-features=DisableLoadExtensionCommandLineSwitch",
     "--no-first-run",
     "--no-default-browser-check",
     "--ignore-certificate-errors",

@@ -66,7 +66,7 @@ test(
         body: JSON.stringify({ url: PROFILE_URL })
       });
       assert.equal(wrongType.status, 415);
-      assert.equal((await api.queue("http://x.com/not-https")).status, 400);
+      assert.equal((await api.queue("http://x.com/not-https")).status, 422);
     });
 
     const runJob = async (again, what) => {

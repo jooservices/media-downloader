@@ -402,3 +402,24 @@ test("the worker's serial queues keep running after one operation fails", async 
   await env.inContext("pause(20)");
   assert.ok(Date.now() - started >= 15);
 });
+
+test("a first install does not open the dashboard over a page the CLI opened for a job", async () => {
+  const marker = "#pms=11111111-1111-4111-8111-111111111111";
+  const env = loadBackground();
+  env.inContext(`chrome.tabs.query = async () => [{ url: "https://x.com/a/${marker}" }]`);
+  env.listeners.installed[0]({ reason: "install" });
+  await settle();
+  assert.equal(env.optionsOpened.count, 0);
+
+  env.inContext(
+    `chrome.tabs.query = async () => [{ url: "https://x.com/a/" }, { url: undefined }, { url: "not a url" }]`
+  );
+  env.listeners.installed[0]({ reason: "install" });
+  await settle();
+  assert.equal(env.optionsOpened.count, 1, "ordinary tabs do not stop the dashboard");
+
+  env.inContext("chrome.tabs.query = async () => { throw new Error('no tabs'); }");
+  env.listeners.installed[0]({ reason: "install" });
+  await settle();
+  assert.equal(env.optionsOpened.count, 2, "if the tabs cannot be read the dashboard still opens");
+});

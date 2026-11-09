@@ -50,8 +50,25 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 // The first thing a new user sees is the dashboard, where they sign in and add profiles.
-chrome.runtime.onInstalled.addListener(details => {
-  if (details.reason === "install") {
+// Not while the CLI has already opened a page for a job: the dashboard would take the foreground and the
+// browser slows a background tab down, which starves the scan running in it.
+async function cliJobIsOpen() {
+  try {
+    const tabs = await chrome.tabs.query({});
+    return tabs.some(tab => {
+      try {
+        return PageMediaLib.urls.cliJobIdFromHash(new URL(tab.url).hash) !== null;
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return false;
+  }
+}
+
+chrome.runtime.onInstalled.addListener(async details => {
+  if (details.reason === "install" && !(await cliJobIsOpen())) {
     chrome.runtime.openOptionsPage().catch(() => undefined);
   }
 });
