@@ -4,7 +4,7 @@ name: CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [master, develop]
 
@@ -18,6 +18,8 @@ permissions:
 jobs:
   validate:
     name: Validate
+    # `edited` covers base-branch changes, but not title/body edits.
+    if: github.event.action != 'edited' || github.event.changes.base != null
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
