@@ -33,9 +33,11 @@ function bridge(answer = () => ({ ok: true })) {
 
 // The tab the CLI named is on `url`, and the page answers the start message with `pageReply`.
 function withTab(env, { url = "https://x.com/alice/", pageReply = { ok: true, state: { running: true } } } = {}) {
-  env.inContext(`chrome.tabs.get = async id => ({ id, url: ${JSON.stringify(url)} })`);
+  env.setGlobal("__tabUrl", url);
+  env.setGlobal("__pageReply", pageReply);
+  env.inContext("chrome.tabs.get = async id => ({ id, url: globalThis.__tabUrl })");
   env.inContext(
-    `chrome.tabs.sendMessage = async (id, message) => { globalThis.__sent = [...(globalThis.__sent || []), { id, message }]; return ${JSON.stringify(pageReply)}; }`
+    "chrome.tabs.sendMessage = async (id, message) => { globalThis.__sent = [...(globalThis.__sent || []), { id, message }]; return globalThis.__pageReply; }"
   );
   return () => plain(env.inContext("globalThis.__sent || []"));
 }
