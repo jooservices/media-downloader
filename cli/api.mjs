@@ -9,6 +9,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { normalizeProfileUrl } from "./store.mjs";
+import { loadConfig as readConfig } from "./config.mjs";
 
 export const API_PORT = Number(process.env.PMS_API_PORT) || 38542;
 export const API_BASE = "/v1";
@@ -138,11 +139,29 @@ async function readJsonObject(request, response) {
 }
 
 function readHttpsUrl(payload, response) {
-  if (typeof payload.url !== "string" || !payload.url.startsWith("https://")) {
+  if (!isHttpsUrl(payload.url)) {
     problem(response, 422, "url must be an https link.");
     return null;
   }
   return payload.url;
+}
+
+function isHttpsUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && Boolean(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function allowProperties(payload, allowed, response) {
+  const unexpected = Object.keys(payload).find(key => !allowed.includes(key));
+  if (unexpected) {
+    problem(response, 422, `Unexpected property: ${unexpected}.`);
+    return false;
+  }
+  return true;
 }
 
 // ---- jobs -------------------------------------------------------------------------------------------------
@@ -190,6 +209,13 @@ async function createJobRoute({ request, response, deps }) {
   if (!url) {
     return;
   }
+  if (!allowProperties(payload, ["url", "again"], response)) {
+    return;
+  }
+  if (payload.again !== undefined && typeof payload.again !== "boolean") {
+    problem(response, 422, "again must be a boolean.");
+    return;
+  }
   const { created, skipped } = await deps.addUrls([url], { force: payload.again === true });
   if (!created.length) {
     const rejected = skipped.find(item => item.reason !== ALREADY_QUEUED);
@@ -232,6 +258,9 @@ async function createWatchRoute({ request, response, deps }) {
   const payload = await readJsonObject(request, response);
   const url = payload && readHttpsUrl(payload, response);
   if (!url) {
+    return;
+  }
+  if (!allowProperties(payload, ["url"], response)) {
     return;
   }
   let outcome;
@@ -287,6 +316,10 @@ async function statusRoute({ response, deps }) {
   send(response, 200, { uptimeSeconds: Math.round((Date.now() - startedAt) / 1000), ...state });
 }
 
+async function configRoute({ response, deps }) {
+  send(response, 200, await deps.config());
+}
+
 // Prometheus text format: one gauge per job state, whether an extension has reported in, and uptime.
 async function metricsRoute({ response, deps }) {
   const state = deps.status ? await deps.status() : {};
@@ -312,23 +345,45 @@ async function metricsRoute({ response, deps }) {
 }
 
 const ROUTES = [
-  { pattern: new RegExp(`^${API_BASE}/status$`), GET: statusRoute },
-  { pattern: new RegExp(`^${API_BASE}/metrics$`), GET: metricsRoute },
+  { path: "/v1/config", pattern: new RegExp(`^${API_BASE}/config$`), GET: configRoute },
+  { path: "/v1/status", pattern: new RegExp(`^${API_BASE}/status$`), GET: statusRoute },
+  { path: "/v1/metrics", pattern: new RegExp(`^${API_BASE}/metrics$`), GET: metricsRoute },
   {
+    path: "/v1/health",
     pattern: new RegExp(`^${API_BASE}/health$`),
     open: true,
     GET: ({ response }) => send(response, 200, { status: "ok" })
   },
-  { pattern: new RegExp(`^${API_BASE}/jobs$`), GET: listJobsRoute, POST: createJobRoute },
-  { pattern: new RegExp(`^${API_BASE}/jobs/${ID}$`, "i"), GET: jobRoute, DELETE: deleteJobRoute },
-  { pattern: new RegExp(`^${API_BASE}/watches$`), GET: listWatchesRoute, POST: createWatchRoute, needs: "watch" },
+  { path: "/v1/jobs", pattern: new RegExp(`^${API_BASE}/jobs$`), GET: listJobsRoute, POST: createJobRoute },
   {
+    path: "/v1/jobs/{id}",
+    pattern: new RegExp(`^${API_BASE}/jobs/${ID}$`, "i"),
+    GET: jobRoute,
+    DELETE: deleteJobRoute
+  },
+  {
+    path: "/v1/watches",
+    pattern: new RegExp(`^${API_BASE}/watches$`),
+    GET: listWatchesRoute,
+    POST: createWatchRoute,
+    needs: "watch"
+  },
+  {
+    path: "/v1/watches/{platform}/{account}",
     pattern: new RegExp(`^${API_BASE}/watches/${SEGMENT}/${SEGMENT}$`),
     GET: watchRoute,
     DELETE: deleteWatchRoute,
     needs: "watch"
   }
 ];
+export const API_OPERATIONS = ROUTES.flatMap(routeDefinition =>
+  ["GET", "POST", "DELETE"]
+    .filter(method => routeDefinition[method])
+    .map(method => ({
+      method,
+      path: routeDefinition.path
+    }))
+);
 const METHODS = ["GET", "POST", "DELETE"];
 
 function hasValidToken(request, token) {
@@ -396,6 +451,7 @@ export function startApiServer({
   listJobs,
   removeJob = () => Promise.resolve(false),
   status = null,
+  config = readConfig,
   port = API_PORT,
   token = null,
   watch = null,
@@ -410,7 +466,7 @@ export function startApiServer({
   }
   let host = `127.0.0.1:${port}`;
   const allowedHosts = () => [host, ...extraHosts];
-  const server = createApiServer({ addUrls, listJobs, removeJob, token, watch, status, allowedHosts });
+  const server = createApiServer({ addUrls, listJobs, removeJob, token, watch, status, config, allowedHosts });
   return new Promise((resolve, reject) => {
     server.once("error", error => {
       reject(error?.code === "EADDRINUSE" ? new Error(`Download API port ${port} is already in use.`) : error);

@@ -11,11 +11,45 @@ const require = createRequire(import.meta.url);
 const { version: VERSION } = require("../package.json");
 
 export const SUPPORTED_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
-const URL_SCHEMA = { type: "string", description: "An https link to a profile (Instagram, Facebook, X, TikTok)." };
+const URL_SCHEMA = {
+  type: "string",
+  format: "uri",
+  pattern: "^https://",
+  description: "An https profile link from Instagram, Facebook, X, or TikTok."
+};
 
-const JOB_ID_SCHEMA = { type: "string", description: "The id of a job, as returned by download_account or list_jobs." };
+const JOB_ID_SCHEMA = {
+  type: "string",
+  format: "uuid",
+  pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+  description: "The UUID id of a job, as returned by download_account or list_jobs."
+};
 
 export const TOOLS = [
+  {
+    name: "get_config",
+    title: "Read queue configuration",
+    description: "Read the queue's active settings, including worker counts, delays, retry limit, and download folder.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    request: () => ["GET", `${API_BASE}/config`]
+  },
+  {
+    name: "get_status",
+    title: "Read queue status",
+    description: "Read current job counts, extension check-in details, process id, and queue uptime.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    request: () => ["GET", `${API_BASE}/status`]
+  },
+  {
+    name: "get_metrics",
+    title: "Read queue metrics",
+    description: "Read Prometheus text metrics for job states, extension check-in time, and uptime.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    request: () => ["GET", `${API_BASE}/metrics`]
+  },
   {
     name: "download_account",
     title: "Download an account",
@@ -40,9 +74,18 @@ export const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        status: { type: "string", enum: ["queued", "running", "complete", "incomplete", "paused", "error"] },
-        limit: { type: "integer", minimum: 1, maximum: 100 },
-        offset: { type: "integer", minimum: 0 }
+        status: {
+          type: "string",
+          enum: ["queued", "running", "complete", "incomplete", "paused", "error"],
+          description: "Filter to this job state."
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          description: "Maximum jobs to return (1–100; default 50)."
+        },
+        offset: { type: "integer", minimum: 0, description: "Number of matching jobs to skip (default 0)." }
       },
       additionalProperties: false
     },
@@ -107,14 +150,42 @@ export const TOOLS = [
     request: () => ["GET", `${API_BASE}/watches`]
   },
   {
+    name: "get_watched",
+    title: "Get a watched account",
+    description:
+      "Read the watched pages associated with one platform account. Use the platform and account from list_watched.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        platform: {
+          type: "string",
+          enum: ["instagram", "facebook", "twitter", "tiktok"],
+          description: "Platform id shown by list_watched."
+        },
+        account: { type: "string", minLength: 1, description: "Account name shown by list_watched." }
+      },
+      required: ["platform", "account"],
+      additionalProperties: false
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    request: ({ platform, account }) => [
+      "GET",
+      `${API_BASE}/watches/${encodeURIComponent(platform)}/${encodeURIComponent(account)}`
+    ]
+  },
+  {
     name: "unwatch_account",
     title: "Stop watching an account",
     description: "Stop scanning an account automatically. Files already saved are kept.",
     inputSchema: {
       type: "object",
       properties: {
-        platform: { type: "string", description: "instagram, facebook, twitter or tiktok." },
-        account: { type: "string", description: "The account name as shown by list_watched." }
+        platform: {
+          type: "string",
+          enum: ["instagram", "facebook", "twitter", "tiktok"],
+          description: "Platform id shown by list_watched."
+        },
+        account: { type: "string", minLength: 1, description: "Account name as shown by list_watched." }
       },
       required: ["platform", "account"],
       additionalProperties: false
@@ -151,14 +222,99 @@ const textResult = (value, isError = false) => ({
   isError
 });
 
+function validateObject(value, schema, name) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return `${name} must be an object.`;
+  }
+  if (schema.additionalProperties === false) {
+    const extra = Object.keys(value).find(key => !Object.hasOwn(schema.properties || {}, key));
+    if (extra) {
+      return `${name}.${extra} is not allowed.`;
+    }
+  }
+  for (const key of schema.required || []) {
+    if (!Object.hasOwn(value, key)) {
+      return `Missing required argument: ${key}.`;
+    }
+  }
+  for (const [key, item] of Object.entries(value)) {
+    const issue = validateValue(item, schema.properties?.[key], `${name}.${key}`);
+    if (issue) {
+      return issue;
+    }
+  }
+  return null;
+}
+
+function validateScalar(value, schema, name) {
+  const typeIssue = validateType(value, schema, name);
+  if (typeIssue) {
+    return typeIssue;
+  }
+  if (schema.enum && !schema.enum.includes(value)) {
+    return `${name} must be one of: ${schema.enum.join(", ")}.`;
+  }
+  return validateScalarConstraints(value, schema, name);
+}
+
+function validateType(value, schema, name) {
+  const validType = schema.type === "integer" ? Number.isInteger(value) : typeof value === schema.type;
+  if (validType) {
+    return null;
+  }
+  const expected = schema.type === "integer" ? "an integer" : `a ${schema.type}`;
+  return `${name} must be ${expected}.`;
+}
+
+function validateScalarConstraints(value, schema, name) {
+  if (schema.minimum !== undefined && value < schema.minimum) {
+    return `${name} must be at least ${schema.minimum}.`;
+  }
+  if (schema.maximum !== undefined && value > schema.maximum) {
+    return `${name} must be at most ${schema.maximum}.`;
+  }
+  if (schema.minLength !== undefined && value.length < schema.minLength) {
+    return `${name} must not be empty.`;
+  }
+  if (schema.format === "uri") {
+    try {
+      new URL(value);
+    } catch {
+      return `${name} must be a valid URL.`;
+    }
+  }
+  if (schema.pattern && !new RegExp(schema.pattern).test(value)) {
+    return `${name} must be an https link.`;
+  }
+  return null;
+}
+
+function validateValue(value, schema, name) {
+  if (!schema) {
+    return `${name} is not allowed.`;
+  }
+  return schema.type === "object" ? validateObject(value, schema, name) : validateScalar(value, schema, name);
+}
+
 // Turns a REST reply into the text a model should read. Problem documents keep their detail.
 async function describeReply(response) {
   if (response.status === 204) {
     return textResult("Done.");
   }
-  const body = await response.json().catch(() => null);
+  const contentType = response.headers.get("content-type") || "";
+  let body;
+  if (/json/i.test(contentType)) {
+    body = await response.json().catch(() => null);
+  } else {
+    const text = await response.text().catch(() => "");
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = text;
+    }
+  }
   if (response.ok) {
-    return textResult(body ?? "Done.");
+    return textResult(body || "Done.");
   }
   return textResult(`${response.status} ${body?.title || "Error"}: ${body?.detail || "The request failed."}`, true);
 }
@@ -170,9 +326,9 @@ export function createMcpServer({ fetchApi }) {
       return { error: rpcError(null, -32602, `Unknown tool: ${params?.name}`).error };
     }
     const args = params.arguments ?? {};
-    const missing = (tool.inputSchema.required ?? []).filter(key => typeof args[key] !== "string" || !args[key]);
-    if (missing.length) {
-      return { result: textResult(`Missing required argument: ${missing.join(", ")}.`, true) };
+    const validation = validateValue(args, tool.inputSchema, "arguments");
+    if (validation) {
+      return { result: textResult(validation, true) };
     }
     try {
       const [method, path, body] = tool.request(args);
