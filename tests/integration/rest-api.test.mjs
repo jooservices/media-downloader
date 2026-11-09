@@ -244,6 +244,21 @@ test("POST validates the body: 400 for bad JSON, 413 for a huge one, 415 for ano
     assert.equal(text.status, 415);
     const none = await call("POST", "/v1/jobs", { body: '{"url":"https://x.com/a"}', json: false });
     assert.equal(none.status, 415);
+    const suffix = await call("POST", "/v1/jobs", {
+      body: { url: ALICE },
+      headers: { "content-type": "application/json-malicious" }
+    });
+    assert.equal(suffix.status, 415);
+    const structuredSuffix = await call("POST", "/v1/jobs", {
+      body: { url: ALICE },
+      headers: { "content-type": "application/json+foo" }
+    });
+    assert.equal(structuredSuffix.status, 415);
+    const charset = await call("POST", "/v1/jobs", {
+      body: { url: ALICE },
+      headers: { "content-type": "application/json; charset=utf-8" }
+    });
+    assert.equal(charset.status, 201);
   }));
 
 test("DELETE /v1/jobs/{id} answers 204 for a known job and 404 for an unknown one", () =>
@@ -313,6 +328,20 @@ test("encoded watch account identifiers round-trip through their self links", ()
     assert.equal((await call("GET", self)).status, 200);
     const list = await call("GET", "/v1/watches");
     assert.equal(list.body.items[0].links.self, self);
+    assert.equal((await call("DELETE", self)).status, 204);
+  }));
+
+test("punctuated watch identifiers round-trip through their self links", () =>
+  withServer({}, async ({ call }) => {
+    const created = await call("POST", "/v1/watches", {
+      body: { url: "https://www.facebook.com/a!b/" }
+    });
+    assert.equal(created.status, 201);
+    const self = created.body.links.self;
+    assert.equal(created.headers.location, self);
+    const list = await call("GET", "/v1/watches");
+    assert.equal(list.body.items[0].links.self, self);
+    assert.equal((await call("GET", self)).status, 200);
     assert.equal((await call("DELETE", self)).status, 204);
   }));
 
@@ -454,6 +483,23 @@ test("failed authentication limits also block a valid token after the failure th
     assert.equal(valid.body.title, "Too Many Requests");
     assert.equal(valid.body.detail, "Too many failed authentication attempts. Try again later.");
     assert.equal(valid.headers["retry-after"], "60");
+  }));
+
+test("unknown routes still enforce Host, Origin, authentication, and rate limits", () =>
+  withServer({ rateLimit: 1 }, async ({ call }) => {
+    const hostile = await call("GET", "/v1/unknown", {
+      headers: { origin: "https://attacker.example" }
+    });
+    assert.equal(hostile.status, 403);
+    const hostileLimited = await call("GET", "/v1/another-unknown", {
+      headers: { origin: "https://attacker.example" }
+    });
+    assert.equal(hostileLimited.status, 429);
+
+    const unknown = await call("GET", "/v1/unknown");
+    assert.equal(unknown.status, 404);
+    const unknownLimited = await call("GET", "/v1/another-unknown");
+    assert.equal(unknownLimited.status, 429);
   }));
 
 test("beyond this computer the API needs a token, and only the hosts it was told about", async () => {

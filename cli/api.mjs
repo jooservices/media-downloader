@@ -14,7 +14,13 @@ export const API_PORT = Number(process.env.PMS_API_PORT) || 38542;
 export const API_BASE = "/v1";
 const MAX_BODY_BYTES = 8192;
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
-const JSON_TYPE = /^application\/json\b/i;
+function isJsonContentType(value) {
+  const [mediaType, ...parameters] = value.split(";");
+  return (
+    mediaType.trim().toLowerCase() === "application/json" &&
+    parameters.every(parameter => /^\s*[\w-]+\s*=\s*(?:[\w.-]+|"[^"]*")\s*$/.test(parameter))
+  );
+}
 const JOB_STATUSES = new Set(["queued", "running", "complete", "incomplete", "paused", "error"]);
 const ALREADY_QUEUED = "already queued or done";
 const DEFAULT_PAGE = 50;
@@ -307,12 +313,7 @@ async function findWatch(deps, params) {
   } catch {
     return null;
   }
-  if (
-    !PLATFORMS.has(platform) ||
-    account.length < 1 ||
-    account.length > 240 ||
-    !/^(?:[a-z0-9._-]|%[0-9a-f]{2})+$/.test(account)
-  ) {
+  if (!PLATFORMS.has(platform)) {
     return null;
   }
   const id = `${platform}/${account}`;
@@ -494,7 +495,7 @@ function admit(request, response, open, deps) {
   if (rateLimited(request, response, deps, token && !open ? "authenticated" : "accepted")) {
     return false;
   }
-  if (request.method === "POST" && !JSON_TYPE.test(request.headers["content-type"] || "")) {
+  if (request.method === "POST" && !isJsonContentType(request.headers["content-type"] || "")) {
     // JSON only: a web page cannot send this type to another origin without a CORS preflight, which is never answered.
     problem(response, 415, "Content-Type must be application/json.");
     return false;
@@ -558,6 +559,9 @@ async function route(request, response, deps) {
     item => item.match && (!item.candidate.needs || deps[item.candidate.needs])
   );
   if (!found) {
+    if (!admit(request, response, false, deps)) {
+      return;
+    }
     problem(response, 404, "There is no such resource.");
     return;
   }
