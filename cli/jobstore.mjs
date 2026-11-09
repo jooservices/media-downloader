@@ -215,7 +215,7 @@ export function createJobStore({ file, legacyDir = null }) {
         rowsOf(db, `SELECT data FROM jobs ${where} ORDER BY created_at DESC, id ${paging}`, ...params)
       ).map(parse);
     },
-    workWindow() {
+    workWindow(now = new Date().toISOString()) {
       const running = sqliteCall(() =>
         rowsOf(db, "SELECT data FROM jobs WHERE status = 'running' ORDER BY updated_at LIMIT ?", JOB_PAGE_SIZE)
       );
@@ -225,7 +225,10 @@ export function createJobStore({ file, legacyDir = null }) {
           `SELECT data FROM (
             SELECT data, ROW_NUMBER() OVER (PARTITION BY platform ORDER BY created_at, id) AS rank
             FROM jobs WHERE status = 'queued'
+              AND (json_extract(data, '$.notBefore') IS NULL OR json_extract(data, '$.notBefore') <= ?)
+              AND json_extract(data, '$.openedAt') IS NULL
           ) WHERE rank <= ?`,
+          now,
           JOB_PAGE_SIZE
         )
       );
@@ -250,10 +253,35 @@ export function createJobStore({ file, legacyDir = null }) {
             .run(...terminal, cutoff).changes
       );
     },
-    // Jobs saved after `iso`, oldest change first.
-    changedSince(iso) {
+    pendingNotifications(limit = 100) {
       return sqliteCall(() =>
-        rowsOf(db, "SELECT data FROM jobs WHERE updated_at > ? ORDER BY updated_at, id", String(iso))
+        rowsOf(
+          db,
+          `SELECT data FROM jobs WHERE status IN ('complete', 'incomplete', 'error')
+            AND json_extract(data, '$.notifiedAt') IS NULL
+          ORDER BY updated_at, id LIMIT ?`,
+          limit
+        )
+      ).map(parse);
+    },
+    matchingJobs(platform, account, pageUrl, limit = JOB_PAGE_SIZE) {
+      return sqliteCall(() =>
+        rowsOf(
+          db,
+          `SELECT data FROM jobs WHERE status IN ('queued', 'running') AND platform = ?
+            AND (json_extract(data, '$.account') = ? COLLATE NOCASE
+              OR (json_extract(data, '$.mediaPage') = 1 AND url = ?))
+          ORDER BY created_at, id LIMIT ?`,
+          platform,
+          account,
+          pageUrl,
+          limit
+        )
+      ).map(parse);
+    },
+    runningJobs(limit = JOB_PAGE_SIZE) {
+      return sqliteCall(() =>
+        rowsOf(db, "SELECT data FROM jobs WHERE status = 'running' ORDER BY updated_at, id LIMIT ?", limit)
       ).map(parse);
     },
     // How many jobs are in each state, for status and metrics.

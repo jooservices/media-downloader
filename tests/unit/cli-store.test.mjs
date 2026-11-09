@@ -366,6 +366,52 @@ test("the supervisor work window excludes history and selects queued jobs oldest
   );
 });
 
+test("eligible queued jobs are selected after any number of delayed or awaiting-ack jobs", async () => {
+  await reset();
+  const jobs = store.jobs();
+  const now = "2026-06-01T00:00:00.000Z";
+  for (let n = 1; n <= 501; n++) {
+    jobs.write({
+      jobId: id(n),
+      status: "queued",
+      platform: "Instagram",
+      createdAt: new Date(Date.parse(now) + n).toISOString(),
+      ...(n % 2 ? { notBefore: "2026-06-02T00:00:00.000Z" } : { openedAt: now })
+    });
+  }
+  jobs.write({
+    jobId: id(502),
+    status: "queued",
+    platform: "Instagram",
+    createdAt: new Date(Date.parse(now) + 1000).toISOString()
+  });
+  assert.deepEqual(
+    jobs.workWindow(now).map(job => job.jobId),
+    [id(502)]
+  );
+});
+
+test("pending notifications, bridge matches, and running jobs have bounded store reads", async () => {
+  await reset();
+  const jobs = store.jobs();
+  for (let n = 1; n <= 120; n++) {
+    jobs.write({
+      jobId: id(n),
+      status: n % 2 ? "complete" : "queued",
+      platform: "Instagram",
+      account: "alice",
+      createdAt: new Date(Date.UTC(2026, 0, n)).toISOString()
+    });
+  }
+  assert.equal(jobs.pendingNotifications(7).length, 7);
+  await jobs.update(id(1), job => {
+    job.notifiedAt = "2026-06-01T00:00:00.000Z";
+  });
+  assert.equal(jobs.pendingNotifications(120).length, 59, "announced jobs fall out of the bounded pending set");
+  assert.equal(jobs.matchingJobs("Instagram", "alice").length, 60);
+  assert.equal(jobs.runningJobs().length, 0);
+});
+
 test("a corrupt database is backed up and fails with an actionable startup error", async () => {
   await reset();
   await store.writeJob({ jobId: id(1), status: "queued" });

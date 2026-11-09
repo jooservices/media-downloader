@@ -78,7 +78,7 @@ function installShutdownSignals(stop) {
 
 async function parkRunningJobs() {
   for (const job of await Promise.resolve()
-    .then(() => queueJobs().list({ status: "running" }))
+    .then(() => queueJobs().runningJobs())
     .catch(() => [])) {
     await updateJob(job.jobId, current => {
       current.status = "incomplete";
@@ -170,7 +170,7 @@ export async function readUrlFile(file) {
     .filter(line => line.startsWith("https://"));
 }
 
-async function buildDeps(log, isStopping = () => false) {
+async function buildDeps(log, isStopping = () => false, openJob = openJobInEdge) {
   const profile = resolvedProfile((await readJson(EDGE_PROFILE_FILE)) || {}, process.platform, process.env);
   return {
     now: Date.now,
@@ -178,10 +178,10 @@ async function buildDeps(log, isStopping = () => false) {
     log,
     loadConfig,
     listJobs,
-    listWorkJobs: () => queueJobs().workWindow(),
+    listWorkJobs: () => queueJobs().workWindow(new Date().toISOString()),
     isStopping,
     updateJob,
-    openJob: openJobInEdge,
+    openJob,
     moveFiles: async destRoot =>
       moveFinishedFiles({
         sourceRoot:
@@ -198,7 +198,13 @@ const hasWork = () => {
   return Number(counts.queued || 0) + Number(counts.running || 0) > 0;
 };
 
-export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null, dueUrls = watchDue } = {}) {
+export async function serve({
+  inbox = DEFAULT_INBOX,
+  once = false,
+  limit = null,
+  dueUrls = watchDue,
+  openJob = openJobInEdge
+} = {}) {
   const other = await runningServer();
   if (other) {
     throw new Error(`Another “serve” is already running (process ${other.pid}).`);
@@ -229,7 +235,7 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
       })
     );
     await writeJsonAtomic(DAEMON_FILE, { pid: process.pid, startedAt: new Date().toISOString(), inbox });
-    const deps = await buildDeps(log, () => stopping);
+    const deps = await buildDeps(log, () => stopping, openJob);
     const recovered = await recoverInterrupted(deps);
     if (recovered) {
       log(`Recovered ${recovered} job(s) left by a previous run.`);
@@ -241,7 +247,7 @@ export async function serve({ inbox = DEFAULT_INBOX, once = false, limit = null,
     const notifier = createNotifier({
       loadConfig,
       log,
-      changedSince: iso => queueJobs().changedSince(iso),
+      pendingNotifications: pendingLimit => queueJobs().pendingNotifications(pendingLimit),
       markNotified: jobId =>
         updateJob(jobId, current => {
           current.notifiedAt = new Date().toISOString();

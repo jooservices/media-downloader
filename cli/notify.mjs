@@ -53,14 +53,13 @@ export async function sendNotification(notify, kind, job, { fetchImpl = fetch, n
 
 export function createNotifier({
   loadConfig,
-  changedSince,
+  pendingNotifications,
   markNotified,
   fetchImpl = fetch,
   now = () => new Date(),
   log = () => {},
   cooldownMs = COOLDOWN_MS
 }) {
-  const since = now().toISOString();
   const lastProblem = new Map();
 
   async function announce(notify, job) {
@@ -88,7 +87,7 @@ export function createNotifier({
       if (!config?.notify) {
         return;
       }
-      for (const job of changedSince(since)) {
+      for (const job of pendingNotifications(100)) {
         if (job.notifiedAt || !["complete", "incomplete", "error"].includes(job.status)) {
           continue;
         }

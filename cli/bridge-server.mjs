@@ -10,7 +10,7 @@ import {
   TERMINAL_STATES,
   normalizeProfileUrl,
   readJson,
-  listJobs,
+  matchingJobs,
   updateJob,
   isJobId,
   isSignInPage,
@@ -218,7 +218,13 @@ async function handlePageReady(message, claimedJobs) {
       return verdict;
     }
   }
-  const matching = (await listJobs())
+  let pageUrl = message.pageUrl || "";
+  try {
+    pageUrl = normalizeProfileUrl(pageUrl).url;
+  } catch {
+    // The store's exact-URL candidate for a media post is only an accelerator; pageMatchesJob rejects bad URLs.
+  }
+  const matching = (await matchingJobs(message.platform, message.account || "", pageUrl))
     .filter(job => !TERMINAL_STATES.has(job.status) && pageMatchesJob(message, job))
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   const waiting = matching.find(job => job.status === "queued" && !claimedJobs.has(claimKey(job)));
