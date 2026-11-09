@@ -124,6 +124,17 @@ function createQueueEngine({ store, settings, login, tabs, now, random, log }) {
     }
   }
 
+  async function rateLimitSignal(tabId, status) {
+    const job = await findByTab(tabId);
+    if (!job || job.status !== "running" || ![420, 429].includes(Number(status))) {
+      return false;
+    }
+    await store.updateJob(job.jobId, current => {
+      current.rateLimitStatus = Number(status);
+    });
+    return true;
+  }
+
   const reset = job => {
     job.status = "queued";
     job.attempts = 0;
@@ -160,6 +171,7 @@ function createQueueEngine({ store, settings, login, tabs, now, random, log }) {
     progress,
     tabNavigated,
     tabClosed,
+    rateLimitSignal,
     recover: () => PageMediaLib.supervisor.recoverInterrupted({ listJobs: store.listJobs, updateJob: store.updateJob }),
 
     async add(urls) {

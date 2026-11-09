@@ -129,6 +129,7 @@ test("a clean completed run resets the back-off level", async () => {
   env.job("1").status = "complete";
   env.job("1").message = "";
   env.job("1").updatedAt = "2026-01-01T00:15:00.001Z";
+  env.job("1").outcomeAt = "2026-01-01T00:15:00.001Z";
   await env.tick();
   assert.equal(env.supervisor.platformStatus().tiktok.backoffLevel, 0);
 });
@@ -169,6 +170,11 @@ test("older completed jobs do not reset escalation and cooldown state survives s
   assert.equal(first.platformStatus().instagram.backoffLevel, 1);
   assert.equal(saved.platforms.Instagram.level, 1);
 
+  Object.assign(env.job("2"), { tabId: null, notifiedAt: "2026-01-01T00:00:01.000Z" });
+  const afterUnrelatedUpdate = makeSupervisor();
+  await afterUnrelatedUpdate.tick();
+  assert.equal(afterUnrelatedUpdate.platformStatus().instagram.backoffLevel, 1);
+
   const restarted = makeSupervisor();
   await restarted.tick();
   assert.equal(restarted.platformStatus().instagram.backoffLevel, 1);
@@ -184,6 +190,25 @@ test("older completed jobs do not reset escalation and cooldown state survives s
   await escalated.tick();
   assert.equal(escalated.platformStatus().instagram.backoffLevel, 2);
   assert.equal(escalated.platformStatus().instagram.backoffUntil, "2026-01-01T00:30:00.000Z");
+});
+
+test("upgrade ignores an old throttling outcome when a newer clean outcome exists", async () => {
+  const env = setup({}, [
+    queued("1", "Instagram", "old-failure", {
+      status: "error",
+      attempts: 2,
+      message: "HTTP 429",
+      updatedAt: "2025-12-31T20:00:00.000Z"
+    }),
+    queued("2", "Instagram", "healthy", {
+      status: "complete",
+      outcomeAt: "2025-12-31T23:59:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    })
+  ]);
+  await env.tick();
+  assert.equal(env.supervisor.platformStatus().instagram.backoffLevel, 0);
+  assert.equal(env.supervisor.platformStatus().instagram.backoffUntil, null);
 });
 
 test("counts the attempt and marks the job as opened", async () => {

@@ -32,6 +32,7 @@ const handlers = {
   CLI_PAGE_READY: handleCliPageReady,
   AUTO_PROGRESS: handleAutoProgress,
   AUTO_DONE: handleAutoProgress,
+  PLATFORM_RATE_LIMIT: handlePlatformRateLimit,
   MEDIA_FOUND: message => cacheMedia(message.media),
   DOWNLOAD_CACHED_MEDIA: message => queueBatch(() => downloadCachedMedia(message)),
   SET_NATIVE_VIDEO_TARGET: message => queueBatch(() => setNativeVideoTarget(message.target)),

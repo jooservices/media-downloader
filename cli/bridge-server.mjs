@@ -18,7 +18,7 @@ import {
 } from "./store.mjs";
 
 const MAX_BODY_BYTES = 1_000_000;
-const JOB_UPDATES = new Set(["JOB_PROGRESS", "JOB_DONE", "JOB_ERROR"]);
+const JOB_UPDATES = new Set(["JOB_PROGRESS", "JOB_DONE", "JOB_ERROR", "JOB_RATE_LIMIT"]);
 const require = createRequire(import.meta.url);
 const { applyProgress, applyError } = require("../lib/job-progress.js");
 
@@ -259,7 +259,11 @@ async function handleJobUpdate(message) {
     }
   }
   const job = await updateJob(jobId, current => {
-    if (message.type === "JOB_ERROR") {
+    if (message.type === "JOB_RATE_LIMIT") {
+      if ([420, 429].includes(Number(message.status)) && !TERMINAL_STATES.has(current.status)) {
+        current.rateLimitStatus = Number(message.status);
+      }
+    } else if (message.type === "JOB_ERROR") {
       applyError(current, message.error);
     } else {
       applyProgress(current, message);

@@ -210,6 +210,22 @@ async function handleAutoProgress(message, sender) {
   return handleBridgeProgress(message, sender);
 }
 
+async function handlePlatformRateLimit(message, sender) {
+  const status = Number(message?.status);
+  const tabId = sender?.tab?.id;
+  if (![420, 429].includes(status) || !Number.isInteger(tabId)) {
+    return null;
+  }
+  if (await queueEngine.rateLimitSignal(tabId, status)) {
+    return { ok: true };
+  }
+  const jobId = (await readCliJobs())[String(tabId)];
+  if (!jobId) {
+    return null;
+  }
+  return postBridgeMessage({ type: "JOB_RATE_LIMIT", jobId, status });
+}
+
 function handleBridgeProgress(message, sender) {
   const finished = message.type === "AUTO_DONE";
   if (finished) {

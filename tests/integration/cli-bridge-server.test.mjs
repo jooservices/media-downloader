@@ -165,6 +165,19 @@ test("a sign-in redirect reaches platform status and starts back-off", async () 
   });
 });
 
+test("a platform HTTP rate-limit signal from the extension reaches the CLI job outcome", async () => {
+  await putJob(1, { status: "running", tabId: 7, attempts: 1 });
+  await handleBridgeMessage({ type: "JOB_RATE_LIMIT", jobId: id(1), status: 429 }, new Set());
+  await handleBridgeMessage(
+    { type: "JOB_DONE", jobId: id(1), state: { status: "complete", message: "Scan complete." } },
+    new Set()
+  );
+  const job = await read(1);
+  assert.equal(job.status, "incomplete");
+  assert.equal(job.rateLimitStatus, 429);
+  assert.match(job.message, /HTTP 429/);
+});
+
 test("a tagged tab on a checkpoint page records a detectable challenge outcome", async () => {
   await putJob(1);
   await handleBridgeMessage(

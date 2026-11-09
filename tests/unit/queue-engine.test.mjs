@@ -74,6 +74,29 @@ test("the scan starts when the opened page announces itself, and finishes when t
   assert.equal((await only(env)).tabId, null);
 });
 
+test("a real page rate-limit signal becomes the terminal job outcome and pauses its platform", async () => {
+  const env = start({
+    tabResponder: () => ({ ok: true, state: { running: true } }),
+    storage: { queueSettings: { workers: { x: 2 }, delaySeconds: { min: 0, max: 0 }, maxAttempts: 3 } }
+  });
+  await ask(env, { type: "QUEUE_ADD", urls: ["https://x.com/alice"] });
+  await env.inContext("queueEngine.tick()");
+  const tab = { tab: { id: 100, url: PAGE.pageUrl } };
+  await ask(env, { type: "CLI_PAGE_READY", ...PAGE }, tab);
+  assert.equal((await only(env)).status, "running");
+  assert.equal((await only(env)).tabId, 100);
+  const jobId = (await only(env)).jobId;
+  assert.deepEqual(plain(await ask(env, { type: "PLATFORM_RATE_LIMIT", status: 429 }, tab)), { ok: true });
+  assert.equal((await only(env)).rateLimitStatus, 429);
+  await ask(env, { type: "AUTO_DONE", state: { jobId, status: "complete", message: "Scan complete." } }, tab);
+  await env.inContext("queueEngine.tick()");
+  const job = await only(env);
+  assert.equal(job.rateLimitStatus, 429);
+  assert.equal(job.status, "incomplete");
+  assert.match(job.message, /HTTP 429/);
+  assert.equal(env.storage.rateLimitBackoffs.platforms.Twitter.level, 1);
+});
+
 test("a page that cannot start the scan fails the job", async () => {
   const env = start({ tabResponder: () => ({ ok: false, error: "no grid" }) });
   await ask(env, { type: "QUEUE_ADD", urls: ["https://x.com/alice"] });
