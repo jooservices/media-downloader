@@ -138,3 +138,24 @@ test("declares X host access for CLI timeline scanning", () => {
   assert.ok(scripts.includes("https://*.x.com/*"));
   assert.ok(scripts.includes("https://*.twitter.com/*"));
 });
+
+test("a Facebook profile without a vanity name keeps its number, so two of them are two accounts", async () => {
+  const { normalizeProfileUrl, accountPages, samePage } = (await import("node:module")).createRequire(import.meta.url)(
+    "../../lib/urls.js"
+  );
+  const first = normalizeProfileUrl("https://www.facebook.com/profile.php?id=100012345&sk=photos&ref=x");
+  assert.equal(first.url, "https://www.facebook.com/profile.php?id=100012345");
+  assert.equal(first.account, "100012345");
+  assert.equal(first.platform, "Facebook");
+  assert.deepEqual(accountPages("https://facebook.com/profile.php?id=5"), ["https://facebook.com/profile.php?id=5"]);
+  assert.equal(
+    samePage("https://www.facebook.com/profile.php?id=5", "https://www.facebook.com/profile.php?id=5&sk=x"),
+    true
+  );
+  assert.equal(
+    samePage("https://www.facebook.com/profile.php?id=5", "https://www.facebook.com/profile.php?id=6"),
+    false
+  );
+  assert.throws(() => normalizeProfileUrl("https://www.facebook.com/profile.php"), /Use an Instagram/);
+  assert.throws(() => normalizeProfileUrl("https://www.facebook.com/profile.php?id=abc"), /Use an Instagram/);
+});
