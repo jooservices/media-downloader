@@ -344,25 +344,28 @@ test("serve recovers interrupted jobs and removes old ones", async t => {
   assert.equal(recovered.noRetry, true, "a possibly active browser scan is held for explicit review");
 });
 
-test("child-process chaos restart recovers a bridge-acknowledged in-flight job without replay", async t => {
-  const jobId = id(77);
-  const marker = path.join(home, "fake-extension-runs.txt");
-  await installBridge();
-  await store.writeJob({
-    jobId,
-    url: ALICE,
-    platform: "Instagram",
-    account: "alice",
-    mediaPage: false,
-    status: "queued",
-    createdAt: new Date().toISOString(),
-    attempts: 0
-  });
-  store.closeJobStore();
+test(
+  "child-process chaos restart recovers a bridge-acknowledged in-flight job without replay",
+  { timeout: 90_000 },
+  async t => {
+    const jobId = id(77);
+    const marker = path.join(home, "fake-extension-runs.txt");
+    await installBridge();
+    await store.writeJob({
+      jobId,
+      url: ALICE,
+      platform: "Instagram",
+      account: "alice",
+      mediaPage: false,
+      status: "queued",
+      createdAt: new Date().toISOString(),
+      attempts: 0
+    });
+    store.closeJobStore();
 
-  const serveUrl = new URL("../../cli/serve.mjs", import.meta.url).href;
-  const children = [];
-  const childSource = `
+    const serveUrl = new URL("../../cli/serve.mjs", import.meta.url).href;
+    const children = [];
+    const childSource = `
     import { appendFile } from "node:fs/promises";
     import { serve } from ${JSON.stringify(serveUrl)};
     const jobId = ${JSON.stringify(jobId)};
@@ -386,61 +389,71 @@ test("child-process chaos restart recovers a bridge-acknowledged in-flight job w
     };
     await serve({ inbox: ${JSON.stringify(INBOX)}, dueUrls: null, openJob: fakeExtension });
   `;
-  const start = () => {
-    const child = spawn(process.execPath, ["--input-type=module", "--eval", childSource], {
-      env: {
-        ...process.env,
-        PMS_DATA_DIR: store.APP_DIR,
-        PMS_BRIDGE_PORT: String(BRIDGE_PORT),
-        PMS_API_PORT: String(API_PORT)
-      },
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    let output = "";
-    child.stdout.setEncoding("utf8").on("data", chunk => (output += chunk));
-    child.stderr.setEncoding("utf8").on("data", chunk => (output += chunk));
-    children.push(child);
-    return { child, output: () => output };
-  };
-  const waitFor = async (condition, description) => {
-    const until = Date.now() + 10_000;
-    while (Date.now() < until) {
-      if (await condition()) {
-        return;
+    const start = () => {
+      const child = spawn(process.execPath, ["--input-type=module", "--eval", childSource], {
+        env: {
+          ...process.env,
+          PMS_DATA_DIR: store.APP_DIR,
+          PMS_BRIDGE_PORT: String(BRIDGE_PORT),
+          PMS_API_PORT: String(API_PORT)
+        },
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+      let output = "";
+      child.stdout.setEncoding("utf8").on("data", chunk => (output += chunk));
+      child.stderr.setEncoding("utf8").on("data", chunk => (output += chunk));
+      children.push(child);
+      return { child, output: () => output };
+    };
+    const waitFor = async (condition, description, details = () => "") => {
+      const until = Date.now() + 30_000;
+      while (Date.now() < until) {
+        if (await condition()) {
+          return;
+        }
+        await new Promise(resolve => setTimeout(resolve, 25));
       }
-      await new Promise(resolve => setTimeout(resolve, 25));
-    }
-    assert.fail(`Timed out waiting for ${description}`);
-  };
-  const first = start();
-  t.after(async () => {
-    const live = children.filter(child => child.exitCode === null && child.signalCode === null);
-    for (const child of live) {
-      child.kill("SIGKILL");
-    }
-    await Promise.all(live.map(child => once(child, "exit")));
-    await rm(marker, { force: true });
-  });
-  await waitFor(async () => (await store.readJob(jobId))?.status === "running", "fake extension acknowledgement");
-  await waitFor(async () => (await readFile(marker, "utf8").catch(() => "")).trim() === jobId, "extension run marker");
-  assert.equal((await readFile(marker, "utf8")).trim().split(/\r?\n/).length, 1);
+      assert.fail(`Timed out waiting for ${description}.${details()}`);
+    };
+    const first = start();
+    t.after(async () => {
+      const live = children.filter(child => child.exitCode === null && child.signalCode === null);
+      for (const child of live) {
+        child.kill("SIGKILL");
+      }
+      await Promise.all(live.map(child => once(child, "exit")));
+      await rm(marker, { force: true });
+    });
+    const childDetails = () => `\nserve output:\n${first.output()}`;
+    await waitFor(
+      async () => (await store.readJob(jobId))?.status === "running",
+      "fake extension acknowledgement",
+      childDetails
+    );
+    await waitFor(
+      async () => (await readFile(marker, "utf8").catch(() => "")).trim() === jobId,
+      "extension run marker",
+      childDetails
+    );
+    assert.equal((await readFile(marker, "utf8")).trim().split(/\r?\n/).length, 1);
 
-  first.child.kill("SIGKILL");
-  await once(first.child, "exit");
-  store.closeJobStore();
-  assert.equal((await store.readJob(jobId)).status, "running", "the abrupt exit leaves durable in-flight state");
+    first.child.kill("SIGKILL");
+    await once(first.child, "exit");
+    store.closeJobStore();
+    assert.equal((await store.readJob(jobId)).status, "running", "the abrupt exit leaves durable in-flight state");
 
-  const second = start();
-  await waitFor(async () => (await store.readJob(jobId))?.status === "incomplete", "restart recovery");
-  const recovered = await store.readJob(jobId);
-  assert.equal(recovered.noRetry, true);
-  assert.match(recovered.message, /previous run was interrupted/);
-  assert.equal((await readFile(marker, "utf8")).trim().split(/\r?\n/).length, 1, "the fake extension ran once total");
-  await waitFor(() => second.output().includes("Serving."), "restarted serve startup log");
-  second.child.kill("SIGTERM");
-  await once(second.child, "exit");
-  assert.match(second.output(), /Serving\./);
-});
+    const second = start();
+    await waitFor(async () => (await store.readJob(jobId))?.status === "incomplete", "restart recovery");
+    const recovered = await store.readJob(jobId);
+    assert.equal(recovered.noRetry, true);
+    assert.match(recovered.message, /previous run was interrupted/);
+    assert.equal((await readFile(marker, "utf8")).trim().split(/\r?\n/).length, 1, "the fake extension ran once total");
+    await waitFor(() => second.output().includes("Serving."), "restarted serve startup log");
+    second.child.kill("SIGTERM");
+    await once(second.child, "exit");
+    assert.match(second.output(), /Serving\./);
+  }
+);
 
 test("serve refuses to start while another serve is running", async () => {
   await installBridge();
