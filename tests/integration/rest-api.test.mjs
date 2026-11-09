@@ -302,6 +302,20 @@ test("watches: create (201 + Location), conflict, list, get, delete", () =>
     assert.equal((await call("PUT", "/v1/watches/instagram/alice", { body: {} })).status, 405);
   }));
 
+test("encoded watch account identifiers round-trip through their self links", () =>
+  withServer({}, async ({ call }) => {
+    const created = await call("POST", "/v1/watches", {
+      body: { url: "https://www.facebook.com/%E4%BD%A0%E5%A5%BD/" }
+    });
+    assert.equal(created.status, 201);
+    const self = created.body.links.self;
+    assert.equal(created.headers.location, self);
+    assert.equal((await call("GET", self)).status, 200);
+    const list = await call("GET", "/v1/watches");
+    assert.equal(list.body.items[0].links.self, self);
+    assert.equal((await call("DELETE", self)).status, 204);
+  }));
+
 test("an account with several pages is one watch, removed in one call", () =>
   withServer({}, async ({ call, state }) => {
     state.watched.push(BOB_FB, `${BOB_FB}photos/`, `${BOB_FB}reels/`);
@@ -405,6 +419,27 @@ test("the API limits request bursts with a problem response", () =>
     assert.equal(limited.status, 429);
     assert.equal(limited.headers["retry-after"], "60");
     assert.match(limited.headers["content-type"], /problem\+json/);
+    assert.equal(limited.body.title, "Too Many Requests");
+    assert.equal(limited.body.status, 429);
+  }));
+
+test("rejected and unauthenticated bursts cannot exhaust the authenticated request quota", () =>
+  withServer({ rateLimit: 2 }, async ({ call }) => {
+    for (let index = 0; index < 3; index++) {
+      const rejected = await call("GET", "/v1/jobs?unsupported=1", {
+        headers: { origin: "https://attacker.example" }
+      });
+      assert.equal(rejected.status, index < 2 ? 403 : 429);
+    }
+    for (let index = 0; index < 3; index++) {
+      const rejected = await call("GET", "/v1/jobs", { auth: false });
+      assert.equal(rejected.status, index < 2 ? 401 : 429);
+    }
+    assert.equal((await call("GET", "/v1/jobs")).status, 200);
+    assert.equal((await call("GET", "/v1/jobs")).status, 200);
+    const limited = await call("GET", "/v1/jobs");
+    assert.equal(limited.status, 429);
+    assert.equal(limited.body.title, "Too Many Requests");
   }));
 
 test("beyond this computer the API needs a token, and only the hosts it was told about", async () => {

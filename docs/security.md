@@ -11,9 +11,9 @@ The API is designed to resist accidental exposure to websites and other local ne
 - Bearer tokens are compared with `timingSafeEqual` after checking equal byte lengths. API calls other than `GET /v1/health` require the token.
 - `api-token` is generated from 256 random bits. On POSIX systems, it is created and repaired to mode `0600`. Windows permissions inherit from the per-user data directory and depend on that directory's ACL.
 - `node cli/mediasaver.mjs api-token rotate` atomically replaces the token without displaying it. Restart `serve` or its installed service after rotation, and have clients reread the token file.
-- The API applies a per-remote-address fixed-window limit of 120 requests per minute and returns `429` with `Retry-After`. This is an in-memory limit and resets when the process restarts.
+- The API applies separate per-remote-address fixed-window limits of 120 requests per minute for accepted requests, failed bearer-token attempts, and Host/Origin-rejected requests. Rejected traffic cannot consume the accepted-request allowance. It returns `429` with `Retry-After`; counters are in memory and reset when the process restarts.
 - JSON request bodies are limited to 8 KiB, require `application/json`, must be JSON objects, and reject unsupported fields or invalid field types. Job and watch URLs are parsed by the shared URL rules and restricted to recognized Instagram, Facebook, X, or TikTok profile and supported post URLs. Their length is capped at 2,048 characters. The API does not fetch the supplied URL itself.
-- Job-list query parameters are allow-listed, validated, and may not be repeated. Watch path segments are decoded safely and constrained to supported platform names and bounded account identifiers.
+- Job-list query parameters are allow-listed, validated, and may not be repeated. Watch path segments are decoded safely and constrained to supported platform names and bounded account identifiers, including percent-encoded identifiers emitted by resource self links.
 - The server checks `Host`, rejects requests carrying `Origin`, sends no CORS headers, and does not answer cross-origin preflights. It binds to `127.0.0.1` by default. The health route remains token-free but is subject to the same host, origin, and rate checks.
 - API errors use `application/problem+json`. Unexpected backend errors return a generic 500 detail instead of exposing file paths, stack traces, or backend messages. The MCP adapter forwards API problem details and keeps protocol output on stdout.
 - `downloadDir` is a local configuration setting, not an API input. It must be an absolute path; drive roots, Windows system folders, null bytes, and explicit `.`/`..` segments are rejected. The configured directory is user-controlled and must be trusted.
@@ -24,7 +24,7 @@ Remote binding is an explicit opt-in through `PMS_API_HOST` and requires a token
 
 ## Residual risks
 
-- The rate limiter is process-local, uses the socket peer address, and is not a distributed denial-of-service control. A local process can consume the allowance shared by other local callers.
+- The rate limiter is process-local, uses the socket peer address, and is not a distributed denial-of-service control. Callers behind one proxy share the allowance within each request category.
 - Host and Origin checks do not authenticate clients. The bearer token remains the API credential, and a same-user process that can read it can use it.
 - HTTPS URL validation restricts the platform hostname and accepted path shape, but the browser later visits that platform and resolves its DNS. Compromised platform DNS, browser extensions, or platform content are outside this API's SSRF boundary.
 - The API has no built-in TLS. Remote deployments need a correctly configured TLS proxy or equivalent network termination.

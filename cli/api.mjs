@@ -91,6 +91,7 @@ const TITLES = {
   413: "Content Too Large",
   415: "Unsupported Media Type",
   422: "Unprocessable Content",
+  429: "Too Many Requests",
   500: "Internal Server Error"
 };
 
@@ -306,7 +307,12 @@ async function findWatch(deps, params) {
   } catch {
     return null;
   }
-  if (!PLATFORMS.has(platform) || !/^[a-z0-9._-]{1,80}$/.test(account)) {
+  if (
+    !PLATFORMS.has(platform) ||
+    account.length < 1 ||
+    account.length > 240 ||
+    !/^(?:[a-z0-9._-]|%[0-9a-f]{2})+$/.test(account)
+  ) {
     return null;
   }
   const id = `${platform}/${account}`;
@@ -397,8 +403,8 @@ function hasValidToken(request, token) {
 
 function createLimiter() {
   const windows = new Map();
-  return (request, now, limit) => {
-    const key = request.socket.remoteAddress || "unknown";
+  return (request, now, limit, category) => {
+    const key = `${request.socket.remoteAddress || "unknown"}:${category}`;
     let entry = windows.get(key);
     if (!entry || now - entry.started >= RATE_WINDOW_MS) {
       entry = { started: now, count: 0 };
@@ -417,22 +423,65 @@ function createLimiter() {
 }
 
 // Host, token and body type are checked before any route runs. Returns false after it has answered.
-function admit(request, response, open, { allowedHosts, token }) {
+function rateLimited(request, response, deps, category) {
+  if (!deps.limiter(request, Date.now(), deps.rateLimit, category)) {
+    return false;
+  }
+  problem(response, 429, "Too many requests. Try again later.", { "Retry-After": "60" });
+  return true;
+}
+
+function rejectRequest({ request, response, deps, category, status, detail, headers = {} }) {
+  if (!rateLimited(request, response, deps, category)) {
+    problem(response, status, detail, headers);
+  }
+}
+
+function admit(request, response, open, deps) {
+  const { allowedHosts, token } = deps;
   if (!allowedHosts().includes(request.headers.host)) {
-    problem(response, 403, "The Host header is not allowed.");
-  } else if (request.headers.origin) {
-    problem(response, 403, "Cross-origin requests are not allowed.");
-  } else if (token && !open && !hasValidToken(request, token)) {
-    problem(response, 401, "Send the API token as: Authorization: Bearer <token>.", {
-      "WWW-Authenticate": 'Bearer realm="media-downloader"'
+    rejectRequest({
+      request,
+      response,
+      deps,
+      category: "rejected",
+      status: 403,
+      detail: "The Host header is not allowed."
     });
-  } else if (request.method === "POST" && !JSON_TYPE.test(request.headers["content-type"] || "")) {
+    return false;
+  }
+  if (request.headers.origin) {
+    rejectRequest({
+      request,
+      response,
+      deps,
+      category: "rejected",
+      status: 403,
+      detail: "Cross-origin requests are not allowed."
+    });
+    return false;
+  }
+  if (token && !open && !hasValidToken(request, token)) {
+    rejectRequest({
+      request,
+      response,
+      deps,
+      category: "unauthenticated",
+      status: 401,
+      detail: "Send the API token as: Authorization: Bearer <token>.",
+      headers: { "WWW-Authenticate": 'Bearer realm="media-downloader"' }
+    });
+    return false;
+  }
+  if (rateLimited(request, response, deps, token && !open ? "authenticated" : "accepted")) {
+    return false;
+  }
+  if (request.method === "POST" && !JSON_TYPE.test(request.headers["content-type"] || "")) {
     // JSON only: a web page cannot send this type to another origin without a CORS preflight, which is never answered.
     problem(response, 415, "Content-Type must be application/json.");
-  } else {
-    return true;
+    return false;
   }
-  return false;
+  return true;
 }
 
 function validateQuery(request, response, url) {
@@ -456,6 +505,9 @@ async function dispatchRoute(request, response, deps, url, candidate, match) {
   if (!admit(request, response, candidate.open, deps)) {
     return;
   }
+  if (!validateQuery(request, response, url)) {
+    return;
+  }
   const allowed = METHODS.filter(method => candidate[method]);
   const allow = ["OPTIONS", ...(candidate.GET ? ["HEAD"] : []), ...allowed].join(", ");
   if (request.method === "OPTIONS") {
@@ -477,10 +529,6 @@ async function dispatchRoute(request, response, deps, url, candidate, match) {
 }
 
 async function route(request, response, deps) {
-  if (deps.limiter(request, Date.now(), deps.rateLimit)) {
-    problem(response, 429, "Too many requests. Try again later.", { "Retry-After": "60" });
-    return;
-  }
   let url;
   try {
     url = new URL(request.url || "/", "http://127.0.0.1");
@@ -493,9 +541,6 @@ async function route(request, response, deps) {
   );
   if (!found) {
     problem(response, 404, "There is no such resource.");
-    return;
-  }
-  if (!validateQuery(request, response, url)) {
     return;
   }
   await dispatchRoute(request, response, deps, url, found.candidate, found.match);
