@@ -1,19 +1,21 @@
 # Dedicated CI for jooservices/media-downloader — GitHub-hosted runners
-# Pull-request quality gate: full pipeline. Post-merge heads run ci-post-merge.yml.
+# Full quality gate for every pull request and for pushes to protected branches.
 name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
+  push:
     branches: [master, develop]
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # Every event for a PR shares a group, so metadata edits and retargets
+  # supersede older runs without publishing skipped quality checks.
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
-  pull-requests: read
-  actions: read
 
 jobs:
   validate:
@@ -88,6 +90,9 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
     strategy:
       fail-fast: true
       matrix:
@@ -103,7 +108,6 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node.js
-        if: matrix.name == 'Dependencies'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
@@ -126,7 +130,7 @@ jobs:
             .
 
       - name: Dependency Review
-        if: matrix.name == 'Dependencies'
+        if: matrix.name == 'Dependencies' && github.event_name == 'pull_request'
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
 
       - name: Gitleaks OSS CLI
@@ -304,7 +308,10 @@ jobs:
         run: npm run test:coverage
 
       - name: Upload to Codecov
-        if: github.event.pull_request.user.type != 'Bot'
+        if: >
+          github.event_name == 'push' ||
+          (github.event.pull_request.head.repo.full_name == github.repository &&
+          github.event.pull_request.user.type != 'Bot')
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -313,7 +320,10 @@ jobs:
           verbose: true
 
       - name: Resolve SonarQube host URL
-        if: github.event.pull_request.user.type != 'Bot'
+        if: >
+          github.event_name == 'push' ||
+          (github.event.pull_request.head.repo.full_name == github.repository &&
+          github.event.pull_request.user.type != 'Bot')
         id: sonar-config
         env:
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
@@ -332,7 +342,10 @@ jobs:
           echo "host_url=${host_url}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload SonarQube analysis
-        if: github.event.pull_request.user.type != 'Bot'
+        if: >
+          github.event_name == 'push' ||
+          (github.event.pull_request.head.repo.full_name == github.repository &&
+          github.event.pull_request.user.type != 'Bot')
         uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
