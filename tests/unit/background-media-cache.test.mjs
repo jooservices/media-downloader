@@ -303,6 +303,32 @@ test("a cached-media read responds when the download queue is busy", async () =>
   assert.deepEqual(result.coveredIds, ["busy001"]);
 });
 
+test("cached downloads do not wait for searches of unrelated pending files", async () => {
+  const env = loadBackground();
+  await found(env, [video("fresh01")]);
+  await env.send({
+    type: "DOWNLOAD_ITEMS",
+    items: Array.from({ length: 7 }, (_, index) => ({
+      platform: "Twitter",
+      account: "other",
+      key: `Twitter|image|unrelated${index}|1`,
+      url: `https://pbs.twimg.com/media/unrelated${index}.jpg`
+    }))
+  });
+  env.inContext("chrome.downloads.search = async () => new Promise(() => {})");
+
+  const request = saveCached(env, { platform: "Twitter", account: "alice", limit: 1 });
+  const returnedQuickly = await Promise.race([
+    request.then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 100))
+  ]);
+  const result = await request;
+  assert.equal(returnedQuickly, true);
+  assert.equal(result.started, 1);
+  assert.equal(env.started.length, 8);
+  assert.equal(env.started.at(-1).url, video("fresh01").url);
+});
+
 test("a limit that is not a whole number is ignored", async () => {
   const env = loadBackground();
   await found(env, [photo("nl001"), photo("nl002")]);

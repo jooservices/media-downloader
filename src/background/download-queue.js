@@ -324,13 +324,13 @@ async function processBatchItem(initialState, item) {
   return startItemDownload(initialState, item, previousAttempts + 1);
 }
 
-async function downloadBatch(inputItems) {
+async function downloadBatch(inputItems, { reconcile = true } = {}) {
   if (!Array.isArray(inputItems)) {
     return { ok: false, error: "No media list was provided." };
   }
   const total = { started: 0, skipped: 0, failed: 0 };
   const errors = [];
-  let state = await reconcileDownloads();
+  let state = reconcile ? await reconcileDownloads() : await readDownloadState();
   for (const item of inputItems.slice(0, MAX_BATCH_ITEMS)) {
     const result = await processBatchItem(state, item);
     if (result.full) {

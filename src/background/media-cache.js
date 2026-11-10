@@ -159,7 +159,12 @@ async function downloadCachedMedia({ platform, account, ids, limit }) {
   if (!items.length) {
     return { ok: true, started: 0, skipped: 0, failed: 0, pending: 0, errors: [], cached: 0, coveredIds, diag };
   }
-  return { ...(await queueBatch(() => downloadBatch(items))), cached: items.length, coveredIds, diag };
+  return {
+    ...(await queueBatch(() => downloadBatch(items, { reconcile: false }))),
+    cached: items.length,
+    coveredIds,
+    diag
+  };
 }
 
 async function selectCachedItems(items, pendingDownloads, hasLimit, freshLimit) {
