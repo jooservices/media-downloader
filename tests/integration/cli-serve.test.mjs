@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { execFileSync, spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { once } from "node:events";
 import net from "node:net";
 import os from "node:os";
@@ -33,10 +34,12 @@ const store = await import("../../cli/store.mjs");
 const serveModule = await import("../../cli/serve.mjs");
 const watchModule = await import("../../cli/watch.mjs");
 const { addUrls, addCommand, moveCommand, readUrlFile, runningServer, serve } = serveModule;
+const { platformHealth } = createRequire(import.meta.url)("../../lib/platform-health.js");
 
 const ORIGIN = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
 const ALICE = "https://www.instagram.com/alice/";
 const BOB = "https://x.com/Bob/";
+const CANARY = "https://www.instagram.com/canary/";
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const DAY = 24 * 60 * 60 * 1000;
 const INBOX = path.join(home, "inbox.txt");
@@ -690,3 +693,124 @@ test("serve tells the notification address about a job that ends in trouble", as
   const [saved] = await store.listJobs();
   assert.ok(saved.notifiedAt, "the job is marked, so it is announced only once");
 });
+
+test(
+  "serve queues configured canaries on their interval and notifies debounced health recovery",
+  { timeout: 20_000 },
+  async t => {
+    await installBridge();
+    await putJob(101, ALICE, "error", 31, { message: "selector failed", started: 0 });
+
+    const events = [];
+    let resolveBroken;
+    let resolveRecovered;
+    const brokenNotification = new Promise(resolve => (resolveBroken = resolve));
+    const recoveredNotification = new Promise(resolve => (resolveRecovered = resolve));
+    const hook = createServer(async (request, response) => {
+      const chunks = [];
+      for await (const chunk of request) {
+        chunks.push(chunk);
+      }
+      const event = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      events.push(event);
+      response.writeHead(204).end();
+      if (event.state === "broken") {
+        await store.writeJob({
+          jobId: id(102),
+          url: ALICE,
+          platform: "Instagram",
+          account: "alice",
+          status: "complete",
+          started: 1,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
+        resolveBroken();
+      } else if (event.state === "ok") {
+        resolveRecovered();
+      }
+    });
+    hook.listen(0, "127.0.0.1");
+    await once(hook, "listening");
+    const { port } = hook.address();
+    await store.writeJsonAtomic(store.CONFIG_FILE, {
+      canary: { accounts: [CANARY], intervalMinutes: 15 },
+      notify: { url: `http://127.0.0.1:${port}/health`, format: "json", events: ["backoff-start"] }
+    });
+
+    const lines = capture(t);
+    const clock = { value: Date.now() };
+    let resolveFirstProbe;
+    const firstProbeAttempted = new Promise(resolve => {
+      resolveFirstProbe = resolve;
+    });
+    const controller = new AbortController();
+    const stop = () => controller.abort();
+    const serving = serve({
+      inbox: INBOX,
+      dueUrls: null,
+      signal: controller.signal,
+      now: () => clock.value,
+      healthDebounceMs: 10,
+      openJob: async job => {
+        resolveFirstProbe(job);
+        throw new Error("test browser is unavailable");
+      }
+    });
+    try {
+      const firstProbe = await Promise.race([
+        firstProbeAttempted,
+        new Promise(resolve => setTimeout(() => resolve(null), 8000))
+      ]);
+      assert.ok(firstProbe, `serve did not open the configured probe: ${lines.join("")}`);
+      assert.equal(firstProbe.url, CANARY);
+      assert.equal(
+        platformHealth(await store.listJobs(), ["Instagram"])[0].state,
+        "broken",
+        "the retained diagnostic makes the first health observation broken"
+      );
+      await new Promise(resolve => setTimeout(resolve, 50));
+      clock.value += 11;
+      assert.equal(
+        await Promise.race([
+          brokenNotification.then(() => true),
+          new Promise(resolve => setTimeout(() => resolve(false), 6000))
+        ]),
+        true,
+        `serve did not send the broken transition: ${lines.join("")} ${JSON.stringify(events)}`
+      );
+      await new Promise(resolve => setTimeout(resolve, 50));
+      clock.value += 11;
+      await new Promise(resolve => setTimeout(resolve, 2_100));
+      clock.value += 11;
+      assert.equal(
+        await Promise.race([
+          recoveredNotification.then(() => true),
+          new Promise(resolve => setTimeout(() => resolve(false), 6000))
+        ]),
+        true,
+        `serve did not send the recovery transition: ${lines.join("")}`
+      );
+      stop();
+      await serving;
+
+      const jobs = await store.listJobs();
+      assert.equal(
+        jobs.filter(job => job.url === CANARY).length,
+        1,
+        "the 15 minute interval prevents duplicate probes"
+      );
+      assert.deepEqual(
+        events.map(event => [event.event, event.state]),
+        [
+          ["platform-health", "broken"],
+          ["platform-health", "ok"]
+        ]
+      );
+    } finally {
+      stop();
+      await serving.catch(() => {});
+      await new Promise(resolve => hook.close(resolve));
+    }
+  }
+);

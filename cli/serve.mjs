@@ -75,12 +75,20 @@ function createServerCloser(servers) {
   };
 }
 
-function installShutdownSignals(stop) {
+function installShutdownSignals(stop, signal) {
   const signals = process.platform === "win32" ? ["SIGINT", "SIGTERM", "SIGBREAK"] : ["SIGINT", "SIGTERM"];
-  for (const signal of signals) {
-    process.once(signal, stop);
+  for (const name of signals) {
+    process.once(name, stop);
   }
-  return () => signals.forEach(signal => process.removeListener(signal, stop));
+  if (signal?.aborted) {
+    stop();
+  } else {
+    signal?.addEventListener("abort", stop, { once: true });
+  }
+  return () => {
+    signals.forEach(name => process.removeListener(name, stop));
+    signal?.removeEventListener("abort", stop);
+  };
 }
 
 async function parkRunningJobs() {
@@ -251,12 +259,86 @@ const hasWork = () => {
   return Number(counts.queued || 0) + Number(counts.running || 0) > 0;
 };
 
+async function queueCanariesWhenDue(settings, lastRun, now, log) {
+  if (!settings?.canary || now() - lastRun < settings.canary.intervalMinutes * 60_000) {
+    return lastRun;
+  }
+  const nextRun = now();
+  const probes = await queueCanaryAccounts(settings, await listJobs(), addUrls);
+  if (probes.created.length) {
+    log(`Queued ${probes.created.length} configured platform canary job(s).`);
+  }
+  return nextRun;
+}
+
+async function runServePass({
+  inbox,
+  limit,
+  dueUrls,
+  now,
+  times,
+  log,
+  supervisor,
+  notifier,
+  healthNotifier,
+  isStopping
+}) {
+  if (Date.now() - times.lastPrune >= PRUNE_EVERY_MS) {
+    times.lastPrune = Date.now();
+    const removed = await prune();
+    if (removed.jobs || removed.logs) {
+      log(`Removed ${removed.jobs} old job(s) and ${removed.logs} old log(s).`);
+    }
+  }
+  const settings = await loadConfig().catch(() => null);
+  times.lastCanaryRun = await queueCanariesWhenDue(settings, times.lastCanaryRun, now, log);
+  const { created } = await addUrls(await readUrlFile(inbox), { limit: settings?.limit ?? limit });
+  const rescans = dueUrls
+    ? await addUrls(await dueUrls(), { force: true, limit: settings?.limit ?? limit })
+    : { created: [] };
+  const queued = created.length + rescans.created.length;
+  if (queued) {
+    log(`Queued ${queued} URL(s) from the inbox.`);
+  }
+  if (isStopping()) {
+    return;
+  }
+  await supervisor.tick();
+  if (!isStopping()) {
+    await notifier.tick();
+    await healthNotifier.tick();
+  }
+}
+
+async function runServeLoop({ once, hasWorkFn, isStopping, log, pass }) {
+  let failures = 0;
+  while (!isStopping()) {
+    try {
+      await pass();
+      failures = 0;
+    } catch (error) {
+      failures++;
+      log(`Pass failed (${failures}/${MAX_CONSECUTIVE_FAILURES}): ${error?.message || error}`);
+      if (failures >= MAX_CONSECUTIVE_FAILURES) {
+        throw error;
+      }
+    }
+    if (once && !failures && !hasWorkFn()) {
+      break;
+    }
+    await sleep(TICK_MS);
+  }
+}
+
 export async function serve({
   inbox = DEFAULT_INBOX,
   once = false,
   limit = null,
   dueUrls = watchDue,
-  openJob = openJobInEdge
+  openJob = openJobInEdge,
+  now = Date.now,
+  healthDebounceMs = 60_000,
+  signal = null
 } = {}) {
   const other = await runningServer();
   if (other) {
@@ -306,7 +388,7 @@ export async function serve({
       log(`Recovered ${recovered} job(s) left by a previous run.`);
     }
     supervisor = createSupervisor({ ...deps, onBackoff: event => notifier?.backoff(event) });
-    removeShutdownSignals = installShutdownSignals(stop);
+    removeShutdownSignals = installShutdownSignals(stop, signal);
     log(`Serving. REST API at http://127.0.0.1:${API_PORT}/v1 (token in ${API_TOKEN_FILE}), or add a URL to ${inbox}.`);
 
     notifier = createNotifier({
@@ -321,63 +403,32 @@ export async function serve({
     const healthNotifier = createPlatformHealthNotifier({
       loadConfig,
       log,
+      now,
+      debounceMs: healthDebounceMs,
       getHealth: async () => assessPlatforms(await listJobs())
     });
-    let lastCanaryRun = 0;
-    let lastPrune = 0;
-    const pass = async () => {
-      if (Date.now() - lastPrune >= PRUNE_EVERY_MS) {
-        lastPrune = Date.now();
-        const removed = await prune();
-        if (removed.jobs || removed.logs) {
-          log(`Removed ${removed.jobs} old job(s) and ${removed.logs} old log(s).`);
-        }
-      }
-      const settings = await loadConfig().catch(() => null);
-      if (settings?.canary && Date.now() - lastCanaryRun >= settings.canary.intervalMinutes * 60_000) {
-        lastCanaryRun = Date.now();
-        const probes = await queueCanaryAccounts(settings, await listJobs(), addUrls);
-        if (probes.created.length) {
-          log(`Queued ${probes.created.length} configured platform canary job(s).`);
-        }
-      }
-      const { created } = await addUrls(await readUrlFile(inbox), { limit: settings?.limit ?? limit });
-      const rescans = dueUrls
-        ? await addUrls(await dueUrls(), { force: true, limit: settings?.limit ?? limit })
-        : { created: [] };
-      const queued = created.length + rescans.created.length;
-      if (queued) {
-        log(`Queued ${queued} URL(s) from the inbox.`);
-      }
-      if (stopping) {
-        return;
-      }
-      await supervisor.tick();
-      if (!stopping) {
-        await notifier.tick();
-        await healthNotifier.tick();
-      }
-    };
+    const times = { lastCanaryRun: 0, lastPrune: 0 };
 
-    // One bad pass (a file briefly locked, a disk hiccup) must not end an unattended run;
-    // many in a row means something is really wrong, so stop and say so.
-    let failures = 0;
-    while (!stopping) {
-      try {
-        await pass();
-        failures = 0;
-      } catch (error) {
-        failures++;
-        log(`Pass failed (${failures}/${MAX_CONSECUTIVE_FAILURES}): ${error?.message || error}`);
-        if (failures >= MAX_CONSECUTIVE_FAILURES) {
-          throw error;
-        }
-      }
-      if (once && !failures && !hasWork()) {
-        break;
-      }
-      await sleep(TICK_MS);
-    }
+    // One bad pass must not end an unattended run; repeated failures stop it with the last error.
+    await runServeLoop({
+      once,
+      hasWorkFn: hasWork,
+      isStopping: () => stopping,
+      log,
+      pass: () =>
+        runServePass({
+          inbox,
+          limit,
+          dueUrls,
+          now,
+          times,
+          log,
+          supervisor,
+          notifier,
+          healthNotifier,
+          isStopping: () => stopping
+        })
+    });
   } catch (error) {
     serveError = error;
   }
