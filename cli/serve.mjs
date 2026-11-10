@@ -310,7 +310,7 @@ async function runServePass({
   }
 }
 
-async function runServeLoop({ once, hasWorkFn, isStopping, log, pass }) {
+async function runServeLoop({ once, tickMs, hasWorkFn, isStopping, log, pass }) {
   let failures = 0;
   while (!isStopping()) {
     try {
@@ -326,7 +326,7 @@ async function runServeLoop({ once, hasWorkFn, isStopping, log, pass }) {
     if (once && !failures && !hasWorkFn()) {
       break;
     }
-    await sleep(TICK_MS);
+    await sleep(tickMs);
   }
 }
 
@@ -338,6 +338,7 @@ export async function serve({
   openJob = openJobInEdge,
   now = Date.now,
   healthDebounceMs = 60_000,
+  tickMs = TICK_MS,
   signal = null
 } = {}) {
   const other = await runningServer();
@@ -412,6 +413,7 @@ export async function serve({
     // One bad pass must not end an unattended run; repeated failures stop it with the last error.
     await runServeLoop({
       once,
+      tickMs,
       hasWorkFn: hasWork,
       isStopping: () => stopping,
       log,

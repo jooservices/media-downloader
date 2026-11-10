@@ -752,6 +752,7 @@ test(
       signal: controller.signal,
       now: () => clock.value,
       healthDebounceMs: 10,
+      tickMs: 20,
       openJob: async job => {
         resolveFirstProbe(job);
         throw new Error("test browser is unavailable");
@@ -781,7 +782,7 @@ test(
       );
       await new Promise(resolve => setTimeout(resolve, 50));
       clock.value += 11;
-      await new Promise(resolve => setTimeout(resolve, 2_100));
+      await new Promise(resolve => setTimeout(resolve, 50));
       clock.value += 11;
       assert.equal(
         await Promise.race([
