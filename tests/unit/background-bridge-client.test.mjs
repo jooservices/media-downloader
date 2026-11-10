@@ -127,7 +127,87 @@ test("a start answer scans the page the CLI chose, remembers the tab's job, and 
   assert.deepEqual(plain(env.storage.activeCliJobs), { 7: "job-1" });
 });
 
-test("a job with no repair list still starts, and a scan that is not running is not remembered", async () => {
+test("a rate-limit signal before page readiness is saved and attached when the CLI job starts", async () => {
+  const { fetchImpl, posted } = bridge(request =>
+    request.type === "PAGE_READY" ? { ok: true, type: "START_JOB", job: JOB, tabId: 7 } : { ok: true }
+  );
+  const env = loadBackground({ fetchImpl });
+  withTab(env);
+
+  assert.deepEqual(plain(await env.send({ type: "PLATFORM_RATE_LIMIT", status: 429 }, sender)), { ok: true });
+  assert.equal(env.storage.pendingCliRateLimits[7].status, 429);
+  assert.ok(Number.isFinite(env.storage.pendingCliRateLimits[7].at));
+  await env.send({ ...PAGE }, sender);
+
+  assert.deepEqual(plain(env.storage.activeCliJobs), { 7: "job-1" });
+  assert.deepEqual(plain(env.storage.pendingCliRateLimits), {});
+  assert.deepEqual(
+    posted.map(message => message.type),
+    ["PAGE_READY", "JOB_RATE_LIMIT"]
+  );
+  assert.equal(posted[1].jobId, "job-1");
+  assert.equal(posted[1].status, 429);
+});
+
+test("an expired buffered rate limit is discarded instead of attached to a later job", async () => {
+  const { fetchImpl, posted } = bridge(request =>
+    request.type === "PAGE_READY" ? { ok: true, type: "START_JOB", job: JOB, tabId: 7 } : { ok: true }
+  );
+  const env = loadBackground({ fetchImpl });
+  withTab(env);
+
+  await env.send({ type: "PLATFORM_RATE_LIMIT", status: 429 }, sender);
+  env.storage.pendingCliRateLimits[7].at = Date.now() - 60_001;
+  await env.send({ ...PAGE }, sender);
+
+  assert.deepEqual(plain(env.storage.pendingCliRateLimits), {});
+  assert.deepEqual(
+    posted.map(message => message.type),
+    ["PAGE_READY"]
+  );
+});
+
+test("a failed buffered signal flush does not stop the scan from starting", async () => {
+  const { fetchImpl, posted } = bridge(request => {
+    if (request.type === "PAGE_READY") {
+      return { ok: true, type: "START_JOB", job: JOB, tabId: 7 };
+    }
+    if (request.type === "JOB_RATE_LIMIT") {
+      return new Error("Failed to fetch");
+    }
+    return { ok: true };
+  });
+  const env = loadBackground({ fetchImpl });
+  const sent = withTab(env);
+
+  await env.send({ type: "PLATFORM_RATE_LIMIT", status: 429 }, sender);
+  await env.send({ ...PAGE }, sender);
+
+  assert.ok(sent().some(item => item.message.type === "AUTO_START_CLI"));
+  assert.equal(env.storage.pendingCliRateLimits[7].status, 429);
+  assert.ok(posted.some(message => message.type === "JOB_RATE_LIMIT"));
+});
+
+test("a buffered rate limit is attached before a CLI scan that fails to start", async () => {
+  const { fetchImpl, posted } = bridge(request =>
+    request.type === "PAGE_READY" ? { ok: true, type: "START_JOB", job: JOB, tabId: 7 } : { ok: true }
+  );
+  const env = loadBackground({ fetchImpl });
+  withTab(env, { pageReply: { ok: false, error: "The page refused to start." } });
+
+  await env.send({ type: "PLATFORM_RATE_LIMIT", status: 429 }, sender);
+  await env.send({ ...PAGE }, sender);
+
+  assert.deepEqual(
+    posted.map(message => message.type),
+    ["PAGE_READY", "JOB_RATE_LIMIT", "JOB_ERROR"]
+  );
+  assert.equal(posted[1].jobId, JOB.jobId);
+  assert.equal(posted[1].status, 429);
+  assert.equal(posted[2].error, "The page refused to start.");
+});
+
+test("a job with no repair list still starts, and its tab is associated before scan confirmation", async () => {
   const { fetchImpl } = bridge(() => ({
     ok: true,
     type: "START_JOB",
@@ -138,7 +218,7 @@ test("a job with no repair list still starts, and a scan that is not running is 
   const sent = withTab(env, { pageReply: { ok: true, state: { running: false } } });
   await env.send({ ...PAGE }, sender);
   assert.deepEqual(sent()[0].message.job.repairTargets, []);
-  assert.equal(env.storage.activeCliJobs, undefined);
+  assert.deepEqual(plain(env.storage.activeCliJobs), { 7: "job-2" });
 });
 
 test("a start answer is reported as a job error when the tab moved on, the page refuses, or messaging fails", async () => {
@@ -152,12 +232,15 @@ test("a start answer is reported as a job error when the tab moved on, the page 
     moved.posted.filter(message => message.type === "JOB_ERROR").map(message => message.error),
     ["The tab URL changed before the download started."]
   );
+  assert.deepEqual(plain(movedEnv.storage.activeCliJobs), {});
+  assert.equal(plain(movedEnv.storage.recentlyCompletedCliJobs)[7].jobId, JOB.jobId);
 
   const refused = bridge(request => (request.type === "PAGE_READY" ? start() : { ok: true }));
   const refusedEnv = loadBackground({ fetchImpl: refused.fetchImpl });
   withTab(refusedEnv, { pageReply: { ok: false, error: "Not a profile" } });
   await refusedEnv.send({ ...PAGE }, sender);
   assert.equal(refused.posted.find(message => message.type === "JOB_ERROR").error, "Not a profile");
+  assert.deepEqual(plain(refusedEnv.storage.activeCliJobs), {});
 
   const silent = bridge(request => (request.type === "PAGE_READY" ? start() : { ok: true }));
   const silentEnv = loadBackground({ fetchImpl: silent.fetchImpl });
@@ -292,6 +375,19 @@ test("a finished job is reported, its tab forgotten and closed; an unidentified 
   await env.send({ type: "AUTO_DONE", state: { jobId: "job-2" } });
   assert.equal(posted[1].type, "JOB_DONE");
   assert.deepEqual(env.tabRemoves, [7], "no tab to close");
+});
+
+test("a late rate-limit signal uses the recently completed CLI tab association", async () => {
+  const { fetchImpl, posted } = bridge();
+  const env = loadBackground({ fetchImpl, storage: { activeCliJobs: { 7: "job-1" } } });
+  await env.send({ type: "AUTO_DONE", state: { jobId: "job-1" } }, sender);
+  await env.send({ type: "PLATFORM_RATE_LIMIT", status: 429 }, sender);
+  assert.deepEqual(
+    posted.map(message => message.type),
+    ["JOB_DONE", "JOB_RATE_LIMIT"]
+  );
+  assert.equal(posted[1].jobId, "job-1");
+  assert.equal(posted[1].status, 429);
 });
 
 test("a job the CLI cancelled stops its scan, is forgotten and has its tab closed", async () => {

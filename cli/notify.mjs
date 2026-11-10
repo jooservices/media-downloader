@@ -18,6 +18,15 @@ export function classify(job) {
 
 export function describe(kind, job) {
   const who = `${job.platform}/${job.account}`;
+  if (kind === "backoff-start") {
+    return {
+      title: `Back-off started for ${job.platform}`,
+      text: `New jobs are paused until ${job.backoffUntil} (back-off level ${job.backoffLevel}).`
+    };
+  }
+  if (kind === "backoff-end") {
+    return { title: `Back-off ended for ${job.platform}`, text: "The configured worker count has been restored." };
+  }
   if (kind === "new-content") {
     return { title: `New from ${who}`, text: `${filesOf(job)} new file(s) saved.` };
   }
@@ -42,6 +51,8 @@ export async function sendNotification(notify, kind, job, { fetchImpl = fetch, n
             url: job.url,
             files: filesOf(job),
             jobId: job.jobId,
+            backoffUntil: job.backoffUntil,
+            backoffLevel: job.backoffLevel,
             at: now().toISOString()
           })
         };
@@ -53,14 +64,13 @@ export async function sendNotification(notify, kind, job, { fetchImpl = fetch, n
 
 export function createNotifier({
   loadConfig,
-  changedSince,
+  pendingNotifications,
   markNotified,
   fetchImpl = fetch,
   now = () => new Date(),
   log = () => {},
   cooldownMs = COOLDOWN_MS
 }) {
-  const since = now().toISOString();
   const lastProblem = new Map();
 
   async function announce(notify, job) {
@@ -82,17 +92,44 @@ export function createNotifier({
     }
   }
 
+  async function announceBackoff(event) {
+    const config = await loadConfig().catch(() => null);
+    const notify = config?.notify;
+    if (!notify?.events.includes(event.kind)) {
+      return;
+    }
+    try {
+      await sendNotification(
+        notify,
+        event.kind,
+        {
+          platform: event.platform,
+          backoffUntil: event.until,
+          backoffLevel: event.level
+        },
+        { fetchImpl, now }
+      );
+    } catch (error) {
+      log(`Could not send a notification: ${error?.message || error}`);
+    }
+  }
+
   return {
+    backoff: announceBackoff,
     async tick() {
       const config = await loadConfig().catch(() => null);
       if (!config?.notify) {
         return;
       }
-      for (const job of changedSince(since)) {
+      for (const job of pendingNotifications(100)) {
         if (job.notifiedAt || !["complete", "incomplete", "error"].includes(job.status)) {
           continue;
         }
-        await markNotified(job.jobId);
+        try {
+          await markNotified(job.jobId);
+        } catch {
+          continue;
+        }
         await announce(config.notify, job);
       }
     }

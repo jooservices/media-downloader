@@ -11,6 +11,8 @@ function createQueueEngine({ store, settings, login, tabs, now, random, log }) {
     random,
     log,
     loadConfig: settings.load,
+    loadBackoffState: async () => (await store.loadBackoffState?.()) ?? null,
+    saveBackoffState: state => store.saveBackoffState?.(state),
     listJobs: store.listJobs,
     updateJob: store.updateJob,
     isPaused: settings.isPaused,
@@ -18,13 +20,20 @@ function createQueueEngine({ store, settings, login, tabs, now, random, log }) {
     siteLabel: platform => PageMediaLib.login.SITE_LABEL[platform],
     openJob: async job => {
       const tab = await tabs.create({ url: job.url, active: false });
+      openingTabs.set(tab.id, job.jobId);
       await store.updateJob(job.jobId, current => {
         current.tabId = tab.id;
       });
+      await flushPendingQueueRateLimit(tab.id);
     }
   });
 
-  const findByTab = async tabId => (await store.listJobs()).find(job => job.tabId === tabId);
+  const openingTabs = new Map();
+
+  const findByTab = async tabId => {
+    const jobs = await store.listJobs();
+    return jobs.find(job => job.tabId === tabId) || jobs.find(job => job.jobId === openingTabs.get(tabId));
+  };
 
   // A tab is dead weight once its job is over, or when its job went back to waiting for another try.
   const tabIsSpent = job =>
@@ -34,23 +43,32 @@ function createQueueEngine({ store, settings, login, tabs, now, random, log }) {
     for (const job of (await store.listJobs()).filter(tabIsSpent)) {
       await tabs.remove(job.tabId).catch(() => undefined);
       await store.updateJob(job.jobId, current => {
+        current.completedTabId = current.tabId;
+        current.completedTabAt = new Date(now()).toISOString();
         current.tabId = null;
       });
     }
   }
 
   let running = null;
+  let rerunRequested = false;
   // One pass at a time: a second request while one is running simply shares its result.
   function tick() {
-    running ??= (async () => {
-      try {
-        const summary = await supervisor.tick();
+    if (running) {
+      rerunRequested = true;
+      return running;
+    }
+    running = (async () => {
+      let summary;
+      do {
+        rerunRequested = false;
+        summary = await supervisor.tick();
         await closeSpentTabs();
-        return summary;
-      } finally {
-        running = null;
-      }
-    })();
+      } while (rerunRequested);
+      return summary;
+    })().finally(() => {
+      running = null;
+    });
     return running;
   }
 
@@ -105,7 +123,12 @@ function createQueueEngine({ store, settings, login, tabs, now, random, log }) {
   async function tabNavigated(tabId, url) {
     const job = await findByTab(tabId);
     if (job && !isTerminal(job.status) && isSignInPage(url)) {
-      await failJob(job.jobId, "The site asked to sign in.", { needsLogin: true });
+      const pathname = new URL(url).pathname;
+      const securityCheck = /\/(checkpoint|challenge)(\/|$)/i.test(pathname);
+      const message = securityCheck
+        ? "The site showed a checkpoint or security challenge. Sign in to continue."
+        : "The site asked to sign in.";
+      await failJob(job.jobId, message, { needsLogin: true });
       tick().catch(() => undefined);
     }
   }
@@ -115,6 +138,27 @@ function createQueueEngine({ store, settings, login, tabs, now, random, log }) {
     if (job?.status === "running") {
       await failJob(job.jobId, "The page was closed before the scan finished.", { tabId: null });
     }
+  }
+
+  async function rateLimitSignal(tabId, status) {
+    const jobs = await store.listJobs();
+    const job =
+      jobs.find(item => item.tabId === tabId) ||
+      jobs.find(item => item.completedTabId === tabId && now() - Date.parse(item.completedTabAt || 0) <= 60_000);
+    if (!job || ![420, 429].includes(Number(status)) || !job.openingId) {
+      return false;
+    }
+    await store.updateJob(job.jobId, current => {
+      current.rateLimitStatus = Number(status);
+      current.rateLimitOutcomeId = `${current.openingId}:rate-limit:${status}`;
+      const requeuedOpening = current.status === "queued" && !current.openedAt && current.requeued === current.attempts;
+      if (current.status === "complete" || requeuedOpening) {
+        current.status = "incomplete";
+        current.outcomeAt = new Date(now()).toISOString();
+        current.message = `The platform returned HTTP ${status}; the scan was paused to protect the account.`;
+      }
+    });
+    return true;
   }
 
   const reset = job => {
@@ -153,6 +197,7 @@ function createQueueEngine({ store, settings, login, tabs, now, random, log }) {
     progress,
     tabNavigated,
     tabClosed,
+    rateLimitSignal,
     recover: () => PageMediaLib.supervisor.recoverInterrupted({ listJobs: store.listJobs, updateJob: store.updateJob }),
 
     async add(urls) {

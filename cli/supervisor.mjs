@@ -6,6 +6,8 @@ export const {
   ACK_TIMEOUT_MS,
   STALE_RUNNING_MS,
   SIGN_IN_RECHECK_MS,
+  RATE_LIMIT_COOLDOWN_MS,
+  MAX_RATE_LIMIT_COOLDOWN_MS,
   shouldRetry,
   recoverInterrupted,
   createSupervisor
