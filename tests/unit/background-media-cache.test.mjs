@@ -286,6 +286,23 @@ test("a cached-media request does not wait for page data still being stored", as
   assert.equal(env.started[0].filename, "Twitter/Alice/video_queued01_1280x720.mp4");
 });
 
+test("a cached-media read responds when the download queue is busy", async () => {
+  const env = loadBackground();
+  await found(env, [video("busy001")]);
+  await env.ledger.add("Twitter|video|busy001|1");
+  env.inContext("batchQueue = new Promise(() => {})");
+
+  const request = saveCached(env, { platform: "Twitter", account: "alice", limit: 8 });
+  const returnedQuickly = await Promise.race([
+    request.then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 100))
+  ]);
+  const result = await request;
+  assert.equal(returnedQuickly, true);
+  assert.equal(result.started, 0);
+  assert.deepEqual(result.coveredIds, ["busy001"]);
+});
+
 test("a limit that is not a whole number is ignored", async () => {
   const env = loadBackground();
   await found(env, [photo("nl001"), photo("nl002")]);

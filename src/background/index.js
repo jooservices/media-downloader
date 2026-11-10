@@ -32,7 +32,7 @@ const handlers = {
   AUTO_PROGRESS: handleAutoProgress,
   AUTO_DONE: handleAutoProgress,
   MEDIA_FOUND: message => cacheMedia(message.media),
-  DOWNLOAD_CACHED_MEDIA: message => queueBatch(() => downloadCachedMedia(message)),
+  DOWNLOAD_CACHED_MEDIA: message => downloadCachedMedia(message),
   SET_NATIVE_VIDEO_TARGET: message => queueBatch(() => setNativeVideoTarget(message.target)),
   DOWNLOAD_ITEMS: message => queueBatch(() => downloadBatch(message.items)),
   RETRY_FAILED_DOWNLOADS: message => queueBatch(() => retryFailedDownloads(message.platform, message.account)),
