@@ -24,6 +24,21 @@ For container install, use the repository's `docker-compose.yml`:
 
 ```sh
 docker compose build
+```
+
+On Linux, prepare the bind-mount directories for the image's `node` user (UID/GID 1000) before starting Compose. This avoids root-owned directories created by Docker for missing bind sources:
+
+```sh
+mkdir -p ./data ./media
+sudo chown -R 1000:1000 ./data ./media
+docker compose run --rm --no-deps --entrypoint sh media-downloader -c 'test -w /data && test -w /media'
+```
+
+The write check must exit successfully. On Docker Desktop for macOS or Windows, create the directories and confirm they are shared with Docker; host ownership is managed by Docker Desktop.
+
+Then start the queue:
+
+```sh
 docker compose up -d
 docker compose ps
 ```
@@ -161,7 +176,16 @@ If the popup or job says it must reload/update, close the queue-owned browser, r
 
 ### Platform login expired
 
-The API health check can remain green while a platform login has expired. Stop the queue service first so it closes the managed browser and releases its profile. Run `node cli/mediasaver.mjs browser login`, sign in to the affected platform in the queue-owned browser, close the login window, then restart the queue service and retry the failed job with `node cli/mediasaver.mjs add <profile-url> --again`. Never run `browser login` alongside a queue process using that profile. Do not copy cookies or passwords into config or logs.
+The API health check can remain green while a platform login has expired. Stop the queue service, then explicitly stop the detached managed browser and verify it released the profile before opening the login window:
+
+```sh
+node cli/mediasaver.mjs service remove
+node cli/mediasaver.mjs browser stop
+node cli/mediasaver.mjs browser status
+node cli/mediasaver.mjs browser login
+```
+
+`browser stop` waits for the debugging port to close and reports when the profile is released; `browser status` should show `"running": false` before login. Sign in to the affected platform in the queue-owned browser, close the login window, reinstall/start the service, then retry the failed job with `node cli/mediasaver.mjs add <profile-url> --again`. On Windows, also stop any manually started `serve` process before these steps. Never run `browser login` alongside a queue process using that profile. Do not copy cookies or passwords into config or logs.
 
 ### Bridge port in use
 

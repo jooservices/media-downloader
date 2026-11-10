@@ -33,6 +33,10 @@ test("runbook covers installation, service lifecycle, recovery, troubleshooting,
     "PageMediaSaver.vbs",
     "docker compose stop media-downloader",
     "docker compose stop login",
+    "sudo chown -R 1000:1000 ./data ./media",
+    "test -w /data && test -w /media",
+    "node cli/mediasaver.mjs browser stop",
+    'browser status` should show `"running": false',
     "Never run `browser login` alongside a queue process",
     "Incident checklist"
   ]) {
