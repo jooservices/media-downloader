@@ -74,6 +74,129 @@ test("the scan starts when the opened page announces itself, and finishes when t
   assert.equal((await only(env)).tabId, null);
 });
 
+test("a real page rate-limit signal becomes the terminal job outcome and pauses its platform", async () => {
+  const env = start({
+    tabResponder: () => ({ ok: true, state: { running: true } }),
+    storage: { queueSettings: { workers: { x: 2 }, delaySeconds: { min: 0, max: 0 }, maxAttempts: 3 } }
+  });
+  await ask(env, { type: "QUEUE_ADD", urls: ["https://x.com/alice"] });
+  await env.inContext("queueEngine.tick()");
+  const tab = { tab: { id: 100, url: PAGE.pageUrl } };
+  const jobId = (await only(env)).jobId;
+  assert.deepEqual(plain(await ask(env, { type: "PLATFORM_RATE_LIMIT", status: 429 }, tab)), { ok: true });
+  await ask(env, { type: "CLI_PAGE_READY", ...PAGE }, tab);
+  assert.equal((await only(env)).status, "running");
+  assert.equal((await only(env)).tabId, 100);
+  assert.equal((await only(env)).rateLimitStatus, 429);
+  await ask(env, { type: "AUTO_DONE", state: { jobId, status: "complete", message: "Scan complete." } }, tab);
+  await env.inContext("queueEngine.tick()");
+  const job = await only(env);
+  assert.equal(job.rateLimitStatus, 429);
+  assert.equal(job.status, "incomplete");
+  assert.match(job.message, /HTTP 429/);
+  assert.equal(env.storage.rateLimitBackoffs.platforms.Twitter.level, 1);
+});
+
+test("a rate-limit signal racing after completion changes the outcome and pauses the platform", async () => {
+  const env = start({
+    tabResponder: () => ({ ok: true, state: { running: true } }),
+    storage: { queueSettings: { workers: { x: 2 }, delaySeconds: { min: 0, max: 0 }, maxAttempts: 3 } }
+  });
+  await ask(env, { type: "QUEUE_ADD", urls: ["https://x.com/alice"] });
+  await env.inContext("queueEngine.tick()");
+  const tab = { tab: { id: 100, url: PAGE.pageUrl } };
+  const jobId = (await only(env)).jobId;
+  await ask(env, { type: "CLI_PAGE_READY", ...PAGE }, tab);
+  await ask(env, { type: "AUTO_DONE", state: { jobId, status: "complete", message: "Scan complete." } }, tab);
+  assert.equal((await only(env)).status, "complete");
+
+  await ask(env, { type: "PLATFORM_RATE_LIMIT", status: 429 }, tab);
+  assert.equal((await only(env)).rateLimitStatus, 429);
+  await env.inContext("queueEngine.tick()");
+  assert.equal((await only(env)).status, "incomplete");
+  assert.equal(env.storage.rateLimitBackoffs.platforms.Twitter.level, 1, JSON.stringify(env.storage));
+});
+
+test("a late rate-limit signal after an incomplete scan was requeued pauses its platform", async () => {
+  const env = start({
+    tabResponder: () => ({ ok: true, state: { running: true } }),
+    storage: { queueSettings: { workers: { x: 2 }, delaySeconds: { min: 0, max: 0 }, maxAttempts: 3 } }
+  });
+  await ask(env, { type: "QUEUE_ADD", urls: ["https://x.com/alice"] });
+  await env.inContext("queueEngine.tick()");
+  const tab = { tab: { id: 100, url: PAGE.pageUrl } };
+  const jobId = (await only(env)).jobId;
+  await ask(env, { type: "CLI_PAGE_READY", ...PAGE }, tab);
+  await ask(
+    env,
+    { type: "AUTO_DONE", state: { jobId, status: "incomplete", started: 1, message: "Scan was interrupted." } },
+    tab
+  );
+  await env.inContext("queueEngine.tick()");
+  const retried = await only(env);
+  assert.equal(retried.status, "queued");
+  assert.equal(retried.openedAt, null);
+
+  await ask(env, { type: "PLATFORM_RATE_LIMIT", status: 429 }, tab);
+  await env.inContext("queueEngine.tick()");
+  assert.equal(env.storage.rateLimitBackoffs.platforms.Twitter.level, 1);
+});
+
+test("a late signal does not count the same extension opening twice after worker restart", async () => {
+  const env = start({
+    tabResponder: () => ({ ok: true, state: { running: true } }),
+    storage: { queueSettings: { workers: { x: 2 }, delaySeconds: { min: 0, max: 0 }, maxAttempts: 3 } }
+  });
+  await ask(env, { type: "QUEUE_ADD", urls: ["https://x.com/alice"] });
+  await env.inContext("queueEngine.tick()");
+  const job = Object.values(env.storage.queueJobs)[0];
+  Object.assign(job, { status: "error", message: "HTTP 429 Too Many Requests" });
+  await env.inContext("queueEngine.tick()");
+  assert.equal(env.storage.rateLimitBackoffs.platforms.Twitter.level, 1);
+  assert.equal((await only(env)).status, "queued");
+
+  await ask(env, { type: "PLATFORM_RATE_LIMIT", status: 429 }, { tab: { id: 100, url: PAGE.pageUrl } });
+  const restarted = start({ storage: env.storage });
+  await restarted.inContext("queueEngine.tick()");
+
+  assert.equal(restarted.storage.rateLimitBackoffs.platforms.Twitter.level, 1);
+  assert.equal(
+    restarted.storage.rateLimitBackoffs.platforms.Twitter.until,
+    env.storage.rateLimitBackoffs.platforms.Twitter.until
+  );
+});
+
+test("a rate-limit signal arriving before an extension tab is associated reaches back-off state", async () => {
+  const env = start({
+    tabResponder: () => ({ ok: true, state: { running: true } }),
+    storage: { queueSettings: { workers: { x: 2 }, delaySeconds: { min: 0, max: 0 }, maxAttempts: 3 } }
+  });
+  env.inContext(`chrome.tabs.create = options => new Promise(resolve => {
+    globalThis.__resolveQueueTab = () => resolve({ id: 100, url: options.url });
+  })`);
+  await ask(env, { type: "QUEUE_ADD", urls: ["https://x.com/alice"] });
+  await settle();
+  const tab = { tab: { id: 100, url: PAGE.pageUrl } };
+
+  assert.deepEqual(plain(await ask(env, { type: "PLATFORM_RATE_LIMIT", status: 429 }, tab)), { ok: true });
+  assert.equal(plain(env.storage.pendingCliRateLimits)[100].status, 429);
+  assert.ok(Number.isFinite(plain(env.storage.pendingCliRateLimits)[100].at));
+  env.inContext("globalThis.__resolveQueueTab()");
+  await env.inContext("queueEngine.tick()");
+
+  const job = await only(env);
+  assert.equal(job.tabId, 100);
+  assert.equal(job.rateLimitStatus, 429);
+  const jobId = job.jobId;
+  await ask(env, { type: "CLI_PAGE_READY", ...PAGE }, tab);
+  await ask(env, { type: "AUTO_DONE", state: { jobId, status: "complete", message: "Scan complete." } }, tab);
+  await env.inContext("queueEngine.tick()");
+
+  assert.equal((await only(env)).status, "incomplete");
+  assert.equal(env.storage.rateLimitBackoffs.platforms.Twitter.level, 1);
+  assert.deepEqual(plain(env.storage.pendingCliRateLimits), {});
+});
+
 test("a page that cannot start the scan fails the job", async () => {
   const env = start({ tabResponder: () => ({ ok: false, error: "no grid" }) });
   await ask(env, { type: "QUEUE_ADD", urls: ["https://x.com/alice"] });
@@ -134,7 +257,18 @@ test("a sign-in wall in the opened tab ends the job, holds the site and keeps th
   assert.ok(env.tabRemoves.includes(100), "the sign-in tab is closed");
 });
 
-test("telling the extension the user signed in lets the held site start at once", async () => {
+test("a checkpoint navigation leaves a challenge signal in the job outcome", async () => {
+  const env = start();
+  await ask(env, { type: "QUEUE_ADD", urls: ["https://www.instagram.com/c/"] });
+  await env.inContext("queueEngine.tick()");
+  env.listeners.tabUpdated[0](100, { url: "https://www.instagram.com/challenge/1234/" });
+  await settle();
+  const [job] = await jobs(env);
+  assert.match(job.message, /checkpoint or security challenge/i);
+  assert.equal(job.status, "queued");
+});
+
+test("telling the extension the user signed in does not bypass a login-wall back-off", async () => {
   const env = start();
   await ask(env, { type: "QUEUE_ADD", urls: ["https://www.instagram.com/c/"] });
   await env.inContext("queueEngine.tick()");
@@ -143,7 +277,7 @@ test("telling the extension the user signed in lets the held site start at once"
   await env.inContext("queueEngine.tick()");
   assert.equal(env.tabsCreated.length, 1);
   await ask(env, { type: "QUEUE_SIGNED_IN" });
-  assert.equal(env.tabsCreated.length, 2);
+  assert.equal(env.tabsCreated.length, 1);
 });
 
 test("closing the tab of a running scan fails the job so it can be retried", async () => {
@@ -226,6 +360,45 @@ test("the queue ticks on an alarm and recovers interrupted jobs when the browser
   await settle();
   await settle();
   assert.equal((await only(env)).status, "incomplete");
+});
+
+test("a new service worker restores the saved platform cooldown before opening queued jobs", async () => {
+  const env = start({
+    storage: {
+      queueSettings: { workers: { instagram: 3 }, delaySeconds: { min: 0, max: 0 }, maxAttempts: 3 },
+      queueJobs: {
+        first: {
+          jobId: "first",
+          platform: "Instagram",
+          account: "first",
+          url: "https://www.instagram.com/first/",
+          status: "queued",
+          createdAt: "2026-01-01T00:00:00Z",
+          attempts: 0
+        },
+        second: {
+          jobId: "second",
+          platform: "Instagram",
+          account: "second",
+          url: "https://www.instagram.com/second/",
+          status: "queued",
+          createdAt: "2026-01-01T00:00:01Z",
+          attempts: 0
+        }
+      }
+    }
+  });
+  await env.inContext("queueEngine.tick()");
+  assert.equal(env.tabsCreated.length, 2);
+  const failed = Object.values(env.storage.queueJobs).find(job => job.account === "first");
+  Object.assign(failed, { status: "error", message: "HTTP 429 Too Many Requests" });
+  await env.inContext("queueEngine.tick()");
+  assert.ok(env.storage.rateLimitBackoffs.platforms.Instagram.until > Date.now());
+
+  const restarted = start({ storage: env.storage });
+  await restarted.inContext("queueEngine.tick()");
+  assert.deepEqual(restarted.tabsCreated, []);
+  assert.equal(restarted.storage.rateLimitBackoffs.platforms.Instagram.level, 1);
 });
 
 test("a fresh install opens the dashboard; an update does not", async () => {

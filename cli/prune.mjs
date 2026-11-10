@@ -86,11 +86,11 @@ async function removeOldLogs(now, retentionMs) {
 }
 
 export async function prune(now = Date.now()) {
-  let jobs = 0;
+  let removed = 0;
   for (const job of expiredJobs(await listJobs(), now)) {
     if (await deleteJob(job.jobId)) {
-      jobs++;
+      removed++;
     }
   }
-  return { jobs, logs: await removeOldLogs(now, LOG_RETENTION_MS), dir: JOBS_DB_FILE };
+  return { jobs: removed, logs: await removeOldLogs(now, LOG_RETENTION_MS), dir: JOBS_DB_FILE };
 }
