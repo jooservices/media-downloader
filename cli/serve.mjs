@@ -31,7 +31,13 @@ import { createJob, openJobInEdge } from "./jobs.mjs";
 import { API_PORT, startApiServer } from "./api.mjs";
 import { extensionSeen, startBridgeServer } from "./bridge-server.mjs";
 import { resolvedProfile } from "./browsers.mjs";
-import { edgeDownloadsDir, firefoxDownloadDir, moveFinishedFiles } from "./mover.mjs";
+import {
+  cleanOrphanedPartials,
+  edgeDownloadsDir,
+  firefoxDownloadDir,
+  moveFinishedFiles,
+  reconcileMovedOutputs
+} from "./mover.mjs";
 import { addWatch, readWatchList, removeWatch, watchDue } from "./watchlist.mjs";
 
 import { createNotifier } from "./notify.mjs";
@@ -134,6 +140,15 @@ async function finishServe({ removeShutdownSignals, closeServers, servers, log }
   return shutdownError;
 }
 
+function throwServeErrors(serveError, shutdownError) {
+  if (serveError) {
+    throw serveError;
+  }
+  if (shutdownError) {
+    throw shutdownError;
+  }
+}
+
 function isProcessAlive(pid) {
   try {
     process.kill(pid, 0);
@@ -230,14 +245,40 @@ async function buildDeps(log, isStopping = () => false, openJob = openJobInEdge)
     isStopping,
     updateJob,
     openJob,
-    moveFiles: async destRoot =>
-      moveFinishedFiles({
-        sourceRoot:
-          profile.browser === "firefox"
-            ? await firefoxDownloadDir(profile.profilePath)
-            : await edgeDownloadsDir(profile.userData, profile.profileDirectory),
-        destRoot
-      })
+    moveFiles: async destRoot => {
+      const sourceRoot =
+        profile.browser === "firefox"
+          ? await firefoxDownloadDir(profile.profilePath)
+          : await edgeDownloadsDir(profile.userData, profile.profileDirectory);
+      const jobs = await listJobs();
+      const completed = jobs.filter(job => job.status === "complete");
+      const overwriteFiles = new Set();
+      for (const job of completed) {
+        for (const name of job.repairBasenames || []) {
+          if (
+            (job.outputFiles || []).some(
+              output => String(output.filename || output).toLowerCase() === String(name).toLowerCase()
+            )
+          ) {
+            overwriteFiles.add(path.resolve(destRoot, job.platform, job.account, name).toLowerCase());
+          }
+        }
+      }
+      const blockedFiles = new Set();
+      for (const job of jobs) {
+        const verified = new Set(
+          (job.outputFiles || []).map(output => String(output.filename || output).toLowerCase())
+        );
+        for (const name of job.rejectedFiles || []) {
+          if (!verified.has(String(name).toLowerCase())) {
+            blockedFiles.add(path.resolve(sourceRoot, job.platform, job.account, name).toLowerCase());
+          }
+        }
+      }
+      const result = await moveFinishedFiles({ sourceRoot, destRoot, overwriteFiles, blockedFiles });
+      await reconcileMovedOutputs(result.movedFiles, { sourceRoot, jobs, updateJob });
+      return result;
+    }
   };
 }
 
@@ -258,7 +299,10 @@ export async function serve({
     throw new Error(`Another “serve” is already running (process ${other.pid}).`);
   }
   await ensureConfigFile();
-  await loadConfig();
+  const startupConfig = await loadConfig();
+  if (startupConfig.downloadDir) {
+    await cleanOrphanedPartials(startupConfig.downloadDir).catch(() => 0);
+  }
   const log = await createLogger();
   const servers = [];
   let stopping = false;
@@ -362,12 +406,7 @@ export async function serve({
     serveError = error;
   }
   const shutdownError = await finishServe({ removeShutdownSignals, closeServers, servers, log });
-  if (serveError) {
-    throw serveError;
-  }
-  if (shutdownError) {
-    throw shutdownError;
-  }
+  throwServeErrors(serveError, shutdownError);
 }
 
 // `move`: one pass of what `serve` does in the background, for people who run single downloads.
