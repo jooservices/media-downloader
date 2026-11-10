@@ -94,6 +94,8 @@ test("downloadDir refuses a relative path, a drive root and system folders", () 
     "D:\\",
     "C:\\Windows",
     "C:\\Windows\\System32",
+    "D:\\Media\\..\\Windows",
+    "/home/me/../etc",
     "C:\\Program Files\\x",
     42,
     "D:\\a\0b"

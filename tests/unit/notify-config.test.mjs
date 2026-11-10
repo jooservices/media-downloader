@@ -10,7 +10,7 @@ test("notify: off by default, https or local http only, with a format and a choi
   assert.deepEqual(plain(parseConfig({ notify: { url: "https://ntfy.sh/topic" } }).notify), {
     url: "https://ntfy.sh/topic",
     format: "json",
-    events: ["new-content", "problem"]
+    events: ["new-content", "problem", "backoff-start", "backoff-end"]
   });
   const twice = parseConfig({
     notify: { url: "http://127.0.0.1:8080/hook", format: "text", events: ["problem", "problem"] }

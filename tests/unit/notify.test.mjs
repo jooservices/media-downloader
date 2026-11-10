@@ -35,6 +35,11 @@ test("the message names the account and keeps long reasons short", () => {
   assert.equal(problem.title, "Problem with Instagram/alice");
   assert.equal(problem.text.length, 300);
   assert.equal(describe("problem", job({ status: "error" })).text, "The scan did not finish.");
+  assert.deepEqual(describe("backoff-start", { platform: "Instagram", backoffUntil: "later", backoffLevel: 2 }), {
+    title: "Back-off started for Instagram",
+    text: "New jobs are paused until later (back-off level 2)."
+  });
+  assert.equal(describe("backoff-end", { platform: "Instagram" }).title, "Back-off ended for Instagram");
 });
 
 test("a JSON notification carries the facts; a text one is ntfy-style with a Title header", async () => {
@@ -107,7 +112,7 @@ function notifierWith({ notify, jobs, now = () => new Date("2026-01-01T00:00:00Z
   const logs = [];
   const notifier = createNotifier({
     loadConfig: async () => ({ notify }),
-    changedSince: () => jobs,
+    pendingNotifications: () => jobs,
     markNotified: async id => {
       marked.push(id);
     },
@@ -178,12 +183,33 @@ test("only the chosen kinds of news are sent, and nothing is sent without a noti
   assert.equal(off.marked.length, 0, "with notifications off nothing is marked, so turning them on later works");
 });
 
+test("the configured webhook reports platform back-off start and end", async () => {
+  const { notifier, sent } = notifierWith({
+    notify: { ...NOTIFY, events: ["backoff-start", "backoff-end"] },
+    jobs: []
+  });
+  await notifier.backoff({
+    kind: "backoff-start",
+    platform: "Instagram",
+    until: "2026-01-01T00:15:00.000Z",
+    level: 1
+  });
+  await notifier.backoff({ kind: "backoff-end", platform: "Instagram", until: null, level: 1 });
+  assert.deepEqual(
+    sent.map(item => item.event),
+    ["backoff-start", "backoff-end"]
+  );
+  assert.equal(sent[0].backoffLevel, 1);
+  assert.equal(sent[0].backoffUntil, "2026-01-01T00:15:00.000Z");
+  assert.match(sent[1].text, /worker count has been restored/);
+});
+
 test("a broken settings file or a failing web address is logged and does not stop the queue", async () => {
   const broken = createNotifier({
     loadConfig: async () => {
       throw new Error("config.json is broken");
     },
-    changedSince: () => [job({ started: 1 })],
+    pendingNotifications: () => [job({ started: 1 })],
     markNotified: async () => {}
   });
   await broken.tick();
@@ -191,7 +217,7 @@ test("a broken settings file or a failing web address is logged and does not sto
   const logs = [];
   const failing = createNotifier({
     loadConfig: async () => ({ notify: NOTIFY }),
-    changedSince: () => [job({ jobId: id(1), started: 1 })],
+    pendingNotifications: () => [job({ jobId: id(1), started: 1 })],
     markNotified: async () => {},
     fetchImpl: async () => {
       throw new Error("ECONNREFUSED");
