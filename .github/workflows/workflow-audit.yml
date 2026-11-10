@@ -6,7 +6,6 @@ on:
     paths:
       - ".github/**"
   pull_request:
-    branches: [master, develop]
     paths:
       - ".github/**"
   schedule:
