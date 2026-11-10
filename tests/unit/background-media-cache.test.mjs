@@ -303,6 +303,27 @@ test("a cached-media read responds when the download queue is busy", async () =>
   assert.deepEqual(result.coveredIds, ["busy001"]);
 });
 
+test("a cache download does not wait for an unrelated queue and reserves its items", async () => {
+  const env = loadBackground();
+  await found(env, [video("queued02")]);
+  env.inContext("batchQueue = new Promise(() => {})");
+
+  const request = saveCached(env, { platform: "Twitter", account: "alice", limit: 8 });
+  const returnedQuickly = await Promise.race([
+    request.then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 250))
+  ]);
+  const result = await request;
+  assert.equal(returnedQuickly, true);
+  assert.equal(result.started, 1);
+  assert.equal(result.queued, 1);
+  assert.deepEqual(env.started, []);
+
+  const repeated = await saveCached(env, { platform: "Twitter", account: "alice", limit: 8 });
+  assert.equal(repeated.started, 0);
+  assert.deepEqual(repeated.coveredIds, ["queued02"]);
+});
+
 test("cached downloads do not wait for searches of unrelated pending files", async () => {
   const env = loadBackground();
   await found(env, [video("fresh01")]);

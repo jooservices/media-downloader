@@ -129,6 +129,8 @@ function cacheDiagnostics(mediaCache, platform, wantedIds, wantedAccount, select
 // pages where the cached owner is unknown; without them only entries whose
 // cached owner matches `account` are saved, so unrelated feed media never lands
 // in the wrong folder.
+const queuedCachedKeys = new Set();
+
 async function downloadCachedMedia({ platform, account, ids, limit }) {
   if (!platforms.PLATFORMS.includes(platform)) {
     return { ok: false, error: "Unsupported platform for cached media." };
@@ -154,27 +156,60 @@ async function downloadCachedMedia({ platform, account, ids, limit }) {
   const availableSlots = Math.max(0, MAX_ACTIVE_DOWNLOADS - Object.keys(pendingDownloads).length);
   const hasLimit = Number.isInteger(limit) && limit >= 0;
   const freshLimit = hasLimit ? Math.min(limit, availableSlots) : availableSlots;
-  const selected = await selectCachedItems(items, pendingDownloads, hasLimit, freshLimit);
+  const selected = await selectCachedItems(items, pendingDownloads, hasLimit, freshLimit, queuedCachedKeys);
   items.splice(0, items.length, ...selected);
   if (!items.length) {
     return { ok: true, started: 0, skipped: 0, failed: 0, pending: 0, errors: [], cached: 0, coveredIds, diag };
   }
+  const reservedKeys = items.map(item => item.key);
+  for (const key of reservedKeys) {
+    queuedCachedKeys.add(key);
+  }
+  // Do not keep the page's message channel open behind unrelated download
+  // reconciliation. The queue serializes the actual state change; reservations
+  // prevent another page pass from enqueueing the same media first.
+  const releaseReservations = () => {
+    for (const key of reservedKeys) {
+      queuedCachedKeys.delete(key);
+    }
+  };
+  const queued = queueBatch(() => downloadBatch(items, { reconcile: false }));
+  let timeoutId;
+  const result = await Promise.race([
+    queued,
+    new Promise(resolve => {
+      timeoutId = setTimeout(() => resolve(null), 100);
+    })
+  ]);
+  clearTimeout(timeoutId);
+  if (result) {
+    releaseReservations();
+    return { ...result, cached: items.length, coveredIds, diag };
+  }
+  void queued.then(releaseReservations, releaseReservations);
   return {
-    ...(await queueBatch(() => downloadBatch(items, { reconcile: false }))),
+    ok: true,
+    started: items.length,
+    queued: items.length,
+    skipped: 0,
+    failed: 0,
+    pending: 0,
+    errors: [],
     cached: items.length,
     coveredIds,
     diag
   };
 }
 
-async function selectCachedItems(items, pendingDownloads, hasLimit, freshLimit) {
+async function selectCachedItems(items, pendingDownloads, hasLimit, freshLimit, queuedKeys = new Set()) {
   const selected = [];
   let freshCount = 0;
   for (let offset = 0; offset < items.length; offset += 100) {
     const batch = items.slice(offset, offset + 100);
     const savedKeys = await ledgerHasAny(batch.map(item => item.key));
     for (const item of batch) {
-      const alreadyStarted = Object.hasOwn(pendingDownloads, item.key) || savedKeys.has(item.key);
+      const alreadyStarted =
+        Object.hasOwn(pendingDownloads, item.key) || savedKeys.has(item.key) || queuedKeys.has(item.key);
       if (alreadyStarted) {
         if (!hasLimit) {
           selected.push(item);
