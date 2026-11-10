@@ -132,6 +132,7 @@ test("tools/list describes every tool with a JSON schema and keeps internals out
     "list_jobs",
     "list_watched",
     "queue_health",
+    "queue_status",
     "unwatch_account",
     "watch_account"
   ]);
@@ -156,6 +157,7 @@ test("each tool turns its arguments into the right REST request", async () => {
   await call(server, "list_watched", {});
   await call(server, "unwatch_account", { platform: "twitter", account: "a b" });
   await call(server, "queue_health");
+  await call(server, "queue_status");
   assert.deepEqual(queue.calls, [
     ["POST", "/v1/jobs", { url: "https://www.instagram.com/a/", again: false }],
     ["POST", "/v1/jobs", { url: "https://www.instagram.com/a/", again: true }],
@@ -166,7 +168,8 @@ test("each tool turns its arguments into the right REST request", async () => {
     ["POST", "/v1/watches", { url: "https://x.com/a/" }],
     ["GET", "/v1/watches", undefined],
     ["DELETE", "/v1/watches/twitter/a%20b", undefined],
-    ["GET", "/v1/health", undefined]
+    ["GET", "/v1/health", undefined],
+    ["GET", "/v1/status", undefined]
   ]);
 });
 
@@ -342,6 +345,7 @@ test("end to end through the real REST API: ask for a download, read it back, wa
       return { created: [created], skipped: [] };
     },
     removeJob: async id => jobs.some(job => job.jobId === id),
+    status: async () => ({ platforms: { instagram: { configuredWorkers: 1 } } }),
     watch: {
       list: async () => watched,
       add: async url => {
@@ -373,6 +377,7 @@ test("end to end through the real REST API: ask for a download, read it back, wa
     const absent = await call(mcp, "get_job", { id: "55555555-5555-4555-8555-555555555555" });
     assert.match(absent.result.content[0].text, /^404 Not Found/);
     assert.equal(text(await call(mcp, "queue_health")).status, "ok");
+    assert.equal(text(await call(mcp, "queue_status")).platforms.instagram.configuredWorkers, 1);
 
     const wrong = createMcpServer({
       fetchApi: localApi({ port: server.address().port, tokenFile: tokenFile + ".missing" })

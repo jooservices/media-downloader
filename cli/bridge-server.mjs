@@ -10,6 +10,7 @@ import {
   TERMINAL_STATES,
   normalizeProfileUrl,
   readJson,
+  listJobs,
   matchingJobs,
   updateJob,
   isJobId,
@@ -19,7 +20,7 @@ import {
 
 const MAX_BODY_BYTES = 1_000_000;
 const MAX_CLAIMED_JOBS = 500;
-const JOB_UPDATES = new Set(["JOB_PROGRESS", "JOB_DONE", "JOB_ERROR"]);
+const JOB_UPDATES = new Set(["JOB_PROGRESS", "JOB_DONE", "JOB_ERROR", "JOB_RATE_LIMIT"]);
 const require = createRequire(import.meta.url);
 const { applyProgress, applyError } = require("../lib/job-progress.js");
 
@@ -191,10 +192,14 @@ async function judgeTaggedTab(message) {
     return CLOSE_TAB;
   }
   if (isSignInPage(message.pageUrl)) {
+    const pathname = new URL(message.pageUrl).pathname;
+    const securityCheck = /\/(checkpoint|challenge)(\/|$)/i.test(pathname);
     await updateJob(tagged.jobId, job => {
       job.status = "error";
       job.needsLogin = true;
-      job.message = `${job.platform} asked to sign in. Sign in with Edge's profile; the queue continues by itself.`;
+      job.message = securityCheck
+        ? `${job.platform} showed a checkpoint or security challenge. Sign in with Edge's profile; the queue continues by itself.`
+        : `${job.platform} asked to sign in. Sign in with Edge's profile; the queue continues by itself.`;
     });
     return CLOSE_TAB;
   }
@@ -249,8 +254,21 @@ async function handlePageReady(message, claimedJobs) {
   return { ok: true, type: "START_JOB", tabId: message.tabId, job: started };
 }
 
+async function resolveRateLimitJobId(message) {
+  if (
+    message?.type === "JOB_RATE_LIMIT" &&
+    !message.jobId &&
+    !message.state?.jobId &&
+    Number.isInteger(message.tabId)
+  ) {
+    const matching = (await listJobs()).find(job => job.tabId === message.tabId && job.openedAt);
+    return matching?.jobId || null;
+  }
+  return null;
+}
+
 async function handleJobUpdate(message) {
-  const jobId = message?.jobId || message?.state?.jobId;
+  const jobId = message?.jobId || message?.state?.jobId || (await resolveRateLimitJobId(message));
   if (!jobId || !JOB_UPDATES.has(message?.type)) {
     return { ok: false, error: "Unsupported bridge message." };
   }
@@ -265,7 +283,19 @@ async function handleJobUpdate(message) {
     }
   }
   const job = await updateJob(jobId, current => {
-    if (message.type === "JOB_ERROR") {
+    if (message.type === "JOB_RATE_LIMIT") {
+      if ([420, 429].includes(Number(message.status))) {
+        current.rateLimitStatus = Number(message.status);
+        current.rateLimitOutcomeId = `${current.openingId || current.openedAt || current.jobId}:rate-limit:${message.status}`;
+        const requeuedOpening =
+          current.status === "queued" && !current.openedAt && current.requeued === current.attempts;
+        if (current.status === "complete" || requeuedOpening) {
+          current.status = "incomplete";
+          current.outcomeAt = new Date().toISOString();
+          current.message = `The platform returned HTTP ${message.status}; the scan was paused to protect the account.`;
+        }
+      }
+    } else if (message.type === "JOB_ERROR") {
       applyError(current, message.error);
     } else {
       applyProgress(current, message);

@@ -31,6 +31,14 @@ const ALICE = "https://www.instagram.com/alice/";
 const BOB = "https://x.com/Bob/";
 const FINISHED = "00000000-0000-4000-8000-000000000077";
 const RUNNING = "00000000-0000-4000-8000-000000000078";
+const LIMITED = "00000000-0000-4000-8000-000000000079";
+const serveWithoutBrowser = options =>
+  serve({
+    ...options,
+    openJob: async () => {
+      throw new Error("Browser launch disabled in this API integration test.");
+    }
+  });
 
 after(() => {
   store.closeJobStore();
@@ -98,7 +106,7 @@ test("the running serve answers the REST API: create, read, watch and cancel", a
     process.stdout.write = originalWrite;
   });
   const nextHandler = interrupter();
-  const done = serve({ inbox: path.join(home, "inbox.txt") });
+  const done = serveWithoutBrowser({ inbox: path.join(home, "inbox.txt") });
   const stop = await nextHandler();
   const token = (await readFile(store.API_TOKEN_FILE, "utf8")).trim();
   const call = (method, pathname, body) =>
@@ -147,6 +155,7 @@ test("the running serve answers the REST API: create, read, watch and cancel", a
     const status = await (await call("GET", "/v1/status")).json();
     assert.equal(status.pid, process.pid);
     assert.equal(typeof status.jobs, "object");
+    assert.equal(status.platforms.twitter.configuredWorkers, 1);
     assert.ok(status.jobs.paused >= 1, "the cancelled job is counted");
     assert.ok((await (await call("GET", "/v1/metrics")).text()).includes('pms_jobs{status="paused"}'));
 
@@ -159,5 +168,75 @@ test("the running serve answers the REST API: create, read, watch and cancel", a
   } finally {
     stop();
     await done;
+  }
+});
+
+test("serve preserves platform back-off across process recreation", async t => {
+  await store.removeAppData();
+  await prepareHome();
+  await store.writeJsonAtomic(store.CONFIG_FILE, { workers: { instagram: 3 } });
+  await store.writeJob({
+    jobId: LIMITED,
+    url: ALICE,
+    platform: "Instagram",
+    account: "alice",
+    status: "error",
+    attempts: 1,
+    message: "HTTP 429 Too Many Requests",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+  const originalWrite = process.stdout.write;
+  process.stdout.write = () => true;
+  t.after(() => {
+    process.stdout.write = originalWrite;
+  });
+  const start = async () => {
+    const nextHandler = interrupter();
+    const done = serveWithoutBrowser({ inbox: path.join(home, "inbox.txt") });
+    const stop = await nextHandler();
+    const token = (await readFile(store.API_TOKEN_FILE, "utf8")).trim();
+    const status = async () => {
+      const response = await fetch(`http://127.0.0.1:${API_PORT}/v1/status`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      return response.json();
+    };
+    return { done, stop, status };
+  };
+
+  const first = await start();
+  try {
+    let initial;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      initial = await first.status();
+      if (initial.platforms?.instagram?.backoffUntil) {
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(initial.platforms.instagram.backoffLevel, 1);
+    assert.equal(initial.platforms.instagram.effectiveWorkers, 1);
+  } finally {
+    first.stop();
+    await first.done;
+  }
+
+  const second = await start();
+  try {
+    let restored;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      restored = await second.status();
+      if (restored.platforms?.instagram?.backoffLevel) {
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(restored.platforms.instagram.backoffLevel, 1);
+    assert.equal(restored.platforms.instagram.effectiveWorkers, 1);
+    assert.ok(Date.parse(restored.platforms.instagram.backoffUntil) > Date.now());
+  } finally {
+    second.stop();
+    await second.done;
   }
 });

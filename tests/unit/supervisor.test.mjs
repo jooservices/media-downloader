@@ -16,12 +16,14 @@ function setup(configInput = {}, jobs = []) {
   const opened = [];
   const moves = [];
   const logs = [];
+  const backoffs = [];
   let beforeUpdate = null;
   const config = parseConfig({ delaySeconds: { min: 0, max: 0 }, ...configInput });
   const supervisor = createSupervisor({
     now: () => clock,
     random: () => 0,
     log: message => logs.push(message),
+    onBackoff: async event => backoffs.push(event),
     loadConfig: async () => config,
     listJobs: async () => [...store.values()].map(job => structuredClone(job)),
     listWorkJobs: async () =>
@@ -60,6 +62,7 @@ function setup(configInput = {}, jobs = []) {
     opened,
     moves,
     logs,
+    backoffs,
     beforeUpdate: hook => {
       beforeUpdate = hook;
     },
@@ -103,6 +106,290 @@ test("two workers on one site open two jobs", async () => {
   assert.deepEqual(env.opened, ["Instagram/a", "Instagram/b"]);
   await env.tick();
   assert.equal(env.opened.length, 2, "a third waits for a free worker");
+});
+
+test("rate-limit outcomes pause only that platform, apply exponential back-off, and restore configured workers", async () => {
+  const env = setup({ workers: { instagram: 3, facebook: 2 } }, [
+    queued("1", "Instagram", "failed", { status: "error", attempts: 1, message: "HTTP 429 Too Many Requests" }),
+    queued("2", "Instagram", "waiting"),
+    queued("3", "Facebook", "other")
+  ]);
+  const first = await env.tick();
+  assert.deepEqual(env.opened, ["Facebook/other"]);
+  assert.equal(first.requeued, 1);
+  assert.equal(env.job("1").status, "queued");
+  assert.deepEqual(env.supervisor.platformStatus().instagram, {
+    configuredWorkers: 3,
+    effectiveWorkers: 1,
+    backoffUntil: "2026-01-01T00:15:00.000Z",
+    backoffLevel: 1
+  });
+  assert.equal(env.supervisor.platformStatus().facebook.effectiveWorkers, 2);
+  assert.equal(env.backoffs[0].kind, "backoff-start");
+  assert.equal(env.backoffs[0].level, 1);
+
+  env.advance(15 * 60_000);
+  await env.tick();
+  assert.equal(env.supervisor.platformStatus().instagram.effectiveWorkers, 3);
+  assert.equal(env.supervisor.platformStatus().instagram.backoffUntil, null);
+  assert.equal(env.backoffs.at(-1).kind, "backoff-end");
+
+  Object.assign(env.job("1"), { status: "error", attempts: 2, message: "Please try again later" });
+  await env.tick();
+  assert.equal(env.supervisor.platformStatus().instagram.backoffLevel, 2);
+  assert.equal(env.supervisor.platformStatus().instagram.backoffUntil, "2026-01-01T00:45:00.000Z");
+  assert.equal(env.supervisor.platformStatus().instagram.configuredWorkers, 3);
+});
+
+test("a repeated challenge on the same job gets a new back-off after cooldown and sign-in", async () => {
+  const env = setup({ workers: { instagram: 2 } }, [
+    queued("1", "Instagram", "challenged", {
+      status: "error",
+      attempts: 1,
+      openSequence: 1,
+      openingId: "first-opening",
+      needsLogin: true,
+      message: "Instagram asked to sign in."
+    })
+  ]);
+  await env.tick();
+  assert.equal(env.supervisor.platformStatus().instagram.backoffLevel, 1);
+  env.advance(15 * 60_000);
+  env.supervisor.clearSignIn("Instagram");
+  await env.tick();
+  assert.equal(env.job("1").status, "queued");
+  await env.tick();
+  env.job("1").status = "running";
+  assert.equal(env.job("1").openingId, "1767226500000-2");
+
+  Object.assign(env.job("1"), {
+    status: "error",
+    needsLogin: true,
+    message: "Instagram asked to sign in again."
+  });
+  await env.tick();
+  assert.equal(env.supervisor.platformStatus().instagram.backoffLevel, 2);
+  assert.equal(env.backoffs.filter(event => event.kind === "backoff-start").length, 2);
+});
+
+test("a repeated challenge has a distinct opening identity after supervisor recreation", async () => {
+  let clock = Date.parse("2026-01-01T00:00:00Z");
+  let saved = null;
+  const job = queued("1", "Instagram", "challenged", {
+    status: "error",
+    attempts: 1,
+    openSequence: 1,
+    openingId: "first-opening",
+    needsLogin: true,
+    message: "Instagram asked to sign in."
+  });
+  const create = () =>
+    createSupervisor({
+      now: () => clock,
+      random: () => 0,
+      log: () => {},
+      loadConfig: async () => parseConfig({ workers: { instagram: 2 }, delaySeconds: { min: 0, max: 0 } }),
+      listJobs: async () => [job],
+      updateJob: async (_id, mutate) => {
+        await mutate(job);
+        job.updatedAt = new Date(clock).toISOString();
+      },
+      loadBackoffState: async () => saved,
+      saveBackoffState: async state => {
+        saved = structuredClone(state);
+      },
+      openJob: async () => {}
+    });
+
+  await create().tick();
+  assert.equal(saved.platforms.Instagram.level, 1);
+  clock += 15 * 60_000;
+  await create().tick();
+  assert.equal(job.openingId, "1767226500000-2");
+  job.status = "running";
+  Object.assign(job, { status: "error", needsLogin: true, message: "Instagram asked to sign in again." });
+
+  await create().tick();
+  assert.equal(saved.platforms.Instagram.level, 2);
+  assert.equal(saved.platforms.Instagram.until, clock + 30 * 60_000);
+});
+
+test("a clean completed run resets the back-off level", async () => {
+  const env = setup({}, [queued("1", "TikTok", "failed", { status: "error", message: "checkpoint" })]);
+  await env.tick();
+  assert.equal(env.supervisor.platformStatus().tiktok.backoffLevel, 1);
+  env.advance(15 * 60_000);
+  env.job("1").status = "complete";
+  env.job("1").message = "";
+  env.job("1").updatedAt = "2026-01-01T00:15:00.001Z";
+  env.job("1").outcomeAt = "2026-01-01T00:15:00.001Z";
+  await env.tick();
+  assert.equal(env.supervisor.platformStatus().tiktok.backoffLevel, 0);
+});
+
+test("older completed jobs do not reset escalation and cooldown state survives supervisor recreation", async () => {
+  let saved = null;
+  const baseJobs = [
+    queued("1", "Instagram", "old", {
+      status: "complete",
+      updatedAt: "2025-12-31T23:00:00.000Z"
+    }),
+    queued("2", "Instagram", "failed", {
+      status: "error",
+      attempts: 1,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      message: "HTTP 429"
+    }),
+    queued("3", "Instagram", "waiting")
+  ];
+  const env = setup({ workers: { instagram: 3 } }, baseJobs);
+  const makeSupervisor = () =>
+    createSupervisor({
+      now: () => Date.parse("2026-01-01T00:00:00Z"),
+      random: () => 0,
+      log: () => {},
+      loadConfig: async () => parseConfig({ workers: { instagram: 3 }, delaySeconds: { min: 0, max: 0 } }),
+      listJobs: async () => [...env.store.values()],
+      updateJob: async (id, mutate) => mutate(env.store.get(id)),
+      loadBackoffState: async () => saved,
+      saveBackoffState: async state => {
+        saved = structuredClone(state);
+      },
+      openJob: async () => {},
+      moveFiles: async () => ({ moved: 0, failed: 0 })
+    });
+  const first = makeSupervisor();
+  await first.tick();
+  assert.equal(first.platformStatus().instagram.backoffLevel, 1);
+  assert.equal(saved.platforms.Instagram.level, 1);
+
+  Object.assign(env.job("2"), { tabId: null, notifiedAt: "2026-01-01T00:00:01.000Z" });
+  const afterUnrelatedUpdate = makeSupervisor();
+  await afterUnrelatedUpdate.tick();
+  assert.equal(afterUnrelatedUpdate.platformStatus().instagram.backoffLevel, 1);
+
+  const restarted = makeSupervisor();
+  await restarted.tick();
+  assert.equal(restarted.platformStatus().instagram.backoffLevel, 1);
+  assert.equal(restarted.platformStatus().instagram.backoffUntil, "2026-01-01T00:15:00.000Z");
+
+  Object.assign(env.job("2"), {
+    status: "error",
+    attempts: 2,
+    updatedAt: "2026-01-01T00:01:00.000Z",
+    message: "Please try again later"
+  });
+  const escalated = makeSupervisor();
+  await escalated.tick();
+  assert.equal(escalated.platformStatus().instagram.backoffLevel, 2);
+  assert.equal(escalated.platformStatus().instagram.backoffUntil, "2026-01-01T00:30:00.000Z");
+});
+
+test("a late signal for an opening already counted does not escalate after supervisor recreation", async () => {
+  let saved = null;
+  const env = setup({}, [
+    queued("1", "Instagram", "a", {
+      status: "error",
+      attempts: 1,
+      openingId: "opening-1",
+      message: "HTTP 429 Too Many Requests"
+    })
+  ]);
+  const makeSupervisor = () =>
+    createSupervisor({
+      now: () => Date.parse("2026-01-01T00:00:00Z"),
+      random: () => 0,
+      log: () => {},
+      loadConfig: async () => parseConfig({ delaySeconds: { min: 0, max: 0 } }),
+      listJobs: async () => [...env.store.values()],
+      updateJob: async (id, mutate) => mutate(env.store.get(id)),
+      loadBackoffState: async () => saved,
+      saveBackoffState: async state => {
+        saved = structuredClone(state);
+      },
+      openJob: async () => {}
+    });
+
+  const first = makeSupervisor();
+  await first.tick();
+  assert.equal(first.platformStatus().instagram.backoffLevel, 1);
+  assert.equal(saved.countedOpenings["1"], "opening-1");
+
+  Object.assign(env.job("1"), {
+    status: "incomplete",
+    rateLimitOutcomeId: "opening-1:rate-limit:429",
+    message: "The platform returned HTTP 429."
+  });
+  const restarted = makeSupervisor();
+  await restarted.tick();
+  assert.equal(restarted.platformStatus().instagram.backoffLevel, 1);
+  assert.equal(restarted.platformStatus().instagram.backoffUntil, "2026-01-01T00:15:00.000Z");
+});
+
+test("upgrade ignores an old throttling outcome when a newer clean outcome exists", async () => {
+  const env = setup({}, [
+    queued("1", "Instagram", "old-failure", {
+      status: "error",
+      attempts: 2,
+      message: "HTTP 429",
+      updatedAt: "2025-12-31T20:00:00.000Z"
+    }),
+    queued("2", "Instagram", "healthy", {
+      status: "complete",
+      outcomeAt: "2025-12-31T23:59:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    })
+  ]);
+  await env.tick();
+  assert.equal(env.supervisor.platformStatus().instagram.backoffLevel, 0);
+  assert.equal(env.supervisor.platformStatus().instagram.backoffUntil, null);
+});
+
+test("bootstrap uses the same fingerprint as live outcome processing", async () => {
+  const env = setup({}, [
+    queued("1", "Instagram", "old-failure", {
+      status: "error",
+      attempts: 1,
+      openingId: "old-opening",
+      rateLimitOutcomeId: "old-opening:rate-limit:429",
+      message: "HTTP 429",
+      outcomeAt: "2025-12-31T20:00:00.000Z",
+      updatedAt: "2025-12-31T20:00:00.000Z"
+    }),
+    queued("2", "Instagram", "healthy", {
+      status: "complete",
+      outcomeAt: "2025-12-31T23:59:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    })
+  ]);
+
+  await env.tick();
+
+  assert.equal(env.supervisor.platformStatus().instagram.backoffLevel, 0);
+});
+
+test("an unreadable saved back-off state is ignored after one logged attempt", async () => {
+  let reads = 0;
+  const logs = [];
+  const supervisor = createSupervisor({
+    now: () => Date.parse("2026-01-01T00:00:00Z"),
+    random: () => 0,
+    log: message => logs.push(message),
+    loadConfig: async () => parseConfig({ delaySeconds: { min: 0, max: 0 } }),
+    loadBackoffState: async () => {
+      reads++;
+      throw new Error("invalid JSON");
+    },
+    listJobs: async () => [],
+    updateJob: async () => null,
+    openJob: async () => {}
+  });
+
+  await supervisor.tick();
+  await supervisor.tick();
+
+  assert.equal(reads, 1);
+  assert.equal(logs.filter(message => /saved back-off state is unreadable/.test(message)).length, 1);
 });
 
 test("counts the attempt and marks the job as opened", async () => {

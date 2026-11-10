@@ -1,6 +1,7 @@
 // The extension's own job queue, kept in chrome.storage.local. It offers the same few operations the
 // CLI's job files do (list, update, create, remove), so the shared queue engine can run on either.
 const QUEUE_JOBS_KEY = "queueJobs";
+const RATE_LIMIT_BACKOFFS_KEY = "rateLimitBackoffs";
 
 function createJobStore(area, newId = () => crypto.randomUUID(), now = () => Date.now()) {
   // Updates are applied one at a time so two callers can never overwrite each other's change.
@@ -18,6 +19,14 @@ function createJobStore(area, newId = () => crypto.randomUUID(), now = () => Dat
   const writeAll = jobs => area.set({ [QUEUE_JOBS_KEY]: jobs });
 
   return {
+    async loadBackoffState() {
+      return (await area.get({ [RATE_LIMIT_BACKOFFS_KEY]: null }))[RATE_LIMIT_BACKOFFS_KEY];
+    },
+
+    async saveBackoffState(state) {
+      await area.set({ [RATE_LIMIT_BACKOFFS_KEY]: state });
+    },
+
     async listJobs() {
       return Object.values(await readAll()).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
     },

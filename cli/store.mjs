@@ -28,6 +28,7 @@ export const isJobId = value => typeof value === "string" && JOB_ID.test(value);
 export const QUEUE_FILE = path.join(APP_DIR, "active-job.json");
 export const CONFIG_FILE = path.join(APP_DIR, "config.json");
 export const DAEMON_FILE = path.join(APP_DIR, "daemon.json");
+export const RATE_LIMIT_BACKOFFS_FILE = path.join(APP_DIR, "rate-limit-backoffs.json");
 export const LOGS_DIR = path.join(APP_DIR, "logs");
 export const EDGE_PROFILE_FILE = path.join(APP_DIR, "edge-profile.json");
 export const BRIDGE_CONFIG_FILE = path.join(APP_DIR, "bridge-config.json");

@@ -352,6 +352,35 @@ const ID = "([0-9a-f-]{36})";
 const SEGMENT = "([^/]+)";
 const startedAt = Date.now();
 
+const PLATFORM_METRICS = [
+  ["configured_workers", "Configured worker count per platform."],
+  ["effective_workers", "Effective worker count per platform."],
+  ["backoff_until_timestamp_seconds", "Platform back-off end time as a Unix timestamp, or zero."],
+  ["backoff_level", "Consecutive platform back-off level."]
+];
+
+function platformMetricValue(metric, value) {
+  switch (metric) {
+    case "configured_workers":
+      return value.configuredWorkers;
+    case "effective_workers":
+      return value.effectiveWorkers;
+    case "backoff_until_timestamp_seconds":
+      return value.backoffUntil ? Math.round(Date.parse(value.backoffUntil) / 1000) : 0;
+    default:
+      return value.backoffLevel;
+  }
+}
+
+function appendPlatformMetrics(lines, platforms) {
+  for (const [metric, help] of PLATFORM_METRICS) {
+    lines.push(`# HELP pms_platform_${metric} ${help}`, `# TYPE pms_platform_${metric} gauge`);
+    for (const [platform, value] of Object.entries(platforms)) {
+      lines.push(`pms_platform_${metric}{platform="${platform}"} ${Number(platformMetricValue(metric, value)) || 0}`);
+    }
+  }
+}
+
 async function statusRoute({ response, deps }) {
   const state = deps.status ? await deps.status() : {};
   send(response, 200, { uptimeSeconds: Math.round((Date.now() - startedAt) / 1000), ...state });
@@ -364,6 +393,7 @@ async function metricsRoute({ response, deps }) {
   for (const [status, count] of Object.entries(state.jobs ?? {})) {
     lines.push(`pms_jobs{status="${status}"} ${count}`);
   }
+  appendPlatformMetrics(lines, state.platforms ?? {});
   lines.push(
     "# HELP pms_extension_seen_timestamp_seconds When the browser extension last reported in.",
     "# TYPE pms_extension_seen_timestamp_seconds gauge",

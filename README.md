@@ -125,6 +125,8 @@ The API token can be replaced with `node cli/mediasaver.mjs api-token rotate`; r
 
 While `serve` runs it offers a REST API on `http://127.0.0.1:38542/v1`. It listens on loopback only, rejects any other Host header, sends no CORS headers, and every call except `GET /v1/health` needs the token that `serve` keeps in `api-token` (`Authorization: Bearer <token>`). Bodies are JSON (`Content-Type: application/json`); errors are RFC 9457 `application/problem+json` documents.
 
+The OpenAPI description is [docs/openapi.yaml](docs/openapi.yaml).
+
 | Resource                           | Methods                                                                                                                  |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `/v1/health`                       | `GET` → 200                                                                                                              |
@@ -132,8 +134,12 @@ While `serve` runs it offers a REST API on `http://127.0.0.1:38542/v1`. It liste
 | `/v1/jobs/{id}`                    | `GET` → 200 · `DELETE` → 204 (cancels an active job, removes a finished one)                                             |
 | `/v1/watches`                      | `GET` → 200 · `POST {"url"}` → 201 + `Location`                                                                          |
 | `/v1/watches/{platform}/{account}` | `GET` → 200 · `DELETE` → 204                                                                                             |
+| `/v1/status`                       | `GET` → 200, queue and per-platform worker/back-off state                                                                |
+| `/v1/metrics`                      | `GET` → 200, Prometheus text metrics                                                                                     |
 
 Other answers: 400 malformed JSON or query, 401 no/wrong token, 404 unknown resource, 405 wrong method (with `Allow`), 409 the account is already queued, done or watched (send `"again": true` to run it anew), 413 body too large, 415 not JSON, 422 a link that is not a supported profile.
+
+`GET /v1/status` includes `platforms`, keyed by `instagram`, `facebook`, `twitter`, and `tiktok`. Each entry has `configuredWorkers`, `effectiveWorkers`, `backoffUntil` (an ISO timestamp or `null`), and `backoffLevel`. A detected rate limit or challenge pauses new jobs for that platform for 15 minutes, doubling up to two hours on repeated signals. Other platforms continue normally. `GET /v1/metrics` exposes the same values as `pms_platform_configured_workers`, `pms_platform_effective_workers`, `pms_platform_backoff_until_timestamp_seconds`, and `pms_platform_backoff_level` gauges.
 
 ```powershell
 $token = (Get-Content "$env:LOCALAPPDATAPageMediaSaverapi-token").Trim()
@@ -144,7 +150,7 @@ A Facebook profile still adds Photos, Reels and Videos, so `items` can hold seve
 
 ## MCP (for AI assistants)
 
-`node cli/mediasaver.mjs mcp` is an MCP server on stdin/stdout. It only calls the REST API above, so the queue (`serve`, or `service install`) must be running. Tools: `download_account`, `list_jobs`, `get_job`, `cancel_job`, `watch_account`, `list_watched`, `unwatch_account`, `queue_health`. In an MCP client's configuration:
+`node cli/mediasaver.mjs mcp` is an MCP server on stdin/stdout. It only calls the REST API above, so the queue (`serve`, or `service install`) must be running. Tools: `download_account`, `list_jobs`, `get_job`, `cancel_job`, `watch_account`, `list_watched`, `unwatch_account`, `queue_health`, `queue_status`. In an MCP client's configuration:
 
 ```json
 {
@@ -178,7 +184,7 @@ On this machine the unpacked extension lives in `C:\Claude\PageMediaSaver`. `npm
 | `maxAttempts`  | How many times a job that failed for a transient reason is tried (1 to 20).                                                                                                                                    |
 | `downloadDir`  | Where finished files go, as `<downloadDir>\<Site>\<account>\`. A full path, local or a network share. Leave it out to keep files in the browser's Downloads folder. Cannot be a drive root or a system folder. |
 
-**Notifications.** Add `"notify": { "url": "https://ntfy.sh/your-topic" }` to `config.json` and the queue posts a message when a scan saves new files (`new-content`) or stops short, for example because a sign-in has expired or a site changed (`problem`). `format` is `json` (the default; a document with the event, account, counts and time) or `text` (a plain message with a `Title` header, which ntfy shows as is); `events` can list just one of the two kinds. The address must be https, or http on this computer. A job is announced once, and trouble on one site is repeated at most every 6 hours.
+**Notifications.** Add `"notify": { "url": "https://ntfy.sh/your-topic" }` to `config.json` and the queue posts a message when a scan saves new files (`new-content`) or stops short, for example because a sign-in has expired or a site changed (`problem`). It also reports platform back-off start and end (`backoff-start`, `backoff-end`). `format` is `json` (the default; a document with the event, account, counts and time) or `text` (a plain message with a `Title` header, which ntfy shows as is); `events` can select which kinds to send. The address must be https, or http on this computer. A job is announced once, and trouble on one site is repeated at most every 6 hours.
 
 **Download location.** A browser extension can only save inside the browser's own Downloads folder, so the CLI moves finished files afterwards (in the background while `serve` runs, or once with `node .\cli\mediasaver.mjs move`). A file is copied, checked against the original's size and only then removed. An existing file is never overwritten: an identical one is treated as a duplicate and a different one gets a `(1)` suffix. Files still being written, and anything outside the `Instagram`, `Facebook` and `Twitter` folders, are not touched. If a site folder in Downloads is a link to another location, it is left as it is. `downloadDir` must not be, contain or sit inside the Downloads folder.
 

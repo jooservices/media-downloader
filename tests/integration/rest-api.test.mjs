@@ -452,6 +452,14 @@ test("GET /v1/status reports uptime and what the queue tells it; /v1/metrics spe
       status: async () => ({
         jobs: { queued: 2, complete: 5 },
         extension: { version: "0.5.9", at: "2026-01-01T00:00:00.000Z" },
+        platforms: {
+          instagram: {
+            configuredWorkers: 4,
+            effectiveWorkers: 1,
+            backoffUntil: "2026-01-01T00:15:00.000Z",
+            backoffLevel: 1
+          }
+        },
         pid: 42
       })
     },
@@ -460,6 +468,12 @@ test("GET /v1/status reports uptime and what the queue tells it; /v1/metrics spe
       assert.equal(status.status, 200);
       assert.equal(status.body.jobs.complete, 5);
       assert.equal(status.body.extension.version, "0.5.9");
+      assert.deepEqual(status.body.platforms.instagram, {
+        configuredWorkers: 4,
+        effectiveWorkers: 1,
+        backoffUntil: "2026-01-01T00:15:00.000Z",
+        backoffLevel: 1
+      });
       assert.equal(typeof status.body.uptimeSeconds, "number");
       assert.equal((await call("GET", "/v1/status", { auth: false })).status, 401, "status needs the token");
 
@@ -468,6 +482,10 @@ test("GET /v1/status reports uptime and what the queue tells it; /v1/metrics spe
       assert.match(metrics.headers["content-type"], /^text\/plain; version=0\.0\.4/);
       assert.match(metrics.text, /^pms_jobs\{status="queued"\} 2$/m);
       assert.match(metrics.text, /^pms_jobs\{status="complete"\} 5$/m);
+      assert.match(metrics.text, /^pms_platform_configured_workers\{platform="instagram"\} 4$/m);
+      assert.match(metrics.text, /^pms_platform_effective_workers\{platform="instagram"\} 1$/m);
+      assert.match(metrics.text, /^pms_platform_backoff_until_timestamp_seconds\{platform="instagram"\} 1767226500$/m);
+      assert.match(metrics.text, /^pms_platform_backoff_level\{platform="instagram"\} 1$/m);
       assert.match(metrics.text, /^pms_extension_seen_timestamp_seconds 1767225600$/m);
       assert.match(metrics.text, /^pms_uptime_seconds \d+$/m);
       assert.equal((await call("POST", "/v1/metrics", { body: {} })).status, 405);

@@ -11,6 +11,7 @@ import {
   ensureApiToken,
   EDGE_PROFILE_FILE,
   LOGS_DIR,
+  RATE_LIMIT_BACKOFFS_FILE,
   TERMINAL_STATES,
   listJobs,
   countJobs,
@@ -222,6 +223,8 @@ async function buildDeps(log, isStopping = () => false, openJob = openJobInEdge)
     random: Math.random,
     log,
     loadConfig,
+    loadBackoffState: () => readJson(RATE_LIMIT_BACKOFFS_FILE),
+    saveBackoffState: state => writeJsonAtomic(RATE_LIMIT_BACKOFFS_FILE, state),
     listJobs,
     listWorkJobs: () => queueJobs().workWindow(new Date().toISOString()),
     isStopping,
@@ -259,6 +262,8 @@ export async function serve({
   const log = await createLogger();
   const servers = [];
   let stopping = false;
+  let supervisor = null;
+  let notifier = null;
   let removeShutdownSignals = () => {};
   const closeServers = createServerCloser(servers);
   const stop = () => {
@@ -276,7 +281,13 @@ export async function serve({
         countJobs,
         getJob: readJob,
         removeJob,
-        status: () => Promise.resolve({ jobs: queueJobs().counts(), extension: extensionSeen(), pid: process.pid }),
+        status: () =>
+          Promise.resolve({
+            jobs: queueJobs().counts(),
+            extension: extensionSeen(),
+            pid: process.pid,
+            platforms: supervisor?.platformStatus() ?? {}
+          }),
         port: API_PORT,
         token: await ensureApiToken(),
         watch: watchApi
@@ -288,11 +299,11 @@ export async function serve({
     if (recovered) {
       log(`Recovered ${recovered} job(s) left by a previous run.`);
     }
-    const supervisor = createSupervisor(deps);
+    supervisor = createSupervisor({ ...deps, onBackoff: event => notifier?.backoff(event) });
     removeShutdownSignals = installShutdownSignals(stop);
     log(`Serving. REST API at http://127.0.0.1:${API_PORT}/v1 (token in ${API_TOKEN_FILE}), or add a URL to ${inbox}.`);
 
-    const notifier = createNotifier({
+    notifier = createNotifier({
       loadConfig,
       log,
       pendingNotifications: pendingLimit => queueJobs().pendingNotifications(pendingLimit),
