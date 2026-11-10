@@ -138,6 +138,8 @@ Other answers: 400 malformed JSON or query, 401 no/wrong token, 404 unknown reso
 
 The `/v1/config` response redacts notification webhook URLs and returns only whether notifications are enabled, their format, and selected events. The complete request, response, status-code, and schema contract is in [openapi.json](openapi.json). Contract tests compare its operations to the server route registry.
 
+`GET /v1/status` includes `platforms`, keyed by `instagram`, `facebook`, `twitter`, and `tiktok`. Each entry reports configured and effective worker counts, the back-off end time, and the back-off level. A detected rate limit or challenge pauses new jobs for that platform for 15 minutes, doubling up to two hours on repeated signals. Other platforms continue normally. `GET /v1/metrics` exposes the same values as `pms_platform_configured_workers`, `pms_platform_effective_workers`, `pms_platform_backoff_until_timestamp_seconds`, and `pms_platform_backoff_level` gauges.
+
 ```powershell
 $token = (Get-Content "$env:LOCALAPPDATAPageMediaSaverapi-token").Trim()
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:38542/v1/jobs -Headers @{ Authorization = "Bearer $token" } -ContentType application/json -Body '{"url":"https://www.instagram.com/name/"}'
@@ -147,7 +149,7 @@ A Facebook profile still adds Photos, Reels and Videos, so `items` can hold seve
 
 ## MCP (for AI assistants)
 
-`node cli/mediasaver.mjs mcp` is an MCP server on stdin/stdout. It only calls the REST API above, so the queue (`serve`, or `service install`) must be running. Its tools cover every REST operation: `download_account`, `list_jobs`, `get_job`, `cancel_job`, `get_config`, `get_status`, `get_metrics`, `watch_account`, `list_watched`, `get_watched`, `unwatch_account`, and `queue_health`. MCP validates argument types, required fields, enumerated values, bounds, HTTPS links, and unknown properties before making a request. REST problem responses are returned to the agent with their HTTP status, title, and detail.
+`node cli/mediasaver.mjs mcp` is an MCP server on stdin/stdout. It only calls the REST API above, so the queue (`serve`, or `service install`) must be running. Its tools cover every REST operation: `download_account`, `list_jobs`, `get_job`, `cancel_job`, `get_config`, `get_status`, `queue_status`, `get_metrics`, `watch_account`, `list_watched`, `get_watched`, `unwatch_account`, and `queue_health`. MCP validates argument types, required fields, enumerated values, bounds, HTTPS links, and unknown properties before making a request. REST problem responses are returned to the agent with their HTTP status, title, and detail.
 
 ```json
 {

@@ -14,7 +14,7 @@ export const SUPPORTED_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const URL_SCHEMA = {
   type: "string",
   format: "uri",
-  pattern: "^[hH][tT][tT][pP][sS]://",
+  pattern: "^[hH][tT][tT][pP][sS]://[^\\s]+$",
   description: "An https profile link from Instagram, Facebook, X, or TikTok."
 };
 
@@ -38,6 +38,14 @@ export const TOOLS = [
     name: "get_status",
     title: "Read queue status",
     description: "Read current job counts, extension check-in details, process id, and queue uptime.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    request: () => ["GET", `${API_BASE}/status`]
+  },
+  {
+    name: "queue_status",
+    title: "Get queue status",
+    description: "Show queue activity and configured/effective workers with any platform back-off state.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: false },
     request: () => ["GET", `${API_BASE}/status`]
@@ -288,7 +296,7 @@ function validateScalarConstraints(value, schema, name) {
   if (schema.pattern && !new RegExp(schema.pattern, schema.format === "uuid" ? "i" : "").test(value)) {
     return schema.format === "uuid"
       ? `400 Bad Request: ${name} must be a UUID.`
-      : `422 Unprocessable Content: ${name} must be an https link.`;
+      : `422 Unprocessable Content: url must be an https link.`;
   }
   return null;
 }
@@ -339,9 +347,11 @@ export function createMcpServer({ fetchApi }) {
       const [method, path, body] = tool.request(args);
       return { result: await describeReply(await fetchApi(method, path, body)) };
     } catch (error) {
+      const message =
+        error instanceof Error ? "The download queue is not reachable." : "The download queue could not be contacted.";
       return {
         result: textResult(
-          `The download queue is not reachable (${error?.message || "no answer"}). Start it with: node cli/mediasaver.mjs serve`,
+          `${message} Check that its local API token is available, then start it with: node cli/mediasaver.mjs serve`,
           true
         )
       };
@@ -386,9 +396,31 @@ export function createMcpServer({ fetchApi }) {
 export function localApi({ port = API_PORT, tokenFile = API_TOKEN_FILE, fetchImpl = fetch } = {}) {
   return async (method, path, body) => {
     const token = (await readFile(tokenFile, "utf8")).trim();
-    return fetchImpl(`http://127.0.0.1:${port}${path}`, {
+    const configuredBind = process.env.PMS_API_HOST || "127.0.0.1";
+    let host = "127.0.0.1";
+    if (configuredBind === "::1" || configuredBind === "::") {
+      host = "[::1]";
+    } else if (configuredBind === "localhost") {
+      host = "localhost";
+    } else if (configuredBind !== "0.0.0.0") {
+      host = configuredBind.includes(":") ? `[${configuredBind}]` : configuredBind;
+    }
+    const headers = { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) };
+    if (!new Set(["127.0.0.1", "::1", "localhost"]).has(configuredBind)) {
+      const allowedHosts = (process.env.PMS_API_ALLOWED_HOSTS || "")
+        .split(",")
+        .map(item => item.trim())
+        .filter(item => item.endsWith(`:${port}`));
+      if (!allowedHosts.length) {
+        throw new Error(
+          `PMS_API_ALLOWED_HOSTS must include a local MCP Host value ending in :${port} when PMS_API_HOST is non-loopback.`
+        );
+      }
+      headers.Host = allowedHosts[0];
+    }
+    return fetchImpl(`http://${host}:${port}${path}`, {
       method,
-      headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+      headers,
       body: body ? JSON.stringify(body) : undefined
     });
   };

@@ -68,6 +68,14 @@ function loadHook({ hostname = "www.instagram.com", fetchImpl, parser, document 
 
 const textResponse = text => ({ clone: () => ({ text: async () => text }) });
 
+test("hook: reports only a safe rate-limit status for platform data responses", async () => {
+  const response = { ...textResponse("{}"), status: 429 };
+  const { page, posted } = loadHook({ fetchImpl: async () => response });
+  assert.equal(await page.fetch("https://www.instagram.com/api/v1/feed/"), response);
+  await tick();
+  assert.deepEqual(plain(posted.map(item => item.message)), [{ channel: CHANNEL, rateLimitStatus: 429 }]);
+});
+
 test("hook: a host with no parser leaves fetch and XHR alone", () => {
   const nativeFetch = async () => ({});
   const { page } = loadHook({ hostname: "example.com", fetchImpl: nativeFetch });
@@ -164,6 +172,16 @@ test("hook: XHR responses from a data endpoint are parsed once they load", () =>
   typed.responseText = JSON.stringify({ items: [igPost("Dxhr000002")] });
   typed.listeners.load();
   assert.equal(posted.length, 2);
+});
+
+test("hook: XHR data responses report a safe rate-limit status", () => {
+  const { page, posted } = loadHook({ fetchImpl: async () => textResponse("{}") });
+  const xhr = new page.XMLHttpRequest();
+  xhr.open("GET", "https://www.instagram.com/api/v1/feed/");
+  xhr.status = 429;
+  xhr.responseType = "blob";
+  xhr.listeners.load();
+  assert.deepEqual(plain(posted.map(item => item.message)), [{ channel: CHANNEL, rateLimitStatus: 429 }]);
 });
 
 test("hook: XHR to other URLs, binary response types and unreadable bodies are left alone", () => {
@@ -345,6 +363,12 @@ test("bridge: well-formed media from the page is forwarded with every field norm
     },
     { platform: "Facebook", kind: "video", id: "9", index: 1, owner: null, durationMs: 0, width: 0, height: 0, url: "" }
   ]);
+});
+
+test("bridge: forwards a rate-limit status without response content", () => {
+  const { sent, deliver } = loadBridge();
+  deliver({ data: { channel: CHANNEL, rateLimitStatus: 429, body: "private response" } });
+  assert.deepEqual(plain(sent), [{ type: "PLATFORM_RATE_LIMIT", status: 429 }]);
 });
 
 test("bridge: messages from another frame or origin, or another channel, are ignored", () => {

@@ -77,6 +77,12 @@
     }
   }
 
+  function publishRateLimit(status) {
+    if (status === 429 || status === 420) {
+      global.postMessage({ channel: CHANNEL, rateLimitStatus: status }, global.location.origin);
+    }
+  }
+
   const publishText = text => publishDocuments(parseJsonLoose(text));
 
   const nativeFetch = global.fetch;
@@ -85,6 +91,7 @@
     try {
       const url = typeof input === "string" ? input : input?.url || String(input);
       if (DATA_URL.test(url)) {
+        publishRateLimit(response.status);
         response
           .clone()
           .text()
@@ -102,6 +109,7 @@
     if (DATA_URL.test(String(url))) {
       this.addEventListener("load", () => {
         try {
+          publishRateLimit(this.status);
           if (this.responseType === "" || this.responseType === "text") {
             publishText(this.responseText);
           }

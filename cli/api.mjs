@@ -20,6 +20,8 @@ const JOB_STATUSES = new Set(["queued", "running", "complete", "incomplete", "pa
 const ALREADY_QUEUED = "already queued or done";
 const DEFAULT_PAGE = 50;
 const MAX_PAGE = 100;
+const RATE_WINDOW_MS = 60_000;
+const RATE_LIMIT = 120;
 
 export function jobView(job) {
   return {
@@ -102,6 +104,12 @@ function readBody(request) {
     const chunks = [];
     let size = 0;
     let tooLarge = false;
+    request.on("error", reject);
+    if (Number(request.headers["content-length"]) > MAX_BODY_BYTES) {
+      request.resume();
+      reject(Object.assign(new Error("The request body is too large."), { status: 413 }));
+      return;
+    }
     request.on("data", chunk => {
       if (tooLarge) {
         return;
@@ -110,6 +118,8 @@ function readBody(request) {
       if (size > MAX_BODY_BYTES) {
         tooLarge = true;
         chunks.length = 0;
+        request.resume();
+        reject(Object.assign(new Error("The request body is too large."), { status: 413 }));
         return;
       }
       chunks.push(chunk);
@@ -149,7 +159,17 @@ async function readJsonObject(request, response) {
 }
 
 function readHttpsUrl(payload, response) {
-  if (!isHttpsUrl(payload.url)) {
+  if (typeof payload.url !== "string" || payload.url.length > 2048 || payload.url !== payload.url.trim()) {
+    problem(response, 422, "url must be an https link.");
+    return null;
+  }
+  try {
+    const parsed = new URL(payload.url);
+    if (!isHttpsUrl(payload.url) || parsed.username || parsed.password || parsed.port) {
+      throw new Error("URL authority is not allowed.");
+    }
+    normalizeProfileUrl(payload.url);
+  } catch {
     problem(response, 422, "url must be an https link.");
     return null;
   }
@@ -406,10 +426,42 @@ function hasValidToken(request, token) {
   return given.length === wanted.length && timingSafeEqual(given, wanted);
 }
 
+function createLimiter() {
+  const windows = new Map();
+  return (request, now, limit, category) => {
+    const key = `${request.socket.remoteAddress || "unknown"}:${category}`;
+    let entry = windows.get(key);
+    if (!entry || now - entry.started >= RATE_WINDOW_MS) {
+      entry = { started: now, count: 0 };
+      windows.set(key, entry);
+    }
+    entry.count++;
+    if (windows.size > 2048) {
+      for (const [address, window] of windows) {
+        if (now - window.started >= RATE_WINDOW_MS) {
+          windows.delete(address);
+        }
+      }
+    }
+    return entry.count > limit;
+  };
+}
+
+function rateLimited(request, response, deps, category) {
+  if (!deps.limiter(request, Date.now(), deps.rateLimit, category)) {
+    return false;
+  }
+  problem(response, 429, "Too many requests. Try again later.", { "Retry-After": "60" });
+  return true;
+}
+
 // Host, token and body type are checked before any route runs. Returns false after it has answered.
-function admit(request, response, open, { allowedHosts, token }) {
+function admit(request, response, open, deps) {
+  const { allowedHosts, token } = deps;
   if (!allowedHosts().includes(request.headers.host)) {
     problem(response, 403, "Only 127.0.0.1 is accepted.");
+  } else if (request.headers.origin) {
+    problem(response, 403, "Cross-origin requests are not allowed.");
   } else if (token && !open && !hasValidToken(request, token)) {
     problem(response, 401, "Send the API token as: Authorization: Bearer <token>.", {
       "WWW-Authenticate": 'Bearer realm="media-downloader"'
@@ -418,7 +470,7 @@ function admit(request, response, open, { allowedHosts, token }) {
     // JSON only: a web page cannot send this type to another origin without a CORS preflight, which is never answered.
     problem(response, 415, "Content-Type must be application/json.");
   } else {
-    return true;
+    return !rateLimited(request, response, deps, token && !open ? "authenticated" : "accepted");
   }
   return false;
 }
@@ -473,20 +525,40 @@ export function startApiServer({
   extraHosts = (process.env.PMS_API_ALLOWED_HOSTS || "")
     .split(",")
     .map(item => item.trim())
-    .filter(Boolean)
+    .filter(Boolean),
+  rateLimit = RATE_LIMIT
 }) {
   if (!LOOPBACK.has(bind) && !token) {
     return Promise.reject(new Error("The API can listen beyond this computer only with an API token."));
   }
-  let host = `127.0.0.1:${port}`;
-  const allowedHosts = () => [host, ...extraHosts];
-  const server = createApiServer({ addUrls, listJobs, removeJob, token, watch, status, config, allowedHosts });
+  let loopbackHosts = [];
+  const allowedHosts = () => [...loopbackHosts, ...extraHosts];
+  const limiter = createLimiter();
+  const server = createApiServer({
+    addUrls,
+    listJobs,
+    removeJob,
+    token,
+    watch,
+    status,
+    config,
+    allowedHosts,
+    rateLimit,
+    limiter
+  });
   return new Promise((resolve, reject) => {
     server.once("error", error => {
       reject(error?.code === "EADDRINUSE" ? new Error(`Download API port ${port} is already in use.`) : error);
     });
     server.listen(port, bind, () => {
-      host = `127.0.0.1:${server.address().port}`;
+      const address = server.address();
+      if (address && typeof address === "object") {
+        const host = address.family === "IPv6" ? `[${address.address}]` : address.address;
+        loopbackHosts = [`127.0.0.1:${address.port}`, `${host}:${address.port}`];
+        if (bind === "localhost") {
+          loopbackHosts.push(`localhost:${address.port}`);
+        }
+      }
       resolve(server);
     });
   });

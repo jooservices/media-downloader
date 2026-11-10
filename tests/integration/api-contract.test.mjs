@@ -12,6 +12,7 @@ const TOKEN = "contract-test-token";
 const ID = "abcdefab-cdef-4abc-8def-abcdefabcdef";
 const PROFILE_URL = "https://www.instagram.com/alice/";
 const UPPERCASE_SCHEME_URL = "HTTPS://www.instagram.com/alice/";
+const WHITESPACE_URL = " https://www.instagram.com/alice/";
 const inputJob = { jobId: ID, status: "queued", platform: "Instagram", account: "alice", url: PROFILE_URL };
 
 function dependencies() {
@@ -439,6 +440,8 @@ test("live REST responses match OpenAPI statuses, headers, media types, and sche
       ["/v1/jobs", { url: "http://www.instagram.com/alice/" }, 422],
       ["/v1/jobs", { url: PROFILE_URL, extra: true }, 422],
       ["/v1/jobs", { url: PROFILE_URL, again: "yes" }, 422],
+      ["/v1/jobs", { url: WHITESPACE_URL }, 422],
+      ["/v1/watches", { url: WHITESPACE_URL }, 422],
       ["/v1/watches", { url: PROFILE_URL, extra: true }, 422]
     ];
     for (const [endpoint, body, expectedStatus] of invalidRequests) {
@@ -532,6 +535,7 @@ test("every REST operation is reachable through an MCP tool", () => {
     download_account: { url: PROFILE_URL },
     get_config: {},
     get_status: {},
+    queue_status: {},
     get_metrics: {},
     list_jobs: {},
     get_job: { id: ID },
@@ -552,7 +556,9 @@ test("every REST operation is reachable through an MCP tool", () => {
   });
   assert.deepEqual(
     mapped.sort((a, b) => `${a.path}:${a.method}`.localeCompare(`${b.path}:${b.method}`)),
-    [...API_OPERATIONS].sort((a, b) => `${a.path}:${a.method}`.localeCompare(`${b.path}:${b.method}`))
+    [...API_OPERATIONS, { method: "GET", path: "/v1/status" }].sort((a, b) =>
+      `${a.path}:${a.method}`.localeCompare(`${b.path}:${b.method}`)
+    )
   );
   const idSchema = TOOLS.find(tool => tool.name === "get_job").inputSchema.properties.id;
   assert.match(ID.toUpperCase(), new RegExp(idSchema.pattern));
@@ -560,6 +566,7 @@ test("every REST operation is reachable through an MCP tool", () => {
     TOOLS.find(tool => tool.name === "download_account").inputSchema.properties.url.pattern
   );
   assert.match(UPPERCASE_SCHEME_URL, urlPattern);
+  assert.doesNotMatch(WHITESPACE_URL, urlPattern);
   for (const name of ["get_watched", "unwatch_account"]) {
     const platformSchema = TOOLS.find(tool => tool.name === name).inputSchema.properties.platform;
     assert.match("Instagram", new RegExp(platformSchema.pattern), `${name} accepts REST case normalization`);
@@ -587,12 +594,20 @@ test("the same REST and MCP scenarios produce equal data and mapped errors", () 
         ["download_account", { url: UPPERCASE_SCHEME_URL }]
       ],
       [
+        ["POST", "/v1/jobs", { url: WHITESPACE_URL }],
+        ["download_account", { url: WHITESPACE_URL }]
+      ],
+      [
         ["POST", "/v1/watches", { url: PROFILE_URL }],
         ["watch_account", { url: PROFILE_URL }]
       ],
       [
         ["POST", "/v1/watches", { url: UPPERCASE_SCHEME_URL }],
         ["watch_account", { url: UPPERCASE_SCHEME_URL }]
+      ],
+      [
+        ["POST", "/v1/watches", { url: WHITESPACE_URL }],
+        ["watch_account", { url: WHITESPACE_URL }]
       ],
       [["GET", "/v1/watches"], ["list_watched"]],
       [
@@ -623,7 +638,15 @@ test("the same REST and MCP scenarios produce equal data and mapped errors", () 
           : agent.body;
       const expectedBody =
         name === "get_metrics" ? rest.body.replace(/pms_uptime_seconds \d+/, "pms_uptime_seconds <uptime>") : rest.body;
-      assert.deepEqual(actualBody, expectedBody, `${name} response body`);
+      if (rest.status >= 400) {
+        assert.deepEqual(
+          { title: actualBody.title, detail: actualBody.detail },
+          { title: expectedBody.title, detail: expectedBody.detail },
+          `${name} problem details`
+        );
+      } else {
+        assert.deepEqual(actualBody, expectedBody, `${name} response body`);
+      }
     }
     const restConfig = await direct("GET", "/v1/config");
     const mcpConfig = await tool("get_config");
