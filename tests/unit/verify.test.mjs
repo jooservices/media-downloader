@@ -37,7 +37,7 @@ test("verify reports missing, zero-byte corrupt and partial files without modify
     const result = await verifyAccount(job.url, { config: { downloadDir: root }, jobs: [job] });
     assert.deepEqual(
       [result.expected, result.files.length, result.corrupt.length, result.partial.length, result.missing],
-      [3, 1, 2, 1, 2]
+      [3, 1, 2, 1, 3]
     );
     assert.equal(result.requeued, 0);
   });
@@ -57,6 +57,8 @@ test("verify repair requeues completed account jobs after finding absent output"
     assert.equal(writes[0].status, "queued");
     assert.equal(writes[0].attempts, 0);
     assert.equal(writes[0].forceRedownload, true);
+    assert.deepEqual(writes[0].repairBasenames, ["*"]);
+    assert.equal(writes[0].repairExpectedCount, 3);
     assert.match(writes[0].message, /verify --repair/);
   });
 });
@@ -83,7 +85,7 @@ test("verify walks nested account folders and checks media signatures", async ()
     });
     assert.equal(result.files.length, 1);
     assert.equal(result.corrupt.length, 1);
-    assert.equal(result.missing, 0);
+    assert.equal(result.missing, 1, "an unrelated valid file cannot identify a legacy job output");
   });
 });
 

@@ -176,6 +176,22 @@ test("empty, size-mismatched and non-image completions stay retryable instead of
   assert.match(env.storage.failedDownloads["Twitter|image|3|1"].error, /expected image/);
 });
 
+test("a rejected file that cannot be deleted is reported so the mover can keep it unpublished", async () => {
+  const env = loadBackground();
+  env.inContext(`chrome.downloads.removeFile = async () => { throw new Error("file is locked"); }`);
+  await download(env, [photo(1)]);
+  finish(env, 1, {
+    filename: "C:\\Users\\test\\Downloads\\rejected.jpg",
+    bytesReceived: 8,
+    totalBytes: 10,
+    fileSize: 8
+  });
+
+  const result = await status(env);
+  assert.deepEqual(result.rejectedFiles, ["rejected.jpg"]);
+  assert.equal(await env.ledger.has("Twitter|image|1|1"), false);
+});
+
 test("a corrupt completion can be retried and only the verified retry enters the ledger", async () => {
   const env = loadBackground();
   await download(env, [photo(1)]);

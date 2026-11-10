@@ -55,9 +55,11 @@ globalThis.PageMediaSaver ??= {};
   const hasOutstanding = () => Boolean(autoState.pending || autoState.failed);
 
   function updateAutoMessage() {
-    const { repairFound, repairTargets, pending, failed, rounds, started, videoStarted } = autoState;
+    const { repairFound, repairTargets, repairExpectedCount, pending, failed, rounds, started, videoStarted } =
+      autoState;
+    const repairTargetCount = repairExpectedCount || repairTargets.length;
     autoState.message = autoState.repairMode
-      ? `Repair download running · ${repairFound.length}/${repairTargets.length} source images matched · ${pending} pending · ${failed} failed · ${rounds} passes.`
+      ? `Repair download running · ${repairFound.length}/${repairTargetCount} source images matched · ${pending} pending · ${failed} failed · ${rounds} passes.`
       : `Automatic download running · ${started} photos and ${videoStarted} page-data files started · ${pending} pending · ${failed} failed · ${skippedCount()} skipped · ${rounds} passes. Use Stop automatic download to pause.`;
     // Nothing seen after a few passes: say what the page looks like, so the cause can be read from the job.
     const seen = started + videoStarted + skippedCount() + pending + failed;
@@ -106,6 +108,7 @@ globalThis.PageMediaSaver ??= {};
       autoState.pending = status.pending || 0;
       autoState.failed = status.failed || 0;
       autoState.unavailable = status.unavailable || 0;
+      autoState.rejectedFiles = status.rejectedFiles || [];
       updateAutoMessage();
       if (autoState.pending > 0) {
         continue;
@@ -133,6 +136,8 @@ globalThis.PageMediaSaver ??= {};
       platform: autoState.platform,
       account: autoState.account
     });
+    autoState.rejectedFiles = status?.rejectedFiles || [];
+    updateAutoMessage();
     return status || { pending: autoState.pending, failed: autoState.failed };
   }
 
@@ -142,6 +147,7 @@ globalThis.PageMediaSaver ??= {};
     autoState.pending = finalStatus.pending || 0;
     autoState.failed = finalStatus.failed || 0;
     autoState.unavailable = finalStatus.unavailable || 0;
+    autoState.rejectedFiles = finalStatus.rejectedFiles || [];
     const outputs = await chrome.runtime
       .sendMessage({
         type: "GET_VERIFIED_OUTPUTS",
@@ -184,9 +190,15 @@ globalThis.PageMediaSaver ??= {};
   // Repair mode only downloads the images it was asked to find, once each, over their old copies.
   function repairItemsFrom(allItems) {
     const targetNames = new Set(autoState.repairTargets.map(lowerName));
+    const repairAll = targetNames.has("*");
     const seen = new Set(autoState.repairFound.map(lowerName));
+    const seenItems = new Set(autoState.repairSeenItems || []);
     const matched = [];
     for (const item of allItems) {
+      const identity = String(item.key || item.url || "");
+      if (identity && seenItems.has(identity)) {
+        continue;
+      }
       const basename = repairBasename(item.url);
       const filename = String(item.filename || "")
         .split(/[\\/]/)
@@ -195,10 +207,13 @@ globalThis.PageMediaSaver ??= {};
         PageMediaLib.paths.withResolution(filename, item.width, item.height),
         `photo.${PageMediaLib.paths.imageExtension(item.url)}`
       );
-      const target = [resolved, filename, basename].find(
-        name => name && targetNames.has(lowerName(name)) && !seen.has(lowerName(name))
-      );
+      const candidates = [resolved, filename, basename].filter(Boolean);
+      const alreadyMatched = candidates.some(name => seen.has(lowerName(name)));
+      const target = alreadyMatched ? null : candidates.find(name => repairAll || targetNames.has(lowerName(name)));
       if (target) {
+        if (identity) {
+          seenItems.add(identity);
+        }
         matched.push({
           ...item,
           key: `repair:${autoState.jobId}:${lowerName(target)}`,
@@ -210,6 +225,7 @@ globalThis.PageMediaSaver ??= {};
         });
       }
     }
+    autoState.repairSeenItems = [...seenItems];
     return matched;
   }
 
@@ -338,8 +354,8 @@ globalThis.PageMediaSaver ??= {};
   // The scroll loop ended because four checks found no older rows.
   async function finishGrid() {
     await settleDownloads();
-    const { repairFound, repairTargets, started, videoStarted, pending, failed } = autoState;
-    const repairShort = autoState.repairMode && repairFound.length !== repairTargets.length;
+    const { repairFound, repairTargets, repairExpectedCount, started, videoStarted, pending, failed } = autoState;
+    const repairShort = autoState.repairMode && repairFound.length < (repairExpectedCount || repairTargets.length);
     // A page with nothing on it is not a success: the user may be signed out, or the site changed its data.
     const seen = started + videoStarted + skippedCount() + pending + failed + autoState.unavailable;
     const nothingFound = !autoState.repairMode && seen === 0 && (hookStats()?.found ?? 0) === 0;
@@ -349,7 +365,7 @@ globalThis.PageMediaSaver ??= {};
         ? "The site is asking for a sign-in, so nothing could be read. Sign in to it in this browser; the queue goes on by itself."
         : `No photos or videos were found on this page. Sign in to the site in this browser, or the site may have changed how it sends its data. ${hookDiagnostics()}`;
     } else if (repairShort) {
-      message = `Repair incomplete: matched ${repairFound.length} of ${repairTargets.length} source images. Original files were left in Downloads.`;
+      message = `Repair incomplete: matched ${repairFound.length} of ${repairExpectedCount || repairTargets.length} source images. Original files were left in Downloads.`;
     } else if (hasOutstanding()) {
       message = `Grid scan ended after four checks found no older rows. ${started} download request(s) started; ${pending} remain pending and ${failed} failed after retries.`;
     } else {
@@ -458,7 +474,7 @@ globalThis.PageMediaSaver ??= {};
     }
   }
 
-  function startAutoScan(jobId = null, repairTargets = [], limit = null) {
+  function startAutoScan(jobId = null, repairTargets = [], limit = null, repairExpectedCount = null) {
     if (autoRunning) {
       if (jobId && autoState.jobId !== jobId) {
         return { ok: false, error: "Another automatic download is already running in this tab." };
@@ -497,8 +513,12 @@ globalThis.PageMediaSaver ??= {};
       message: "Automatic download starting…",
       repairMode: Array.isArray(repairTargets) && repairTargets.length > 0,
       repairTargets: Array.isArray(repairTargets) ? repairTargets.map(value => String(value)) : [],
+      repairExpectedCount:
+        Number.isInteger(repairExpectedCount) && repairExpectedCount > 0 ? repairExpectedCount : null,
       repairFound: [],
+      repairSeenItems: [],
       repairFiles: [],
+      rejectedFiles: [],
       outputFiles: []
     };
     publishAutoState();

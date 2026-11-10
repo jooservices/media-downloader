@@ -213,6 +213,10 @@ export function loadBackground({
     optionsOpened,
     runtimeReloads,
     inContext,
+    // Hands a value to the worker's global scope without building code from it.
+    setGlobal: (name, value) => {
+      context[name] = value;
+    },
     send: (message, sender = {}) => new Promise(resolve => listeners.message[0](message, sender, resolve)),
     determine: item =>
       new Promise((resolve, reject) => {

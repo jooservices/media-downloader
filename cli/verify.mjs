@@ -123,9 +123,7 @@ export async function verifyAccount(rawAccount, { repair = false, config = null,
   }
   const presentNames = new Set([...found.files, ...found.corrupt].map(file => path.basename(file).toLowerCase()));
   const missingNames = outputs.map(output => output.filename).filter(name => !presentNames.has(name.toLowerCase()));
-  found.missing = outputs.length
-    ? missingNames.length + Math.max(0, expected - outputs.length)
-    : Math.max(0, expected - found.files.length);
+  found.missing = outputs.length ? missingNames.length + Math.max(0, expected - outputs.length) : expected;
   found.expectedNames = outputs.map(output => output.filename);
   found.missingNames = missingNames;
   const repairNames = new Set(
@@ -139,6 +137,7 @@ export async function verifyAccount(rawAccount, { repair = false, config = null,
     const outputsForJob = Array.isArray(job.outputFiles) ? job.outputFiles : [];
     return (
       !outputsForJob.length ||
+      outputsForJob.length < expectedCount(job) ||
       outputsForJob.some(file => repairNames.has(path.basename(file.filename || file).toLowerCase()))
     );
   });
@@ -152,11 +151,12 @@ export async function verifyAccount(rawAccount, { repair = false, config = null,
         attempts: 0,
         openedAt: null,
         repairBasenames:
-          Array.isArray(job.outputFiles) && job.outputFiles.length
+          Array.isArray(job.outputFiles) && job.outputFiles.length >= expectedCount(job)
             ? job.outputFiles
                 .map(file => path.basename(file.filename || file))
                 .filter(name => repairNames.has(name.toLowerCase()))
-            : [...repairNames],
+            : ["*"],
+        repairExpectedCount: expectedCount(job),
         forceRedownload: true,
         message: "Requeued by verify --repair because account files are missing, corrupt or partial."
       });

@@ -104,9 +104,7 @@ async function writeDownloadState(state) {
 }
 
 function downloadedOutput(download, item) {
-  const filename = String(download.filename || "")
-    .split(/[\\/]/)
-    .pop();
+  const filename = downloadBasename(download.filename);
   return filename && Number(download.fileSize) > 0
     ? {
         filename,
@@ -117,6 +115,11 @@ function downloadedOutput(download, item) {
       }
     : null;
 }
+
+const downloadBasename = filename =>
+  String(filename || "")
+    .split(/[\\/]/)
+    .pop();
 
 async function getVerifiedOutputs(platform, account, jobId) {
   const { verifiedOutputs = {} } = await chrome.storage.local.get({ verifiedOutputs: {} });
@@ -141,8 +144,14 @@ async function findFinishedDownload(id) {
 
 async function discardRejectedDownload(download) {
   if (download?.state === "complete" && Number.isInteger(download.id) && chrome.downloads.removeFile) {
-    await chrome.downloads.removeFile(download.id).catch(() => undefined);
+    try {
+      await chrome.downloads.removeFile(download.id);
+      return true;
+    } catch {
+      return false;
+    }
   }
+  return false;
 }
 
 function downloadIntegrityError(download, expectedType) {
@@ -223,6 +232,35 @@ async function settleKnownUnavailable(state) {
   }
 }
 
+async function reconcileFinishedDownload(state, { key, item, download, expectedType, native = false }) {
+  const integrityError = download.state === "complete" ? downloadIntegrityError(download, expectedType) : null;
+  const failures = native ? state.nativeFailures : state.failed;
+  if (download.state === "complete" && !integrityError) {
+    await ledgerAdd(key);
+    const output = downloadedOutput(download, item);
+    if (output) {
+      state.outputs[key] = output;
+    }
+    delete failures[key];
+    return;
+  }
+  if (isUnavailableError(download.error)) {
+    await settleUnavailable(state, key, item);
+    return;
+  }
+  const removed = await discardRejectedDownload(download);
+  failures[key] = {
+    ...(native ? {} : { item, attempts: Number(state.attempts[key] || 1) }),
+    platform: item.platform,
+    account: item.account,
+    error:
+      integrityError ||
+      download.error ||
+      (native ? "The browser interrupted this official video download." : "The browser interrupted this download."),
+    ...(!removed && integrityError ? { rejectedFilename: downloadBasename(download.filename) } : {})
+  };
+}
+
 async function reconcilePending(state) {
   for (const [key, downloadId] of Object.entries(state.pending)) {
     const download = await findFinishedDownload(downloadId);
@@ -232,24 +270,8 @@ async function reconcilePending(state) {
     const item = state.pendingItems[key];
     delete state.pending[key];
     delete state.pendingItems[key];
-    const integrityError =
-      download.state === "complete" ? downloadIntegrityError(download, expectedMediaType(item)) : null;
-    if (download.state === "complete" && !integrityError) {
-      await ledgerAdd(key);
-      const output = downloadedOutput(download, item);
-      if (output) {
-        state.outputs[key] = output;
-      }
-      delete state.failed[key];
-    } else if (item && isUnavailableError(download.error)) {
-      await settleUnavailable(state, key, item);
-    } else if (item) {
-      await discardRejectedDownload(download);
-      state.failed[key] = {
-        item,
-        attempts: Number(state.attempts[key] || 1),
-        error: integrityError || download.error || "The browser interrupted this download."
-      };
+    if (item) {
+      await reconcileFinishedDownload(state, { key, item, download, expectedType: expectedMediaType(item) });
     }
   }
 }
@@ -261,24 +283,13 @@ async function reconcileNative(state) {
       continue;
     }
     delete state.nativePending[downloadId];
-    const integrityError = download.state === "complete" ? downloadIntegrityError(download, "video") : null;
-    if (download.state === "complete" && !integrityError) {
-      await ledgerAdd(entry.key);
-      const output = downloadedOutput(download, entry);
-      if (output) {
-        state.outputs[entry.key] = output;
-      }
-      delete state.nativeFailures[entry.key];
-    } else if (isUnavailableError(download.error)) {
-      await settleUnavailable(state, entry.key, entry);
-    } else {
-      await discardRejectedDownload(download);
-      state.nativeFailures[entry.key] = {
-        platform: entry.platform,
-        account: entry.account,
-        error: integrityError || download.error || "The browser interrupted this official video download."
-      };
-    }
+    await reconcileFinishedDownload(state, {
+      key: entry.key,
+      item: entry,
+      download,
+      expectedType: "video",
+      native: true
+    });
   }
 }
 
@@ -326,11 +337,16 @@ function statusFor(state, platform, account) {
   const nativeFailedItems = Object.values(state.nativeFailures).filter(entry =>
     matchesFilter(entry, platform, account)
   );
+  const rejectedFiles = [
+    ...failedItems.map(entry => entry.rejectedFilename),
+    ...nativeFailedItems.map(entry => entry.rejectedFilename)
+  ].filter(Boolean);
   return {
     ok: true,
     pending: countPending(state, platform, account),
     failed: failedItems.length + nativeFailedItems.length,
     unavailable: Object.values(state.unavailable).filter(entry => matchesFilter(entry, platform, account)).length,
+    ...(rejectedFiles.length ? { rejectedFiles } : {}),
     retryable: failedItems.filter(entry => entry.attempts < state.maxAttempts).length
   };
 }

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { parseConfig } from "../../cli/config.mjs";
-import { cleanOrphanedPartials, moveFinishedFiles } from "../../cli/mover.mjs";
+import { cleanOrphanedPartials, moveFinishedFiles, reconcileMovedOutputs } from "../../cli/mover.mjs";
 import { createSupervisor } from "../../cli/supervisor.mjs";
 
 const NOW = Date.now();
@@ -209,6 +209,72 @@ test("a different file with the same name is kept under a new name, never overwr
   assert.equal(result.moved, 1);
   assert.deepEqual(await names(path.join(dest, "Instagram", "alice")), ["a (1).jpg", "a.jpg"]);
   assert.equal(await readFile(path.join(dest, "Instagram", "alice", "a.jpg"), "utf8"), "original");
+});
+
+test("collision-renamed outputs update the completed job identity", async () => {
+  const { source, dest } = await area();
+  await put(path.join(dest, "Instagram", "alice", "a.jpg"), "old file");
+  await put(path.join(source, "Instagram", "alice", "a.jpg"), "verified file");
+  const job = {
+    jobId: "job-1",
+    platform: "Instagram",
+    account: "alice",
+    status: "running",
+    outputFiles: [{ filename: "a.jpg" }]
+  };
+  const updates = [];
+  const result = await moveFinishedFiles({ sourceRoot: source, destRoot: dest, now: NOW });
+  await reconcileMovedOutputs(result.movedFiles, {
+    sourceRoot: source,
+    jobs: [job],
+    updateJob: async (id, mutate) => {
+      mutate(job);
+      updates.push(id);
+    }
+  });
+
+  assert.deepEqual(updates, ["job-1"]);
+  assert.deepEqual(job.outputFiles, [{ filename: "a (1).jpg" }]);
+  assert.deepEqual(job.outputRenames, { "a.jpg": "a (1).jpg" });
+});
+
+test("a verified repair replaces its named corrupt destination and records the published identity", async () => {
+  const { source, dest } = await area();
+  const original = path.join(dest, "Instagram", "alice", "a.jpg");
+  await put(original, "corrupt-old");
+  await put(path.join(source, "Instagram", "alice", "a.jpg"), "verified-new");
+
+  const result = await moveFinishedFiles({
+    sourceRoot: source,
+    destRoot: dest,
+    now: NOW,
+    overwriteFiles: new Set([path.resolve(dest, "Instagram", "alice", "a.jpg").toLowerCase()])
+  });
+
+  assert.equal(await readFile(original, "utf8"), "verified-new");
+  assert.deepEqual(
+    result.movedFiles.map(file => [path.basename(file.source), path.basename(file.target)]),
+    [["a.jpg", "a.jpg"]]
+  );
+});
+
+test("a rejected browser file stays out of the published destination", async () => {
+  const { source, dest } = await area();
+  const rejected = path.join(source, "Instagram", "alice", "bad.jpg");
+  await put(rejected, "not an image");
+  await put(path.join(source, "Instagram", "alice", "good.jpg"), "valid file");
+
+  const result = await moveFinishedFiles({
+    sourceRoot: source,
+    destRoot: dest,
+    now: NOW,
+    blockedFiles: new Set([path.resolve(rejected).toLowerCase()])
+  });
+
+  assert.equal(result.moved, 1);
+  assert.equal(await readFile(rejected, "utf8"), "not an image");
+  assert.equal(await readFile(path.join(dest, "Instagram", "alice", "good.jpg"), "utf8"), "valid file");
+  assert.deepEqual(await names(path.join(dest, "Instagram", "alice")), ["good.jpg"]);
 });
 
 test("overlapping mover passes serialize filename selection and preserve both files", async () => {

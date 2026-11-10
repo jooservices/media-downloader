@@ -9,6 +9,7 @@ import { browserCommand } from "./browser.mjs";
 import { runMcp } from "./mcp.mjs";
 import { addToWatch, watch } from "./watch.mjs";
 import { verifyCommand } from "./verify.mjs";
+import { rotateApiToken } from "./store.mjs";
 
 const USAGE = [
   "Page Media Saver",
@@ -18,6 +19,7 @@ const USAGE = [
   "  service install                   start the queue at sign-in and open the API",
   "  status                            see the latest jobs",
   "  mcp                               MCP server on stdin/stdout for AI assistants",
+  "  api-token rotate                 replace the REST API bearer token",
   "  browser setup|login|status        a browser profile owned by the queue, for unattended runs",
   "",
   "Also: add, serve, move, resume, verify <profile-url> [--repair], repair-root, uninstall, help.",
@@ -65,12 +67,23 @@ function serveCommand(args) {
   return serve({ inbox, once: args.includes("--once") });
 }
 
+async function apiTokenCommand(args) {
+  if (args[0] !== "rotate" || args.length !== 1) {
+    throw new Error("Use: api-token rotate");
+  }
+  await rotateApiToken();
+  process.stdout.write(
+    "API token rotated. Restart serve or the installed service; API clients must reread api-token.\n"
+  );
+}
+
 const COMMANDS = {
   add: addCommand,
   watch: args => (args[0] === "add" ? addToWatch(args.slice(1)) : watch()),
   serve: serveCommand,
   service: serviceCommand,
   mcp: () => runMcp(),
+  "api-token": apiTokenCommand,
   browser: browserCommand,
   move: moveCommand,
   help: printUsage,

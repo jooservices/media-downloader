@@ -276,6 +276,30 @@ test("repair mode downloads only the listed originals, once each, over the old c
   );
 });
 
+test("legacy repair wildcard redownloads discovered media with fresh keys and the stored count", async () => {
+  const page = scanPage({
+    articles: [
+      xArticle({
+        status: "/NASA/status/legacy",
+        images: [image({ src: `${MEDIA}first.jpg` }), image({ src: `${MEDIA}second.jpg` })]
+      })
+    ]
+  });
+  const state = await start(page, {
+    jobId: "repair-legacy",
+    repairTargets: ["*"],
+    repairExpectedCount: 2
+  });
+  const download = page.sent.find(message => message.type === "DOWNLOAD_ITEMS");
+  assert.deepEqual(plain(download.items.map(item => item.key)), [
+    "repair:repair-legacy:post-1_01_640x480.jpg",
+    "repair:repair-legacy:post-1_02_640x480.jpg"
+  ]);
+  assert.ok(download.items.every(item => item.overwrite === true));
+  assert.deepEqual(plain(state.repairFound), ["post-1_01_640x480.jpg", "post-1_02_640x480.jpg"]);
+  assert.equal(state.status, "complete");
+});
+
 test("repair mode finishes normally once every listed original was matched", async () => {
   const base = onceStarted();
   const progress = [];

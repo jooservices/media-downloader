@@ -25,6 +25,27 @@ test("a finished profile is due again only after the rescan interval, plus a lit
   assert.deepEqual(urlsDue(finished, [url], doneAt + wait), [url]);
 });
 
+test("watch keeps a possibly active incomplete scan parked until a newer explicit retry finishes", () => {
+  const parked = {
+    url,
+    status: "incomplete",
+    noRetry: true,
+    createdAt: "2026-11-01T00:00:00.000Z",
+    updatedAt: "2026-11-01T00:00:00.000Z"
+  };
+  const now = Date.parse("2026-11-10T00:00:00.000Z");
+  assert.deepEqual(urlsDue([parked], [url], now), [], "stale or crash-recovered scans require explicit review");
+  assert.deepEqual(
+    urlsDue(
+      [parked, { ...parked, status: "complete", noRetry: false, updatedAt: "2026-11-09T00:00:00.000Z" }],
+      [url],
+      now
+    ),
+    [url],
+    "a newer explicitly completed scan clears the hold"
+  );
+});
+
 test("the extra wait is fixed for an account and differs between accounts", () => {
   const waits = ["a", "b", "c", "d", "e", "f"].map(name => intervalFor(`https://x.com/${name}/`, []));
   assert.equal(intervalFor("https://x.com/a/", []), waits[0], "the same account always waits the same");

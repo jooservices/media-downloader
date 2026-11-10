@@ -13,7 +13,15 @@
     if (event.source !== window || event.origin !== location.origin) {
       return;
     }
-    if (event.data?.channel !== CHANNEL || !Array.isArray(event.data.media)) {
+    if (event.data?.channel !== CHANNEL) {
+      return;
+    }
+    if ([420, 429].includes(Number(event.data.rateLimitStatus))) {
+      chrome.runtime
+        .sendMessage({ type: "PLATFORM_RATE_LIMIT", status: Number(event.data.rateLimitStatus) })
+        .catch(() => {});
+    }
+    if (!Array.isArray(event.data.media)) {
       return;
     }
     const media = event.data.media

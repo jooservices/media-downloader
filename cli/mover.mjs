@@ -155,7 +155,7 @@ async function freeName(directory, name) {
   throw new Error(`No free file name for ${name}`);
 }
 
-async function moveOne(from, toDirectory, name, result, copyFileImpl) {
+async function moveOne(from, toDirectory, name, result, copyFileImpl, { overwriteFiles = new Set() } = {}) {
   await mkdir(toDirectory, { recursive: true });
   const size = (await stat(from)).size;
   let target = path.join(toDirectory, name);
@@ -164,9 +164,11 @@ async function moveOne(from, toDirectory, name, result, copyFileImpl) {
   if (existing?.size === size && (await sameContents(from, target))) {
     await unlink(from);
     result.duplicates++;
+    result.movedFiles.push({ source: from, target, size });
     return;
   }
-  if (existing) {
+  const replace = existing && overwriteFiles.has(path.resolve(target).toLowerCase());
+  if (existing && !replace) {
     target = await freeName(toDirectory, name);
   }
   const temporary = path.join(toDirectory, `.pms-mover-${randomUUID()}.part`);
@@ -175,6 +177,9 @@ async function moveOne(from, toDirectory, name, result, copyFileImpl) {
     if ((await stat(temporary)).size !== size || !(await sameContents(from, temporary))) {
       throw new Error(`Copy of ${name} is not the same as the original.`);
     }
+    if (replace) {
+      await unlink(target);
+    }
     await rename(temporary, target);
   } catch (error) {
     await unlink(temporary).catch(() => {});
@@ -182,13 +187,23 @@ async function moveOne(from, toDirectory, name, result, copyFileImpl) {
   }
   await unlink(from);
   result.moved++;
+  result.movedFiles.push({ source: from, target, size });
 }
 
-async function moveAccountFolder(source, destination, { now, settleMs, copyFileImpl }, result) {
+async function moveAccountFolder(
+  source,
+  destination,
+  { now, settleMs, copyFileImpl, overwriteFiles, blockedFiles },
+  result
+) {
   const entries = await readdir(source, { withFileTypes: true });
   for (const entry of entries) {
     const from = path.join(source, entry.name);
     if (!entry.isFile() || UNFINISHED.test(entry.name)) {
+      continue;
+    }
+    if (blockedFiles.has(path.resolve(from).toLowerCase())) {
+      result.skipped++;
       continue;
     }
     if (now - (await stat(from)).mtimeMs < settleMs) {
@@ -196,7 +211,7 @@ async function moveAccountFolder(source, destination, { now, settleMs, copyFileI
       continue;
     }
     try {
-      await moveOne(from, destination, entry.name, result, copyFileImpl);
+      await moveOne(from, destination, entry.name, result, copyFileImpl, { overwriteFiles });
     } catch (error) {
       result.failed++;
       result.errors.push(`${entry.name}: ${error?.message || error}`);
@@ -226,9 +241,19 @@ async function moveFinishedFilesUnlocked({
   now = Date.now(),
   settleMs = DEFAULT_SETTLE_MS,
   copyFileImpl = copyFile,
+  overwriteFiles = new Set(),
+  blockedFiles = new Set(),
   resolveDestination = realLocation
 }) {
-  const result = { moved: 0, duplicates: 0, skipped: 0, failed: 0, errors: [], destinationAvailable: true };
+  const result = {
+    moved: 0,
+    duplicates: 0,
+    skipped: 0,
+    failed: 0,
+    errors: [],
+    movedFiles: [],
+    destinationAvailable: true
+  };
   if (overlaps(sourceRoot, destRoot)) {
     throw new Error(OVERLAP_MESSAGE);
   }
@@ -277,7 +302,12 @@ async function moveFinishedFilesUnlocked({
         result.errors.push(`${site}/${account.name}: the destination folder is a link into the Downloads folder.`);
         continue;
       }
-      await moveAccountFolder(path.join(siteDir, account.name), destination, { now, settleMs, copyFileImpl }, result);
+      await moveAccountFolder(
+        path.join(siteDir, account.name),
+        destination,
+        { now, settleMs, copyFileImpl, overwriteFiles, blockedFiles },
+        result
+      );
     }
   }
   return result;
@@ -300,4 +330,32 @@ export function moveFinishedFiles(options) {
     }
   });
   return run;
+}
+
+// Keep job identities aligned with the names actually published when a destination collision occurs.
+export async function reconcileMovedOutputs(movedFiles, { sourceRoot, jobs, updateJob }) {
+  for (const moved of movedFiles || []) {
+    const [platform, account] = path.relative(sourceRoot, moved.source).split(path.sep);
+    const sourceName = path.basename(moved.source).toLowerCase();
+    for (const job of jobs.filter(
+      entry => entry.platform === platform && entry.account?.toLowerCase() === account.toLowerCase()
+    )) {
+      const matched = (job.outputFiles || []).some(
+        output =>
+          String(output.filename || output).toLowerCase() === sourceName &&
+          (output.size === undefined || output.size === null || Number(output.size) === moved.size)
+      );
+      if (matched) {
+        await updateJob(job.jobId, current => {
+          current.outputRenames = { ...(current.outputRenames || {}), [sourceName]: path.basename(moved.target) };
+          current.outputFiles = (current.outputFiles || []).map(output =>
+            String(output.filename || output).toLowerCase() === sourceName &&
+            (output.size === undefined || output.size === null || Number(output.size) === moved.size)
+              ? { ...output, filename: path.basename(moved.target) }
+              : output
+          );
+        });
+      }
+    }
+  }
 }
