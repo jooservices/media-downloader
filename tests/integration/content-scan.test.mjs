@@ -219,7 +219,7 @@ test("a stop request pauses the scan after the current pass", async () => {
   assert.equal(page.ns.scan.stopRequested, false, "the next scan starts fresh");
 });
 
-test("a scan that never ends stops at its safety limit of 10,000 passes", async () => {
+test("a scan that never ends stops at its safety limit of 10,000 passes", { timeout: 60_000 }, async () => {
   const page = scanPage();
   page.dom.scrollHeight = 1e9;
   page.dom.onScroll = top => {
