@@ -32,6 +32,13 @@ const BOB = "https://x.com/Bob/";
 const FINISHED = "00000000-0000-4000-8000-000000000077";
 const RUNNING = "00000000-0000-4000-8000-000000000078";
 const LIMITED = "00000000-0000-4000-8000-000000000079";
+const serveWithoutBrowser = options =>
+  serve({
+    ...options,
+    openJob: async () => {
+      throw new Error("Browser launch disabled in this API integration test.");
+    }
+  });
 
 after(() => {
   store.closeJobStore();
@@ -99,7 +106,7 @@ test("the running serve answers the REST API: create, read, watch and cancel", a
     process.stdout.write = originalWrite;
   });
   const nextHandler = interrupter();
-  const done = serve({ inbox: path.join(home, "inbox.txt") });
+  const done = serveWithoutBrowser({ inbox: path.join(home, "inbox.txt") });
   const stop = await nextHandler();
   const token = (await readFile(store.API_TOKEN_FILE, "utf8")).trim();
   const call = (method, pathname, body) =>
@@ -186,7 +193,7 @@ test("serve preserves platform back-off across process recreation", async t => {
   });
   const start = async () => {
     const nextHandler = interrupter();
-    const done = serve({ inbox: path.join(home, "inbox.txt") });
+    const done = serveWithoutBrowser({ inbox: path.join(home, "inbox.txt") });
     const stop = await nextHandler();
     const token = (await readFile(store.API_TOKEN_FILE, "utf8")).trim();
     const status = async () => {
