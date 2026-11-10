@@ -23,6 +23,10 @@ function escapeXml(value) {
   return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
+function scriptDirectory(script) {
+  return path.win32.isAbsolute(script) ? path.win32.dirname(script) : path.dirname(script);
+}
+
 function serviceEnvironment(env) {
   return Object.fromEntries(
     ["PMS_DATA_DIR", "PMS_DOWNLOAD_DIR"].filter(name => env[name]).map(name => [name, env[name]])
@@ -103,7 +107,7 @@ export function launchdPlist(launch = serviceLaunch(), env = process.env) {
   <key>Label</key><string>${LAUNCHD_LABEL}</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-${environmentXml}  <key>WorkingDirectory</key><string>${escapeXml(path.dirname(launch.script))}</string>
+${environmentXml}  <key>WorkingDirectory</key><string>${escapeXml(scriptDirectory(launch.script))}</string>
   <key>ProgramArguments</key>
   <array>
     <string>${escapeXml(launch.executable)}</string>

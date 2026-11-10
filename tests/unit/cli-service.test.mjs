@@ -131,7 +131,7 @@ test("installing on Windows writes the Startup entry, starts the queue now and s
   const file = service.windowsStartupFile(env);
   const script = await readFile(file, "utf8");
   assert.equal(script, service.windowsStartupScript(LAUNCH, env));
-  assert.match(script, new RegExp(`env\\("PMS_DATA_DIR"\\) = "${home.replaceAll("\\", "\\\\")}\\\\queue-data"`));
+  assert.ok(script.includes(`env("PMS_DATA_DIR") = "${env.PMS_DATA_DIR}"`));
   assert.deepEqual(started, [[LAUNCH, env]]);
   assert.match(
     lines.join(""),
