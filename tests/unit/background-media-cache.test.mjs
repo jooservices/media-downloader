@@ -174,11 +174,15 @@ test("bulk ledger lookups return saved canonical keys", async () => {
   const env = loadBackground();
   await env.ledger.add("Twitter|image|saved01|1");
   await env.ledger.add("Twitter:alice:video:legacy01");
+  env.inContext("transactionDone = () => new Promise(() => {})");
 
-  assert.deepEqual(
-    [...(await env.ledger.hasAny(["Twitter|image|saved01|1", "Twitter|video|missing1|1", "Twitter|video|legacy01|1"]))],
-    ["Twitter|image|saved01|1", "Twitter|video|legacy01|1"]
-  );
+  const result = await Promise.race([
+    env.ledger
+      .hasAny(["Twitter|image|saved01|1", "Twitter|video|missing1|1", "Twitter|video|legacy01|1"])
+      .then(keys => [...keys]),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("lookup waited for the read-only transaction")), 100))
+  ]);
+  assert.deepEqual(result, ["Twitter|image|saved01|1", "Twitter|video|legacy01|1"]);
 });
 
 test("a limited cache request checks saved entries in bounded batches", async () => {
