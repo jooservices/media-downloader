@@ -8,7 +8,7 @@ This document describes the workflows defined in `.github/workflows/`. All jobs 
 flowchart TD
     native[GitHub Secret Scanning and Push Protection] --> Alerts[GitHub security alerts or blocked push]
 
-    push[Push to master or develop] --> PostMerge[CI post-merge]
+    push[Push to master or develop] --> CI[CI]
     push --> CodeQL[CodeQL]
     push --> Audit{Changed files under .github?}
     Audit -->|yes| WorkflowAudit[Workflow audit]
@@ -37,7 +37,7 @@ flowchart TD
 
 ## CI (`ci.yml`)
 
-**Triggers:** pull request targeting `master` or `develop`. Concurrent runs for the same Git ref cancel older in-progress runs.
+**Triggers:** every pull request, regardless of its base branch, and pushes to `master` or `develop`. Concurrent runs for the same PR or branch cancel older in-progress runs. The workflow uses `pull_request`, so fork PRs receive no repository secrets.
 
 ```mermaid
 flowchart LR
@@ -63,10 +63,6 @@ flowchart LR
 
 The required status checks for `master` and `develop` are the job names: `Validate`, `Lint (ESLint)`, `Lint (Prettier)`, `Lint (Docs)`, `Security (Dependencies)`, `Security (Secrets)`, `Security (SAST)`, `Test (Unit)`, `Test (Integration)`, `Test (E2E)`, `Container` and `Coverage upload`.
 
-## CI post-merge (`ci-post-merge.yml`)
-
-**Triggers:** push to `master` or `develop`. Lighter sanity after a merge: validate, lint, tests with the coverage floor, Codecov and SonarQube.
-
 ## Release flow (`release.yml`)
 
 **Trigger:** push of a tag matching `v*.*.*`. Runs are not cancelled.
@@ -91,16 +87,16 @@ The tag itself is the release trigger, and the `origin/master` ancestry gate sto
 
 ## Other workflows
 
-| Workflow             | Trigger                                                   | Flow / result                                                                                           |
-| -------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `codeql.yml`         | Push/PR on `master` or `develop`; Monday 06:00 UTC        | Initialize CodeQL for GitHub Actions and for JavaScript, analyze and publish the results.               |
-| `commitlint.yml`     | PR opened, edited, synchronized, reopened                 | Checkout full history, validate every PR commit against `.github/commitlint.config.mjs`.                |
-| `semantic-pr.yml`    | PR opened, edited, synchronized                           | Validate the PR title type and require an uppercase first subject character.                            |
-| `pr-labeler.yml`     | PR opened, synchronized, reopened                         | Apply labels from `.github/labeler.yml` based on changed paths.                                         |
-| `link-check.yml`     | Monday 04:00 UTC; manual                                  | Lychee checks Markdown links, excluding `node_modules`, Codecov and mail links.                         |
-| `scorecard.yml`      | Push to `develop`; Monday 00:00 UTC; manual               | OpenSSF Scorecard, then upload SARIF.                                                                   |
-| `stale.yml`          | Daily 01:00 UTC; manual                                   | Mark issues/PRs stale after 60 inactive days; close 14 days later, except pinned/security/dependencies. |
-| `workflow-audit.yml` | `.github/**` changes on push/PR; Monday 03:00 UTC; manual | Actionlint checks workflow syntax; Zizmor scans workflow security and uploads SARIF.                    |
+| Workflow             | Trigger                                                            | Flow / result                                                                                           |
+| -------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| `codeql.yml`         | Push/PR on `master` or `develop`; Monday 06:00 UTC                 | Initialize CodeQL for GitHub Actions and for JavaScript, analyze and publish the results.               |
+| `commitlint.yml`     | PR opened, edited, synchronized, reopened                          | Checkout full history, validate every PR commit against `.github/commitlint.config.mjs`.                |
+| `semantic-pr.yml`    | PR opened, edited, synchronized                                    | Validate the PR title type and require an uppercase first subject character.                            |
+| `pr-labeler.yml`     | PR opened, synchronized, reopened                                  | Apply labels from `.github/labeler.yml` based on changed paths.                                         |
+| `link-check.yml`     | Monday 04:00 UTC; manual                                           | Lychee checks Markdown links, excluding `node_modules`, Codecov and mail links.                         |
+| `scorecard.yml`      | Push to `develop`; Monday 00:00 UTC; manual                        | OpenSSF Scorecard, then upload SARIF.                                                                   |
+| `stale.yml`          | Daily 01:00 UTC; manual                                            | Mark issues/PRs stale after 60 inactive days; close 14 days later, except pinned/security/dependencies. |
+| `workflow-audit.yml` | `.github/**` changes on push/any-base PR; Monday 03:00 UTC; manual | Actionlint checks workflow syntax; Zizmor scans workflow security and uploads SARIF.                    |
 
 Dependabot (`.github/dependabot.yml`) opens weekly update PRs for npm and GitHub Actions; Actions are pinned by commit SHA.
 
@@ -125,5 +121,5 @@ gantt
 
 - All jobs use GitHub-hosted `ubuntu-latest`. The CLI's Edge integration is Windows-only and is not exercised in CI; the tests fake the browser.
 - Secret scanning has two layers: GitHub Secret Scanning and Push Protection detect or block supported secrets at GitHub, while CI scans the checked-out Git history with the MIT-licensed Gitleaks OSS CLI. The GitHub layer is controlled in the repository security settings, not by a workflow file.
-- The coverage job uploads the combined report to Codecov and SonarQube. It normalizes a scheme-less `SONAR_HOST_URL` to `https://…` before scanning.
+- The coverage job uploads the combined report to Codecov and SonarQube on pushes and trusted same-repository PRs. Those uploads are skipped for fork and bot PRs; the coverage floor still applies to every PR. It normalizes a scheme-less `SONAR_HOST_URL` before scanning.
 - Secrets used: `CODECOV_TOKEN`, `SONAR_TOKEN` and optionally `SONAR_HOST_URL`.

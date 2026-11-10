@@ -1,6 +1,6 @@
 # jooservices/media-downloader
 
-[![CI](https://github.com/jooservices/media-downloader/actions/workflows/ci-post-merge.yml/badge.svg?branch=develop)](https://github.com/jooservices/media-downloader/actions/workflows/ci-post-merge.yml)
+[![CI](https://github.com/jooservices/media-downloader/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/jooservices/media-downloader/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/jooservices/media-downloader/actions/workflows/codeql.yml/badge.svg?branch=develop)](https://github.com/jooservices/media-downloader/actions/workflows/codeql.yml)
 [![Coverage (develop)](https://codecov.io/gh/jooservices/media-downloader/branch/develop/graph/badge.svg)](https://codecov.io/gh/jooservices/media-downloader/branch/develop)
 [![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=jooservices_media-downloader&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=jooservices_media-downloader)
