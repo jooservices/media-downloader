@@ -461,7 +461,8 @@ test("page ids never pull in another account's media on the same page", async ()
 });
 
 test("Instagram and Facebook videos are chosen by the page's ids and never cross platforms", async () => {
-  const { send, started } = loadBackground();
+  const env = loadBackground();
+  const { send, started, inContext } = env;
   await send({
     type: "MEDIA_FOUND",
     media: [
@@ -512,11 +513,13 @@ test("Instagram and Facebook videos are chosen by the page's ids and never cross
     account: "page.name",
     ids: ["2059757664673295"]
   });
-  assert.equal(fb.started, 1);
+  assert.equal(fb.deferred, true);
+  await inContext("batchQueue");
   assert.equal(started[1].filename, "Facebook/page.name/video_2059757664673295.mp4");
   assert.equal(started.length, 2, "ids that are not on the page stay in the cache");
 
   const noIds = await send({ type: "DOWNLOAD_CACHED_MEDIA", platform: "Facebook", account: "page.name" });
-  assert.equal(noIds.started, 0, "an unknown owner is never guessed without page ids");
+  assert.equal(noIds.deferred, true, "a Facebook cache read is acknowledged before owner checks");
+  await inContext("batchQueue");
   assert.equal((await send({ type: "DOWNLOAD_CACHED_MEDIA", platform: "Nope" })).ok, false);
 });

@@ -49,6 +49,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!pending) {
     return false;
   }
+  if (typeof pending.then !== "function") {
+    sendResponse(pending);
+    return false;
+  }
   pending.then(sendResponse).catch(error => sendResponse({ ok: false, error: error?.message || String(error) }));
   return true;
 });

@@ -324,6 +324,67 @@ test("a cache download does not wait for an unrelated queue and reserves its ite
   assert.deepEqual(repeated.coveredIds, ["queued02"]);
 });
 
+test("Facebook and TikTok cache requests acknowledge before queued cache reads", async () => {
+  for (const platform of ["Facebook", "TikTok"]) {
+    const env = loadBackground();
+    const item = video("delayed01", {
+      platform,
+      url:
+        platform === "TikTok"
+          ? "https://v16-webapp.tiktokcdn.com/play/delayed01.mp4"
+          : "https://scontent.fbcdn.net/video/delayed01.mp4"
+    });
+    await found(env, [item]);
+    env.inContext("batchQueue = new Promise(() => {})");
+
+    const message = {
+      type: "DOWNLOAD_CACHED_MEDIA",
+      platform,
+      account: "alice",
+      ids: ["page001"],
+      limit: 8
+    };
+    let result;
+    const keepsMessageOpen = env.listeners.message[0](message, {}, value => {
+      result = value;
+    });
+    assert.equal(keepsMessageOpen, false, platform);
+    assert.equal(result.deferred, true, platform);
+    assert.equal(result.diag.deferred, true, platform);
+    assert.deepEqual(env.started, [], platform);
+
+    const repeated = await env.send({
+      type: "DOWNLOAD_CACHED_MEDIA",
+      platform,
+      account: "alice",
+      ids: ["page002"],
+      limit: 8
+    });
+    assert.equal(repeated.deferred, true, platform);
+  }
+});
+
+test("Facebook and TikTok cache reads still start fresh videos when the queue is ready", async () => {
+  for (const platform of ["Facebook", "TikTok"]) {
+    const env = loadBackground();
+    const item = video("fresh001", {
+      platform,
+      url:
+        platform === "TikTok"
+          ? "https://v16-webapp.tiktokcdn.com/play/fresh001.mp4"
+          : "https://scontent.fbcdn.net/video/fresh001.mp4"
+    });
+    await found(env, [item]);
+    const result = await saveCached(env, { platform, account: "alice", limit: 8 });
+    if (result.deferred) {
+      await env.inContext("batchQueue");
+    }
+    assert.equal(result.started, result.deferred ? 0 : 1, platform);
+    assert.equal(env.started.length, 1, platform);
+    assert.match(env.started[0].filename, new RegExp(`^${platform}/Alice/`), platform);
+  }
+});
+
 test("cached downloads do not wait for searches of unrelated pending files", async () => {
   const env = loadBackground();
   await found(env, [video("fresh01")]);

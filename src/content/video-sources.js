@@ -15,6 +15,7 @@ globalThis.PageMediaSaver ??= {};
   const MAX_POSTS_OPENED_PER_PASS = 3;
   const POST_DATA_ATTEMPTS = 5;
   const MAX_PAGE_DATA_FILES_PER_PASS = 8;
+  const CACHE_MESSAGE_TIMEOUT_MS = 1000;
 
   // A whole number in [0, max) from the platform's random source.
   function randomBelow(max) {
@@ -193,6 +194,13 @@ globalThis.PageMediaSaver ??= {};
     return { videoArticlesSeen: containers.length, videoDownloadsClicked, videoDownloadsSkipped };
   }
 
+  function collectNativeVideosUnlessDeferred(platform, account, budget, cached) {
+    if (cached?.deferred) {
+      return Promise.resolve({ videoArticlesSeen: 0, videoDownloadsClicked: 0, videoDownloadsSkipped: 0 });
+    }
+    return collectNativeVideoDownloads(platform, account, budget);
+  }
+
   // The post, photo or video ids a link points at (none for links to anything else).
   // Instagram and Facebook responses do not reliably name the account, so the ids in
   // this page's own links pick which cached media belongs to what is being scanned.
@@ -327,11 +335,39 @@ globalThis.PageMediaSaver ??= {};
   let lastCacheDiag = null;
 
   async function requestCachedMedia(message) {
+    if (["Facebook", "TikTok"].includes(message.platform)) {
+      let timeoutId;
+      const response = await Promise.race([
+        chrome.runtime.sendMessage(message).catch(error => ({ error: String(error?.message || error).slice(0, 120) })),
+        new Promise(resolve => {
+          timeoutId = setTimeout(
+            () => resolve({ error: "Cached media request timed out; the profile scan will continue." }),
+            CACHE_MESSAGE_TIMEOUT_MS
+          );
+        })
+      ]);
+      clearTimeout(timeoutId);
+      return response;
+    }
     try {
       return await chrome.runtime.sendMessage(message);
     } catch (error) {
       return { error: String(error?.message || error).slice(0, 120) };
     }
+  }
+
+  function cacheDiagnostic(platform, cached, asked, ids) {
+    if (cached?.error) {
+      return { asked, ids: ids ? ids.length : null, error: cached.error };
+    }
+    if (!cached && asked && ["Facebook", "TikTok"].includes(platform)) {
+      return {
+        asked,
+        ids: ids ? ids.length : null,
+        error: "The cache handler returned no response; the profile scan will continue."
+      };
+    }
+    return cached?.diag || { asked, ids: ids ? ids.length : null, noReply: true };
   }
 
   async function collectPageMedia(platform, account) {
@@ -350,16 +386,12 @@ globalThis.PageMediaSaver ??= {};
           limit: Number.isFinite(cacheBudget) ? cacheBudget : null
         })
       : null;
-    if (cached?.error) {
-      lastCacheDiag = { asked, ids: ids ? ids.length : null, error: cached.error };
-    } else {
-      lastCacheDiag = cached?.diag || { asked, ids: ids ? ids.length : null, noReply: true };
-    }
+    lastCacheDiag = cacheDiagnostic(platform, cached, asked, ids);
     let cachedStarted = cached?.started || 0;
     if (siteOf(platform)?.opensGridPosts) {
       cachedStarted += await openGridPosts(account, budget - cachedStarted, cached?.coveredIds);
     }
-    const videos = await collectNativeVideoDownloads(platform, account, budget - cachedStarted);
+    const videos = await collectNativeVideosUnlessDeferred(platform, account, budget - cachedStarted, cached);
     return {
       ...videos,
       videoDownloadsClicked: videos.videoDownloadsClicked + cachedStarted,

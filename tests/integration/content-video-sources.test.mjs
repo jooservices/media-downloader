@@ -324,6 +324,35 @@ test("Facebook and TikTok cache requests start at most eight page-data files per
   }
 });
 
+test("a deferred Facebook or TikTok cache pass does not start a competing native download", async () => {
+  for (const [platform, url, account] of [
+    ["Facebook", "https://www.facebook.com/someone/", "someone"],
+    ["TikTok", "https://www.tiktok.com/@someone", "someone"]
+  ]) {
+    const page = menuPage({
+      url,
+      onSend: settled({ DOWNLOAD_CACHED_MEDIA: () => ({ ok: true, deferred: true, diag: { deferred: true } }) })
+    });
+    page.document.querySelectorAll = selector => {
+      if (selector === "video") {
+        return [{ src: "https://example.com/video.mp4" }];
+      }
+      if (platform === "Facebook" && selector === "a[href]") {
+        return [{ href: "https://www.facebook.com/reel/123" }];
+      }
+      return [];
+    };
+    const result = await page.ns.videoSources.collectPageMedia(platform, account);
+    assert.equal(result.videoDownloadsClicked, 0, platform);
+    assert.equal(
+      page.sent.some(message => message.type === "DOWNLOAD_ITEMS"),
+      false,
+      platform
+    );
+    assert.deepEqual(plain(page.ns.videoSources.cacheDiagnostics()), { deferred: true }, platform);
+  }
+});
+
 test("other platforms keep the unlimited page-data request when the scan has no limit", async () => {
   const page = menuPage({
     url: "https://x.com/someone/",
@@ -359,6 +388,31 @@ test("a background that does not answer leaves the cache request empty-handed", 
   const result = await page.ns.videoSources.collectPageMedia("Twitter", "NASA");
   assert.deepEqual(plain(result), { videoArticlesSeen: 0, videoDownloadsClicked: 0, videoDownloadsSkipped: 0 });
   assert.deepEqual(plain(page.ns.videoSources.cacheDiagnostics()), { asked: true, ids: null, error: "asleep" });
+});
+
+test("a slow Facebook or TikTok cache reply times out without pausing the profile scan", async () => {
+  for (const [platform, url, account] of [
+    ["Facebook", "https://www.facebook.com/someone/", "someone"],
+    ["TikTok", "https://www.tiktok.com/@someone", "someone"]
+  ]) {
+    const page = menuPage({ url, onSend: () => new Promise(() => {}) });
+    if (platform === "Facebook") {
+      page.document.querySelectorAll = selector =>
+        selector === "a[href]" ? [{ href: "https://www.facebook.com/reel/123" }] : [];
+    }
+    const result = await page.ns.videoSources.collectPageMedia(platform, account);
+    assert.equal(result.videoDownloadsClicked, 0, platform);
+    assert.match(page.ns.videoSources.cacheDiagnostics().error, /timed out/i, platform);
+  }
+});
+
+test("an empty Facebook or TikTok cache reply is reported instead of becoming a silent zero", async () => {
+  const page = menuPage({
+    url: "https://www.tiktok.com/@someone",
+    onSend: () => undefined
+  });
+  await page.ns.videoSources.collectPageMedia("TikTok", "someone");
+  assert.match(page.ns.videoSources.cacheDiagnostics().error, /returned no response/i);
 });
 
 // ---- opening grid posts ------------------------------------------------------------------

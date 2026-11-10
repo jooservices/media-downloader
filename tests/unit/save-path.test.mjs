@@ -92,7 +92,8 @@ test("a download from a host outside the platform's CDN is skipped", async () =>
 });
 
 test("cached videos carry their real size into the path", async () => {
-  const { send, started } = loadBackground();
+  const env = loadBackground();
+  const { send, started, inContext } = env;
   await send({
     type: "MEDIA_FOUND",
     media: [
@@ -115,7 +116,9 @@ test("cached videos carry their real size into the path", async () => {
     ]
   });
   await send({ type: "DOWNLOAD_CACHED_MEDIA", platform: "Twitter", account: "acct" });
-  await send({ type: "DOWNLOAD_CACHED_MEDIA", platform: "Facebook", account: "page", ids: ["2002"] });
+  const result = await send({ type: "DOWNLOAD_CACHED_MEDIA", platform: "Facebook", account: "page", ids: ["2002"] });
+  assert.equal(result.deferred, true);
+  await inContext("batchQueue");
   assert.equal(started[0].filename, "Twitter/acct/video_1001_720x1280.mp4");
   assert.equal(
     started[1].filename,

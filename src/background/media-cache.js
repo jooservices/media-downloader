@@ -130,8 +130,40 @@ function cacheDiagnostics(mediaCache, platform, wantedIds, wantedAccount, select
 // cached owner matches `account` are saved, so unrelated feed media never lands
 // in the wrong folder.
 const queuedCachedKeys = new Set();
+const pendingCachedRequests = new Set();
 
-async function downloadCachedMedia({ platform, account, ids, limit }) {
+function downloadCachedMedia(request) {
+  if (["Facebook", "TikTok"].includes(request.platform)) {
+    const requestKey = `${request.platform}|${String(request.account || "").toLowerCase()}`;
+    if (pendingCachedRequests.has(requestKey)) {
+      return deferredCachedMediaReply();
+    }
+    pendingCachedRequests.add(requestKey);
+    const work = queueBatch(() => downloadCachedMediaNow(request, { inQueue: true }));
+    const releaseRequest = () => pendingCachedRequests.delete(requestKey);
+    void work.then(releaseRequest, releaseRequest);
+    return deferredCachedMediaReply();
+  }
+  return downloadCachedMediaNow(request);
+}
+
+function deferredCachedMediaReply() {
+  return {
+    ok: true,
+    deferred: true,
+    started: 0,
+    queued: true,
+    skipped: 0,
+    failed: 0,
+    pending: 0,
+    errors: [],
+    cached: 0,
+    coveredIds: [],
+    diag: { deferred: true }
+  };
+}
+
+async function downloadCachedMediaNow({ platform, account, ids, limit }, { inQueue = false } = {}) {
   if (!platforms.PLATFORMS.includes(platform)) {
     return { ok: false, error: "Unsupported platform for cached media." };
   }
@@ -173,7 +205,11 @@ async function downloadCachedMedia({ platform, account, ids, limit }) {
       queuedCachedKeys.delete(key);
     }
   };
-  const queued = queueBatch(() => downloadBatch(items, { reconcile: false }));
+  const operation = () => downloadBatch(items, { reconcile: false });
+  if (inQueue) {
+    return { ...(await operation()), cached: items.length, coveredIds, diag };
+  }
+  const queued = queueBatch(operation);
   let timeoutId;
   const result = await Promise.race([
     queued,
