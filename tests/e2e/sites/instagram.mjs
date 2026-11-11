@@ -72,6 +72,17 @@ function igTimeline(account) {
   };
 }
 
+function igPost(account, code) {
+  const edges = igTimeline(account).data.xdt_api__v1__feed__user_timeline_graphql_connection.edges.filter(
+    edge => edge.node.code === code
+  );
+  return {
+    data: {
+      xdt_api__v1__feed__user_timeline_graphql_connection: { edges }
+    }
+  };
+}
+
 function igStories(account) {
   const user = ownerOf(account);
   return {
@@ -115,7 +126,16 @@ function gridLinks() {
     ["reel", "IGREELONE01"],
     ["p", "IGCAROUSEL1"]
   ]
-    .map(([kind, code]) => `<a href="/${kind}/${code}/">post</a>`)
+    .map(([kind, code]) => {
+      const open = [
+        "event.preventDefault()",
+        `history.pushState({}, '', '/${kind}/${code}/')`,
+        "var p = new XMLHttpRequest()",
+        `p.open('POST', '/api/graphql?post=${code}')`,
+        "p.send('q=1')"
+      ].join(";");
+      return `<a href="/${kind}/${code}/" onclick="${open}">post</a>`;
+    })
     .join("");
 }
 
@@ -140,7 +160,8 @@ export function instagramRoutes(account) {
         return false;
       }
       if (request.method === "POST" && url.pathname === "/api/graphql") {
-        sendJson(response, igTimeline(account));
+        const postCode = url.searchParams.get("post");
+        sendJson(response, postCode ? igPost(account, postCode) : igTimeline(account));
       } else if (url.pathname.startsWith("/api/v1/feed/reels_media")) {
         sendJson(response, igStories(account));
       } else if (url.pathname.toLowerCase().startsWith(`/stories/${account}`)) {
@@ -148,6 +169,10 @@ export function instagramRoutes(account) {
           response,
           `<!doctype html><title>story</title><body>${requestScript("GET", "/api/v1/feed/reels_media/?reel_ids=79870991603")}</body>`
         );
+      } else if (/^\/(?:p|reel|tv)\/[^/]+\/?$/i.test(url.pathname)) {
+        const postCode = url.pathname.split("/").filter(Boolean)[1];
+        const postUrl = `/api/graphql?post=${encodeURIComponent(postCode)}`;
+        sendHtml(response, `<!doctype html><title>post</title><body>${requestScript("POST", postUrl)}</body>`);
       } else if (url.pathname.toLowerCase().startsWith(`/${account}`)) {
         sendHtml(
           response,

@@ -33,6 +33,10 @@ test(
     const videos = files.filter(file => file.endsWith(".mp4"));
     assert.equal(photos.length, 4, `photos: a post, two carousel photos, a story photo\n${files.join("\n")}`);
     assert.equal(videos.length, 3, `videos: a reel, a carousel video, a story video\n${files.join("\n")}`);
+    assert.ok(
+      env.state.requests.filter(line => line === "www.instagram.com/api/graphql").length >= 3,
+      "the profile and each uncovered photo post return page data"
+    );
     for (const file of videos) {
       assert.ok((await readFile(file)).includes(Buffer.from("mdat-")), "a video file holds the video bytes");
     }
