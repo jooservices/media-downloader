@@ -139,6 +139,19 @@ test("with post ids from the page, entries of unknown owner are saved into the s
   assert.equal(any.started, 1, "without a scanned account any owner is accepted");
 });
 
+test("the same full-size item reached from grid data and its opened post is saved only once", async () => {
+  const env = loadBackground();
+  await found(env, [photo("same001")]);
+  const fromGrid = await saveCached(env, { platform: "Twitter", account: "alice", ids: ["same001"] });
+  const fromPost = await saveCached(env, { platform: "Twitter", account: "alice", ids: ["same001"] });
+
+  assert.equal(fromGrid.started, 1);
+  assert.equal(fromPost.started, 0);
+  assert.equal(fromPost.skipped, 1);
+  assert.equal(env.started.length, 1);
+  assert.equal(env.started[0].filename, "Twitter/Alice/same001_01_1000x500.jpg");
+});
+
 test("without a scanned account only entries with a known owner are taken", async () => {
   const env = loadBackground();
   await found(env, [photo("aye1"), photo("bee1", { owner: "" })]);

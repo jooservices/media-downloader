@@ -13,6 +13,7 @@ globalThis.PageMediaSaver ??= {};
   const MAX_HIGHLIGHTS = 40;
   const MENU_BUTTONS_TRIED = 2;
   const MAX_POSTS_OPENED_PER_PASS = 3;
+  const startedCount = value => (Number.isSafeInteger(value) && value > 0 ? value : 0);
   const POST_DATA_ATTEMPTS = 5;
 
   // A whole number in [0, max) from the platform's random source.
@@ -298,7 +299,7 @@ globalThis.PageMediaSaver ??= {};
     if (scanState().singlePage || budget <= 0) {
       return 0;
     }
-    for (const id of alreadyCovered) {
+    for (const id of Array.isArray(alreadyCovered) ? alreadyCovered.slice(0, 4000) : []) {
       openedGridPosts.add(id);
     }
     let started = 0;
@@ -341,14 +342,19 @@ globalThis.PageMediaSaver ??= {};
           .catch(() => null)
       : null;
     lastCacheDiag = cached ? cached.diag : { asked, ids: ids ? ids.length : null, noReply: true };
-    let cachedStarted = cached?.started || 0;
+    const pageDataStarted = startedCount(cached?.started);
+    let cachedStarted = pageDataStarted;
+    let openedStarted = 0;
     if (siteOf(platform)?.opensGridPosts) {
-      cachedStarted += await openGridPosts(account, budget - cachedStarted, cached?.coveredIds);
+      openedStarted = startedCount(await openGridPosts(account, budget - cachedStarted, cached?.coveredIds));
+      cachedStarted += openedStarted;
     }
     const videos = await collectNativeVideoDownloads(platform, account, budget - cachedStarted);
     return {
       ...videos,
       videoDownloadsClicked: videos.videoDownloadsClicked + cachedStarted,
+      ...(!scanState().singlePage && pageDataStarted > 0 ? { gridSaved: pageDataStarted } : {}),
+      ...(openedStarted ? { postOpened: openedStarted } : {}),
       // Files the page delivered that were saved earlier count as seen, so a rescan with nothing new is not "empty".
       videoDownloadsSkipped: (videos.videoDownloadsSkipped || 0) + (cached?.skipped || 0)
     };

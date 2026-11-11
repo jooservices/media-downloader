@@ -196,10 +196,12 @@ test("HEAD /v1/jobs accepts the same filtered and paginated queries as GET", () 
   }));
 
 test("GET /v1/jobs/{id} returns one job or a 404; HEAD has no body", () =>
-  withServer({}, async ({ call }) => {
+  withServer({}, async ({ call, state }) => {
+    state.jobs.find(item => item.jobId === ID_B).message = "Download finished. 3 from the grid, 2 opened.";
     const one = await call("GET", `/v1/jobs/${ID_B}`);
     assert.equal(one.status, 200);
     assert.equal(one.body.status, "running");
+    assert.match(one.body.message, /3 from the grid, 2 opened/);
     assert.equal((await call("GET", "/v1/jobs/55555555-5555-4555-8555-555555555555")).status, 404);
     const head = await call("HEAD", `/v1/jobs/${ID_B}`);
     assert.equal(head.status, 200);

@@ -392,6 +392,94 @@ test("posts the cache already answered for, a spent budget, and a single post pa
   assert.equal(page.links[0].clicked, undefined);
 });
 
+test("malformed cache coverage metadata does not stop the grid fallback", async () => {
+  const page = gridPage();
+  page.links = [gridLink(page, "/p/Dmalformed1/")];
+  assert.equal(await page.ns.videoSources.openGridPosts("jasondchen", 3, 42), 1);
+  assert.equal(page.links[0].clicked, 1);
+});
+
+function cachedGridPage({ coveredIds, started = 0, skipped = 0, openedStarted = 1 } = {}) {
+  let gridRequest = true;
+  const page = loadPage({
+    url: "https://www.instagram.com/jasondchen/",
+    onSend: message => {
+      if (message.type !== "DOWNLOAD_CACHED_MEDIA") {
+        return { ok: true };
+      }
+      if (gridRequest) {
+        gridRequest = false;
+        return { ok: true, started, skipped, cached: started + skipped, coveredIds };
+      }
+      return { ok: true, started: openedStarted, cached: openedStarted ? 1 : 0 };
+    }
+  });
+  const links = ["/p/Dgrid000001/", "/reel/Dgrid000002/"].map(path => gridLink(page, path));
+  page.document.querySelectorAll = selector => (selector === GRID || selector === "a[href]" ? links : []);
+  return { ...page, links };
+}
+
+test("a grid whose page data has every full-size file saves from data without opening posts", async () => {
+  const page = cachedGridPage({ coveredIds: ["Dgrid000001", "Dgrid000002"], started: 2 });
+  const result = await page.context.PageMediaSaver.videoSources.collectPageMedia("Instagram", "jasondchen");
+  assert.deepEqual(plain(page.links.map(link => link.clicked ?? 0)), [0, 0]);
+  assert.equal(result.gridSaved, 2);
+  assert.equal(result.postOpened || 0, 0);
+});
+
+test("page-data downloads on a single post are not counted as grid files", async () => {
+  const page = menuPage({
+    url: "https://x.com/NASA/status/12345",
+    onSend: settled({ DOWNLOAD_CACHED_MEDIA: () => ({ ok: true, started: 1, cached: 1 }) })
+  });
+  page.ns.scan.state.singlePage = true;
+  const result = await page.ns.videoSources.collectPageMedia("Twitter", "NASA");
+  assert.equal(result.videoDownloadsClicked, 1);
+  assert.equal(result.gridSaved, undefined);
+  assert.equal(result.postOpened, undefined);
+});
+
+test("Facebook photo-tab files already in page data save without opening a photo", async () => {
+  const page = loadPage({
+    url: "https://www.facebook.com/example/photos/",
+    onSend: settled({
+      DOWNLOAD_CACHED_MEDIA: () => ({ ok: true, started: 1, cached: 1, coveredIds: ["1086989087485347"] })
+    })
+  });
+  const photoLink = { href: "https://www.facebook.com/photo/?fbid=1086989087485347" };
+  page.document.querySelectorAll = selector => (selector === "a[href]" ? [photoLink] : []);
+  const result = await page.ns.videoSources.collectPageMedia("Facebook", "example");
+  assert.equal(result.gridSaved, 1);
+  assert.equal(result.videoDownloadsClicked, 1);
+  assert.deepEqual(plain(page.sent.find(message => message.type === "DOWNLOAD_CACHED_MEDIA").ids), [
+    "1086989087485347"
+  ]);
+});
+
+test("a grid with thumbnail-only items opens posts and keeps the existing per-pass cap", async () => {
+  const page = cachedGridPage({ coveredIds: [], openedStarted: 1 });
+  const result = await page.context.PageMediaSaver.videoSources.collectPageMedia("Instagram", "jasondchen");
+  assert.deepEqual(plain(page.links.map(link => link.clicked ?? 0)), [1, 1]);
+  assert.equal(result.gridSaved || 0, 0);
+  assert.equal(result.postOpened, 2);
+});
+
+test("a mixed grid opens only posts without full-size files already in page data", async () => {
+  const page = cachedGridPage({ coveredIds: ["Dgrid000001"], started: 1, openedStarted: 1 });
+  const result = await page.context.PageMediaSaver.videoSources.collectPageMedia("Instagram", "jasondchen");
+  assert.deepEqual(plain(page.links.map(link => link.clicked ?? 0)), [0, 1]);
+  assert.equal(result.gridSaved, 1);
+  assert.equal(result.postOpened, 1);
+});
+
+test("an item already saved in the ledger is covered by page data and its post stays closed", async () => {
+  const page = cachedGridPage({ coveredIds: ["Dgrid000001"], started: 0, skipped: 1 });
+  const result = await page.context.PageMediaSaver.videoSources.collectPageMedia("Instagram", "jasondchen");
+  assert.equal(page.links[0].clicked, undefined);
+  assert.equal(result.gridSaved || 0, 0, "only newly started files count as saved from the grid");
+  assert.equal(result.videoDownloadsSkipped, 1);
+});
+
 test("grid links that are hidden, inside a dialog, detached, id-less or past the stop are left alone", async () => {
   const page = gridPage({ onSend: settled({ DOWNLOAD_CACHED_MEDIA: () => ({ ok: true, started: 1, cached: 1 }) }) });
   page.links = [

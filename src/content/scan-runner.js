@@ -27,6 +27,8 @@ globalThis.PageMediaSaver ??= {};
     skipped: 0,
     videoStarted: 0,
     videoSkipped: 0,
+    gridSaved: 0,
+    postOpened: 0,
     failed: 0,
     unavailable: 0,
     pending: 0,
@@ -60,7 +62,7 @@ globalThis.PageMediaSaver ??= {};
     const repairTargetCount = repairExpectedCount || repairTargets.length;
     autoState.message = autoState.repairMode
       ? `Repair download running · ${repairFound.length}/${repairTargetCount} source images matched · ${pending} pending · ${failed} failed · ${rounds} passes.`
-      : `Automatic download running · ${started} photos and ${videoStarted} page-data files started · ${pending} pending · ${failed} failed · ${skippedCount()} skipped · ${rounds} passes. Use Stop automatic download to pause.`;
+      : `Automatic download running · ${started} photos and ${videoStarted} page-data files started · ${autoState.gridSaved} from the grid, ${autoState.postOpened} opened · ${pending} pending · ${failed} failed · ${skippedCount()} skipped · ${rounds} passes. Use Stop automatic download to pause.`;
     // Nothing seen after a few passes: say what the page looks like, so the cause can be read from the job.
     const seen = started + videoStarted + skippedCount() + pending + failed;
     if (!autoState.repairMode && rounds >= 3 && seen === 0) {
@@ -78,6 +80,8 @@ globalThis.PageMediaSaver ??= {};
     autoState.pending = batch.pending || 0;
     autoState.videoStarted += batch.videoStarted || 0;
     autoState.videoSkipped += batch.videoSkipped || 0;
+    autoState.gridSaved += batch.gridSaved || 0;
+    autoState.postOpened += batch.postOpened || 0;
     autoState.rounds++;
   }
 
@@ -164,7 +168,9 @@ globalThis.PageMediaSaver ??= {};
   function endScan(status, message) {
     autoState.running = false;
     autoState.status = status;
-    autoState.message = message;
+    autoState.message = autoState.repairMode
+      ? message
+      : `${message} ${autoState.gridSaved} from the grid, ${autoState.postOpened} opened.`;
     publishAutoState("AUTO_DONE");
   }
 
@@ -275,7 +281,9 @@ globalThis.PageMediaSaver ??= {};
     pending: 0,
     errors: [],
     videoStarted: result.videoDownloadsClicked || 0,
-    videoSkipped: result.videoDownloadsSkipped || 0
+    videoSkipped: result.videoDownloadsSkipped || 0,
+    gridSaved: result.gridSaved || 0,
+    postOpened: result.postOpened || 0
   });
 
   async function downloadVisibleBatch() {
@@ -310,7 +318,13 @@ globalThis.PageMediaSaver ??= {};
     if (autoState.repairMode) {
       noteRepairMatches(items);
     }
-    return { ...response, videoStarted: clicked, videoSkipped: result.videoDownloadsSkipped || 0 };
+    return {
+      ...response,
+      videoStarted: clicked,
+      videoSkipped: result.videoDownloadsSkipped || 0,
+      gridSaved: result.gridSaved || 0,
+      postOpened: result.postOpened || 0
+    };
   }
 
   // A single post: wait briefly for its player, read the page once, then finish.
@@ -504,6 +518,8 @@ globalThis.PageMediaSaver ??= {};
       skipped: 0,
       videoStarted: 0,
       videoSkipped: 0,
+      gridSaved: 0,
+      postOpened: 0,
       failed: 0,
       unavailable: 0,
       pending: 0,
