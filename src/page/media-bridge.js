@@ -35,6 +35,7 @@
         durationMs: Number(entry?.durationMs) || 0,
         width: Number(entry?.width) || 0,
         height: Number(entry?.height) || 0,
+        fullSize: entry?.fullSize !== false,
         url: String(entry?.url || "")
       }))
       .filter(entry => entry.platform && entry.id);

@@ -341,6 +341,7 @@ test("bridge: well-formed media from the page is forwarded with every field norm
           durationMs: "x",
           width: "1080",
           height: 720,
+          fullSize: false,
           url: `${IG}a.jpg`
         },
         { platform: "Facebook", id: "9", index: 0 }
@@ -359,9 +360,21 @@ test("bridge: well-formed media from the page is forwarded with every field norm
       durationMs: 0,
       width: 1080,
       height: 720,
+      fullSize: false,
       url: `${IG}a.jpg`
     },
-    { platform: "Facebook", kind: "video", id: "9", index: 1, owner: null, durationMs: 0, width: 0, height: 0, url: "" }
+    {
+      platform: "Facebook",
+      kind: "video",
+      id: "9",
+      index: 1,
+      owner: null,
+      durationMs: 0,
+      width: 0,
+      height: 0,
+      fullSize: true,
+      url: ""
+    }
   ]);
 });
 
