@@ -134,6 +134,23 @@ test("the running serve answers the REST API: create, read, watch and cancel", a
       updatedAt: new Date().toISOString(),
       openedAt: new Date().toISOString()
     });
+    await store.updateJob(RUNNING, current => {
+      current.started = 2;
+      current.videoStarted = 3;
+      current.skipped = 5;
+      current.videoSkipped = 7;
+      current.pending = 1;
+      current.failed = 4;
+    });
+    const listed = await (await call("GET", "/v1/jobs")).json();
+    assert.deepEqual(listed.items.find(item => item.id === RUNNING).counts, {
+      started: 2,
+      videoStarted: 3,
+      pending: 1,
+      failed: 4,
+      skipped: 5,
+      videoSkipped: 7
+    });
     const cancelled = await call("DELETE", `/v1/jobs/${RUNNING}`);
     assert.equal(cancelled.status, 204);
     const kept = await store.readJob(RUNNING);

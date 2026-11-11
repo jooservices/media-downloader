@@ -209,7 +209,8 @@ test("a full-size photo is not blocked by a thumbnail an older version recorded 
     account: "lamoon.ladyofmoon",
     ids: ["1086989087485347"]
   });
-  assert.equal(result.started, 1);
+  assert.equal(result.deferred, true);
+  await harness.inContext("batchQueue");
   assert.match(harness.started[0].filename, /1086989087485347_01_2048x1365\.jpg$/);
   await complete(harness, 1);
   const again = await harness.send({
@@ -218,7 +219,8 @@ test("a full-size photo is not blocked by a thumbnail an older version recorded 
     account: "lamoon.ladyofmoon",
     ids: ["1086989087485347"]
   });
-  assert.equal(again.started, 0, "the full-size copy itself is saved only once");
+  assert.equal(again.deferred, true, "Facebook cache reads are acknowledged before ledger checks");
+  await harness.inContext("batchQueue");
   assert.equal(harness.started.length, 1);
 });
 

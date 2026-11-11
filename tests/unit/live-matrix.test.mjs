@@ -8,12 +8,17 @@ const job = (id, platform, account, status, counts = {}, message = "") => ({
   account,
   status,
   message,
-  counts: { started: 0, skipped: 0, failed: 0, ...counts }
+  counts: { started: 0, videoStarted: 0, skipped: 0, videoSkipped: 0, failed: 0, ...counts }
 });
 
 test("summarize adds up the pages of one account and keeps the reasons it did not finish", () => {
   const rows = summarize([
-    job("1", "Facebook", "Bob", "complete", { started: 2, skipped: 5 }),
+    job("1", "Facebook", "Bob", "complete", {
+      started: 2,
+      videoStarted: 3,
+      skipped: 5,
+      videoSkipped: 7
+    }),
     job(
       "2",
       "Facebook",
@@ -28,7 +33,7 @@ test("summarize adds up the pages of one account and keeps the reasons it did no
   assert.deepEqual(
     rows.map(row => [row.platform, row.account, row.pages, row.started, row.skipped, row.failed]),
     [
-      ["Facebook", "Bob", 2, 3, 5, 1],
+      ["Facebook", "Bob", 2, 6, 12, 1],
       ["Instagram", "alice", 1, 0, 9, 0],
       ["Twitter", "x", 1, 0, 0, 0]
     ]
@@ -40,6 +45,8 @@ test("summarize adds up the pages of one account and keeps the reasons it did no
 test("the report is a table with a notes section only when something needs explaining", () => {
   const rows = summarize([job("1", "Instagram", "a", "complete", { skipped: 4 })]);
   const plain = renderReport(rows, { startedAt: "s", finishedAt: "f", extensionVersion: "0.5.1" });
+  assert.match(plain, /\| Site \| Account \| Pages \| New files \| Skipped \| Failed \| Result \|/);
+  assert.doesNotMatch(plain, /Already saved/);
   assert.match(plain, /\| Instagram \| a \| 1 \| 0 \| 4 \| 0 \| complete \|/);
   assert.match(plain, /reported version 0\.5\.1/);
   assert.doesNotMatch(plain, /## Notes/);
