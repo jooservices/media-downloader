@@ -20,7 +20,7 @@ import {
 
 const MAX_BODY_BYTES = 1_000_000;
 const MAX_CLAIMED_JOBS = 500;
-const JOB_UPDATES = new Set(["JOB_PROGRESS", "JOB_DONE", "JOB_ERROR", "JOB_RATE_LIMIT"]);
+const JOB_UPDATES = new Set(["JOB_PROGRESS", "JOB_DONE", "JOB_ERROR", "JOB_RATE_LIMIT", "JOB_HEARTBEAT"]);
 const require = createRequire(import.meta.url);
 const { applyProgress, applyError } = require("../lib/job-progress.js");
 
@@ -195,7 +195,9 @@ async function judgeTaggedTab(message) {
     const pathname = new URL(message.pageUrl).pathname;
     const securityCheck = /\/(checkpoint|challenge)(\/|$)/i.test(pathname);
     await updateJob(tagged.jobId, job => {
-      job.status = "error";
+      job.status = "incomplete";
+      job.reason = "login_required";
+      job.noRetry = true;
       job.needsLogin = true;
       job.message = securityCheck
         ? `${job.platform} showed a checkpoint or security challenge. Sign in with Edge's profile; the queue continues by itself.`
@@ -294,6 +296,10 @@ async function handleJobUpdate(message) {
           current.outcomeAt = new Date().toISOString();
           current.message = `The platform returned HTTP ${message.status}; the scan was paused to protect the account.`;
         }
+      }
+    } else if (message.type === "JOB_HEARTBEAT") {
+      if (current.status === "running") {
+        current.lastHeartbeatAt = new Date().toISOString();
       }
     } else if (message.type === "JOB_ERROR") {
       applyError(current, message.error);

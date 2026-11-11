@@ -16,6 +16,8 @@ globalThis.PageMediaSaver ??= {};
   const LAZY_LOAD_POLL_MS = 500;
   const LAZY_LOAD_POLLS = 12;
   const STALL_CHECKS = 8;
+  const HEARTBEAT_MS = 30_000;
+  let pendingMessages = 0;
 
   let autoRunning = false;
   let autoStopRequested = false;
@@ -37,6 +39,22 @@ globalThis.PageMediaSaver ??= {};
     repairFound: [],
     repairFiles: []
   };
+
+  // This timer reports liveness independently of scrolling, downloads, or scan progress.
+  window.setInterval(() => {
+    if (autoState.running && autoState.jobId && pendingMessages === 0) {
+      chrome.runtime.sendMessage({ type: "AUTO_HEARTBEAT", jobId: autoState.jobId }).catch(() => {});
+    }
+  }, HEARTBEAT_MS);
+
+  async function sendScanMessage(message) {
+    pendingMessages++;
+    try {
+      return await chrome.runtime.sendMessage(message);
+    } finally {
+      pendingMessages--;
+    }
+  }
 
   function pageHeight() {
     return Math.max(document.documentElement?.scrollHeight || 0, document.body?.scrollHeight || 0);
@@ -98,7 +116,7 @@ globalThis.PageMediaSaver ??= {};
     let retries = 0;
     let drains = 0;
     while (drains < 10) {
-      status = await chrome.runtime.sendMessage({
+      status = await sendScanMessage({
         type: "DRAIN_DOWNLOADS",
         platform: autoState.platform,
         account: autoState.account,
@@ -117,7 +135,7 @@ globalThis.PageMediaSaver ??= {};
         break;
       }
 
-      const retry = await chrome.runtime.sendMessage({
+      const retry = await sendScanMessage({
         type: "RETRY_FAILED_DOWNLOADS",
         platform: autoState.platform,
         account: autoState.account
@@ -131,7 +149,7 @@ globalThis.PageMediaSaver ??= {};
         break;
       }
     }
-    status = await chrome.runtime.sendMessage({
+    status = await sendScanMessage({
       type: "DOWNLOAD_STATUS",
       platform: autoState.platform,
       account: autoState.account
@@ -148,14 +166,12 @@ globalThis.PageMediaSaver ??= {};
     autoState.failed = finalStatus.failed || 0;
     autoState.unavailable = finalStatus.unavailable || 0;
     autoState.rejectedFiles = finalStatus.rejectedFiles || [];
-    const outputs = await chrome.runtime
-      .sendMessage({
-        type: "GET_VERIFIED_OUTPUTS",
-        platform: autoState.platform,
-        account: autoState.account,
-        jobId: autoState.jobId
-      })
-      .catch(() => []);
+    const outputs = await sendScanMessage({
+      type: "GET_VERIFIED_OUTPUTS",
+      platform: autoState.platform,
+      account: autoState.account,
+      jobId: autoState.jobId
+    }).catch(() => []);
     if (Array.isArray(outputs) && outputs.length) {
       autoState.outputFiles = outputs.map(({ filename, size }) => ({ filename, size }));
     }
@@ -166,6 +182,58 @@ globalThis.PageMediaSaver ??= {};
     autoState.status = status;
     autoState.message = message;
     publishAutoState("AUTO_DONE");
+  }
+
+  function emptyPageReason() {
+    const url = String(location.href || "");
+    const pathname = (() => {
+      try {
+        return new URL(url).pathname;
+      } catch {
+        return "";
+      }
+    })();
+    const bodyText = String(document.body?.innerText || document.body?.textContent || "").toLowerCase();
+    const loginText = /\b(sign in|log in|login|enter your password)\b/.test(bodyText);
+    const loginUrl = /\/(?:login|log-in|signin|sign-in|checkpoint|challenge)(?:\/|$)/i.test(pathname);
+    if (
+      loginUrl ||
+      document.querySelector('input[type="password"]') ||
+      (loginText && /password|email|phone|username/.test(bodyText))
+    ) {
+      return "login_required";
+    }
+    if (!document.body || !url) {
+      return "unknown";
+    }
+    const privateNotice =
+      /\b(private account|this account is private|account is private|content isn't available|content is unavailable|page isn't available|page is unavailable|user not found)\b/i.test(
+        bodyText
+      );
+    const pageEvidence = /\b(profile|posts|photos|videos|followers|following|reels|timeline)\b/i.test(bodyText);
+    return privateNotice || (pageEvidence && (isProfileGrid() || isMediaPostPage())) ? "empty_or_private" : "unknown";
+  }
+
+  function emptyScanOutcome() {
+    const seen =
+      autoState.started +
+      autoState.videoStarted +
+      skippedCount() +
+      autoState.pending +
+      autoState.failed +
+      autoState.unavailable;
+    if (seen || (hookStats()?.found ?? 0) > 0) {
+      return null;
+    }
+    autoState.reason = emptyPageReason();
+    if (autoState.reason === "login_required") {
+      autoState.noRetry = true;
+      return "No photos or videos were found because the site is asking for a sign-in. Sign in to the site in this browser, then retry this job.";
+    }
+    if (autoState.reason === "empty_or_private") {
+      return `No photos or videos were found on this page. It loaded without accessible media; it may be empty, private, or unavailable. ${hookDiagnostics()}`;
+    }
+    return `No photos or videos were found, and the page state could not be classified. ${hookDiagnostics()}`;
   }
 
   async function finishAtLimit() {
@@ -303,7 +371,7 @@ globalThis.PageMediaSaver ??= {};
       item.jobId = autoState.jobId;
     }
     recordOutputFiles(items);
-    const response = await chrome.runtime.sendMessage({ type: "DOWNLOAD_ITEMS", items });
+    const response = await sendScanMessage({ type: "DOWNLOAD_ITEMS", items });
     if (!response?.ok) {
       throw new Error(response?.error || "The download request failed.");
     }
@@ -323,11 +391,13 @@ globalThis.PageMediaSaver ??= {};
     updateAutoMessage();
     await settleDownloads();
     const { pending, failed, started, videoStarted } = autoState;
+    const emptyOutcome = emptyScanOutcome();
     endScan(
-      hasOutstanding() ? "incomplete" : "complete",
-      hasOutstanding()
-        ? `Post scan ended with ${pending} pending and ${failed} failed item(s); ${videoStarted} page-data file download(s) started.`
-        : `Post scan complete: ${started} photo request(s), ${videoStarted} page-data file download(s) started, and ${skippedCount()} saved or unavailable item(s) skipped.`
+      hasOutstanding() || emptyOutcome ? "incomplete" : "complete",
+      emptyOutcome ||
+        (hasOutstanding()
+          ? `Post scan ended with ${pending} pending and ${failed} failed item(s); ${videoStarted} page-data file download(s) started.`
+          : `Post scan complete: ${started} photo request(s), ${videoStarted} page-data file download(s) started, and ${skippedCount()} saved or unavailable item(s) skipped.`)
     );
   }
 
@@ -357,13 +427,13 @@ globalThis.PageMediaSaver ??= {};
     const { repairFound, repairTargets, repairExpectedCount, started, videoStarted, pending, failed } = autoState;
     const repairShort = autoState.repairMode && repairFound.length < (repairExpectedCount || repairTargets.length);
     // A page with nothing on it is not a success: the user may be signed out, or the site changed its data.
-    const seen = started + videoStarted + skippedCount() + pending + failed + autoState.unavailable;
-    const nothingFound = !autoState.repairMode && seen === 0 && (hookStats()?.found ?? 0) === 0;
+    const nothingFound =
+      !autoState.repairMode &&
+      started + videoStarted + skippedCount() + pending + failed + autoState.unavailable === 0 &&
+      (hookStats()?.found ?? 0) === 0;
     let message;
     if (nothingFound) {
-      message = document.querySelector('input[type="password"]')
-        ? "The site is asking for a sign-in, so nothing could be read. Sign in to it in this browser; the queue goes on by itself."
-        : `No photos or videos were found on this page. Sign in to the site in this browser, or the site may have changed how it sends its data. ${hookDiagnostics()}`;
+      message = emptyScanOutcome();
     } else if (repairShort) {
       message = `Repair incomplete: matched ${repairFound.length} of ${repairExpectedCount || repairTargets.length} source images. Original files were left in Downloads.`;
     } else if (hasOutstanding()) {
@@ -518,6 +588,8 @@ globalThis.PageMediaSaver ??= {};
       repairFound: [],
       repairSeenItems: [],
       repairFiles: [],
+      reason: null,
+      noRetry: false,
       rejectedFiles: [],
       outputFiles: []
     };

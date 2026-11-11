@@ -32,6 +32,7 @@ const handlers = {
   CLI_PAGE_READY: handleCliPageReady,
   AUTO_PROGRESS: handleAutoProgress,
   AUTO_DONE: handleAutoProgress,
+  AUTO_HEARTBEAT: handleAutoHeartbeat,
   PLATFORM_RATE_LIMIT: handlePlatformRateLimit,
   MEDIA_FOUND: message => cacheMedia(message.media),
   DOWNLOAD_CACHED_MEDIA: message => downloadCachedMedia(message),

@@ -252,7 +252,9 @@ test("a sign-in wall in the opened tab ends the job, holds the site and keeps th
   await env.inContext("queueEngine.tick()");
   const all = await jobs(env);
   assert.equal(all.length, 2, "no link is lost");
-  assert.ok(all.every(job => job.status === "queued"));
+  assert.equal(all.find(job => job.reason)?.status, "incomplete");
+  assert.equal(all.find(job => job.reason)?.reason, "login_required");
+  assert.equal(all.filter(job => job.status === "queued").length, 1);
   assert.equal(env.tabsCreated.length, 1, "nothing else starts on Instagram");
   assert.ok(env.tabRemoves.includes(100), "the sign-in tab is closed");
 });
@@ -265,7 +267,8 @@ test("a checkpoint navigation leaves a challenge signal in the job outcome", asy
   await settle();
   const [job] = await jobs(env);
   assert.match(job.message, /checkpoint or security challenge/i);
-  assert.equal(job.status, "queued");
+  assert.equal(job.status, "incomplete");
+  assert.equal(job.reason, "login_required");
 });
 
 test("telling the extension the user signed in does not bypass a login-wall back-off", async () => {
