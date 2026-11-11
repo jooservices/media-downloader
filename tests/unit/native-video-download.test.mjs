@@ -50,7 +50,15 @@ for (const example of [
     assert.equal(harness.storage.nativeVideoTarget, null);
     assert.equal(harness.storage.nativeVideoPending["71"].key, key);
 
-    harness.downloads.set(71, { id: 71, state: "complete" });
+    harness.downloads.set(71, {
+      id: 71,
+      state: "complete",
+      bytesReceived: 10,
+      totalBytes: 10,
+      fileSize: 10,
+      filename: "platform-video.mp4",
+      mime: "video/mp4"
+    });
     await harness.listeners.changed[0]({ id: 71, state: { current: "complete" } });
     assert.ok(await harness.ledger.has(key));
     assert.equal(Object.keys(harness.storage.nativeVideoPending).length, 0);

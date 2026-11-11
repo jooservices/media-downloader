@@ -10,7 +10,9 @@ const STORAGE_DEFAULTS = {
   nativeVideoTarget: null,
   nativeVideoPending: {},
   nativeVideoFailures: {},
-  nativeVideoAttempts: {}
+  nativeVideoAttempts: {},
+  verifiedOutputs: {},
+  queueSettings: null
 };
 
 // Errors that mean the site will never serve this file (taken down, blocked or private), unlike a network
@@ -21,6 +23,7 @@ const isUnavailableError = error => UNAVAILABLE_ERRORS.has(error);
 const FINISHED_STATES = ["complete", "interrupted"];
 const MAX_BATCH_ITEMS = 300;
 const SLOT_WAIT_MS = 60000;
+const SUPPORTED_VIDEO_EXTENSIONS = new Set(["mp4", "mov", "m4v", "webm", "mkv", "avi", "3gp"]);
 
 // Runs `update` on the stored url -> [file name targets] map, one operation at a time.
 const withDownloadTargets = update =>
@@ -66,6 +69,7 @@ const takeDownloadTarget = url =>
 
 async function readDownloadState() {
   const stored = await chrome.storage.local.get(STORAGE_DEFAULTS);
+  const configuredAttempts = Number(stored.queueSettings?.maxAttempts);
   return {
     pending: { ...stored.pendingDownloads },
     pendingItems: { ...stored.pendingItems },
@@ -75,7 +79,12 @@ async function readDownloadState() {
     nativePending: { ...stored.nativeVideoPending },
     nativeFailures: { ...stored.nativeVideoFailures },
     nativeAttempts: { ...stored.nativeVideoAttempts },
-    nativeTarget: stored.nativeVideoTarget || null
+    outputs: { ...stored.verifiedOutputs },
+    nativeTarget: stored.nativeVideoTarget || null,
+    maxAttempts:
+      Number.isInteger(configuredAttempts) && configuredAttempts >= 1 && configuredAttempts <= 20
+        ? configuredAttempts
+        : MAX_ATTEMPTS
   };
 }
 
@@ -89,8 +98,37 @@ async function writeDownloadState(state) {
     nativeVideoPending: state.nativePending,
     nativeVideoFailures: state.nativeFailures,
     nativeVideoAttempts: state.nativeAttempts,
+    verifiedOutputs: state.outputs,
     nativeVideoTarget: state.nativeTarget || null
   });
+}
+
+function downloadedOutput(download, item) {
+  const filename = downloadBasename(download.filename);
+  return filename && Number(download.fileSize) > 0
+    ? {
+        filename,
+        size: Number(download.fileSize),
+        platform: item.platform,
+        account: item.account,
+        jobId: item.jobId || null
+      }
+    : null;
+}
+
+const downloadBasename = filename =>
+  String(filename || "")
+    .split(/[\\/]/)
+    .pop();
+
+async function getVerifiedOutputs(platform, account, jobId) {
+  const { verifiedOutputs = {} } = await chrome.storage.local.get({ verifiedOutputs: {} });
+  return Object.values(verifiedOutputs).filter(
+    output =>
+      (!platform || output.platform === platform) &&
+      (!account || output.account?.toLowerCase() === account.toLowerCase()) &&
+      (!jobId || output.jobId === jobId)
+  );
 }
 
 // The browser's record of a download once it has ended; null while it is still running
@@ -102,6 +140,73 @@ async function findFinishedDownload(id) {
   } catch {
     return null;
   }
+}
+
+async function discardRejectedDownload(download) {
+  if (download?.state === "complete" && Number.isInteger(download.id) && chrome.downloads.removeFile) {
+    try {
+      await chrome.downloads.removeFile(download.id);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+function downloadIntegrityError(download, expectedType) {
+  const received = Number(download.bytesReceived);
+  const total = Number(download.totalBytes);
+  const actual = Number(download.fileSize);
+  const hasKnownTotal = Number.isFinite(total) && total >= 0;
+  const hasKnownFileSize = Number.isFinite(actual) && actual >= 0;
+  if (
+    !Number.isFinite(received) ||
+    received <= 0 ||
+    !hasKnownFileSize ||
+    actual <= 0 ||
+    received !== actual ||
+    (hasKnownTotal && received !== total)
+  ) {
+    return "The downloaded file was empty or its size did not match the response.";
+  }
+  const mime = String(download.mime || "").toLowerCase();
+  if (expectedType && mime && mime !== "application/octet-stream" && !mime.startsWith(`${expectedType}/`)) {
+    return `The response type ${mime} did not match the expected ${expectedType} media.`;
+  }
+  const extension = downloadFileExtension(download.filename);
+  if (!extension || (expectedType === "image" && !["jpg", "jpeg", "png", "webp", "gif", "avif"].includes(extension))) {
+    return "The completed download did not have a supported media file extension.";
+  }
+  if (expectedType === "video" && !["mp4", "mov", "m4v", "webm", "mkv", "avi", "3gp"].includes(extension)) {
+    return "The completed download did not have a supported video extension.";
+  }
+  return null;
+}
+
+function downloadFileExtension(filename) {
+  return (
+    String(filename || "")
+      .split(/[\\/]/)
+      .pop()
+      .match(/\.([a-z0-9]+)$/i)?.[1]
+      ?.toLowerCase() || ""
+  );
+}
+
+function expectedMediaType(item) {
+  const extension = downloadFileExtension(item?.filename);
+  if (SUPPORTED_VIDEO_EXTENSIONS.has(extension)) {
+    return "video";
+  }
+  try {
+    if (SUPPORTED_VIDEO_EXTENSIONS.has(downloadFileExtension(new URL(item?.url).pathname))) {
+      return "video";
+    }
+  } catch {
+    /* An invalid URL is rejected before a download starts. */
+  }
+  return "image";
 }
 
 // A file the site will not serve: remember it as settled so no scan tries it again, and keep a count
@@ -127,6 +232,35 @@ async function settleKnownUnavailable(state) {
   }
 }
 
+async function reconcileFinishedDownload(state, { key, item, download, expectedType, native = false }) {
+  const integrityError = download.state === "complete" ? downloadIntegrityError(download, expectedType) : null;
+  const failures = native ? state.nativeFailures : state.failed;
+  if (download.state === "complete" && !integrityError) {
+    await ledgerAdd(key);
+    const output = downloadedOutput(download, item);
+    if (output) {
+      state.outputs[key] = output;
+    }
+    delete failures[key];
+    return;
+  }
+  if (isUnavailableError(download.error)) {
+    await settleUnavailable(state, key, item);
+    return;
+  }
+  const removed = await discardRejectedDownload(download);
+  failures[key] = {
+    ...(native ? {} : { item, attempts: Number(state.attempts[key] || 1) }),
+    platform: item.platform,
+    account: item.account,
+    error:
+      integrityError ||
+      download.error ||
+      (native ? "The browser interrupted this official video download." : "The browser interrupted this download."),
+    ...(!removed && integrityError ? { rejectedFilename: downloadBasename(download.filename) } : {})
+  };
+}
+
 async function reconcilePending(state) {
   for (const [key, downloadId] of Object.entries(state.pending)) {
     const download = await findFinishedDownload(downloadId);
@@ -136,17 +270,8 @@ async function reconcilePending(state) {
     const item = state.pendingItems[key];
     delete state.pending[key];
     delete state.pendingItems[key];
-    if (download.state === "complete") {
-      await ledgerAdd(key);
-      delete state.failed[key];
-    } else if (item && isUnavailableError(download.error)) {
-      await settleUnavailable(state, key, item);
-    } else if (item) {
-      state.failed[key] = {
-        item,
-        attempts: Number(state.attempts[key] || 1),
-        error: download.error || "The browser interrupted this download."
-      };
+    if (item) {
+      await reconcileFinishedDownload(state, { key, item, download, expectedType: expectedMediaType(item) });
     }
   }
 }
@@ -158,18 +283,13 @@ async function reconcileNative(state) {
       continue;
     }
     delete state.nativePending[downloadId];
-    if (download.state === "complete") {
-      await ledgerAdd(entry.key);
-      delete state.nativeFailures[entry.key];
-    } else if (isUnavailableError(download.error)) {
-      await settleUnavailable(state, entry.key, entry);
-    } else {
-      state.nativeFailures[entry.key] = {
-        platform: entry.platform,
-        account: entry.account,
-        error: download.error || "The browser interrupted this official video download."
-      };
-    }
+    await reconcileFinishedDownload(state, {
+      key: entry.key,
+      item: entry,
+      download,
+      expectedType: "video",
+      native: true
+    });
   }
 }
 
@@ -217,12 +337,17 @@ function statusFor(state, platform, account) {
   const nativeFailedItems = Object.values(state.nativeFailures).filter(entry =>
     matchesFilter(entry, platform, account)
   );
+  const rejectedFiles = [
+    ...failedItems.map(entry => entry.rejectedFilename),
+    ...nativeFailedItems.map(entry => entry.rejectedFilename)
+  ].filter(Boolean);
   return {
     ok: true,
     pending: countPending(state, platform, account),
     failed: failedItems.length + nativeFailedItems.length,
     unavailable: Object.values(state.unavailable).filter(entry => matchesFilter(entry, platform, account)).length,
-    retryable: failedItems.filter(entry => entry.attempts < MAX_ATTEMPTS).length
+    ...(rejectedFiles.length ? { rejectedFiles } : {}),
+    retryable: failedItems.filter(entry => entry.attempts < state.maxAttempts).length
   };
 }
 
@@ -244,7 +369,7 @@ async function drainDownloads(platform, account, timeoutMs) {
 async function retryFailedDownloads(platform, account) {
   const state = await reconcileDownloads();
   const items = Object.values(state.failed)
-    .filter(entry => entry.attempts < MAX_ATTEMPTS && matchesFilter(entry.item, platform, account))
+    .filter(entry => entry.attempts < state.maxAttempts && matchesFilter(entry.item, platform, account))
     .map(entry => entry.item);
   if (!items.length) {
     return statusFor(state, platform, account);
@@ -288,7 +413,10 @@ async function waitForSlot(state, item) {
 
 function saveTarget(item) {
   const fallback = `photo.${imageExtension(item.url)}`;
-  const filename = withResolution(cleanPart(item.filename || fallback, fallback), item.width, item.height);
+  const filename = cleanPart(
+    withResolution(cleanPart(item.filename || fallback, fallback), item.width, item.height),
+    fallback
+  );
   return { filename, path: buildSavePath(item.platform, cleanPart(item.account), filename) };
 }
 
@@ -330,7 +458,7 @@ async function processBatchItem(initialState, item) {
     return { state: initialState, skipped: 1 };
   }
   const previousAttempts = Number(initialState.attempts[item.key] || initialState.failed[item.key]?.attempts || 0);
-  if (previousAttempts >= MAX_ATTEMPTS) {
+  if (previousAttempts >= initialState.maxAttempts) {
     return { state: initialState, skipped: 1, failed: 1 };
   }
   const state = await waitForSlot(initialState, item);
