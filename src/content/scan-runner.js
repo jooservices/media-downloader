@@ -166,14 +166,12 @@ globalThis.PageMediaSaver ??= {};
     autoState.failed = finalStatus.failed || 0;
     autoState.unavailable = finalStatus.unavailable || 0;
     autoState.rejectedFiles = finalStatus.rejectedFiles || [];
-    const outputs = await chrome.runtime
-      .sendMessage({
-        type: "GET_VERIFIED_OUTPUTS",
-        platform: autoState.platform,
-        account: autoState.account,
-        jobId: autoState.jobId
-      })
-      .catch(() => []);
+    const outputs = await sendScanMessage({
+      type: "GET_VERIFIED_OUTPUTS",
+      platform: autoState.platform,
+      account: autoState.account,
+      jobId: autoState.jobId
+    }).catch(() => []);
     if (Array.isArray(outputs) && outputs.length) {
       autoState.outputFiles = outputs.map(({ filename, size }) => ({ filename, size }));
     }
@@ -214,6 +212,28 @@ globalThis.PageMediaSaver ??= {};
       );
     const pageEvidence = /\b(profile|posts|photos|videos|followers|following|reels|timeline)\b/i.test(bodyText);
     return privateNotice || (pageEvidence && (isProfileGrid() || isMediaPostPage())) ? "empty_or_private" : "unknown";
+  }
+
+  function emptyScanOutcome() {
+    const seen =
+      autoState.started +
+      autoState.videoStarted +
+      skippedCount() +
+      autoState.pending +
+      autoState.failed +
+      autoState.unavailable;
+    if (seen || (hookStats()?.found ?? 0) > 0) {
+      return null;
+    }
+    autoState.reason = emptyPageReason();
+    if (autoState.reason === "login_required") {
+      autoState.noRetry = true;
+      return "No photos or videos were found because the site is asking for a sign-in. Sign in to the site in this browser, then retry this job.";
+    }
+    if (autoState.reason === "empty_or_private") {
+      return `No photos or videos were found on this page. It loaded without accessible media; it may be empty, private, or unavailable. ${hookDiagnostics()}`;
+    }
+    return `No photos or videos were found, and the page state could not be classified. ${hookDiagnostics()}`;
   }
 
   async function finishAtLimit() {
@@ -371,11 +391,13 @@ globalThis.PageMediaSaver ??= {};
     updateAutoMessage();
     await settleDownloads();
     const { pending, failed, started, videoStarted } = autoState;
+    const emptyOutcome = emptyScanOutcome();
     endScan(
-      hasOutstanding() ? "incomplete" : "complete",
-      hasOutstanding()
-        ? `Post scan ended with ${pending} pending and ${failed} failed item(s); ${videoStarted} page-data file download(s) started.`
-        : `Post scan complete: ${started} photo request(s), ${videoStarted} page-data file download(s) started, and ${skippedCount()} saved or unavailable item(s) skipped.`
+      hasOutstanding() || emptyOutcome ? "incomplete" : "complete",
+      emptyOutcome ||
+        (hasOutstanding()
+          ? `Post scan ended with ${pending} pending and ${failed} failed item(s); ${videoStarted} page-data file download(s) started.`
+          : `Post scan complete: ${started} photo request(s), ${videoStarted} page-data file download(s) started, and ${skippedCount()} saved or unavailable item(s) skipped.`)
     );
   }
 
@@ -405,28 +427,19 @@ globalThis.PageMediaSaver ??= {};
     const { repairFound, repairTargets, repairExpectedCount, started, videoStarted, pending, failed } = autoState;
     const repairShort = autoState.repairMode && repairFound.length < (repairExpectedCount || repairTargets.length);
     // A page with nothing on it is not a success: the user may be signed out, or the site changed its data.
-    const seen = started + videoStarted + skippedCount() + pending + failed + autoState.unavailable;
-    const nothingFound = !autoState.repairMode && seen === 0 && (hookStats()?.found ?? 0) === 0;
+    const nothingFound =
+      !autoState.repairMode &&
+      started + videoStarted + skippedCount() + pending + failed + autoState.unavailable === 0 &&
+      (hookStats()?.found ?? 0) === 0;
     let message;
     if (nothingFound) {
-      autoState.reason = emptyPageReason();
-      if (autoState.reason === "login_required") {
-        message =
-          "No photos or videos were found because the site is asking for a sign-in. Sign in to the site in this browser, then retry this job.";
-      } else if (autoState.reason === "empty_or_private") {
-        message = `No photos or videos were found on this page. It loaded without accessible media; it may be empty, private, or unavailable. ${hookDiagnostics()}`;
-      } else {
-        message = `No photos or videos were found, and the page state could not be classified. ${hookDiagnostics()}`;
-      }
+      message = emptyScanOutcome();
     } else if (repairShort) {
       message = `Repair incomplete: matched ${repairFound.length} of ${repairExpectedCount || repairTargets.length} source images. Original files were left in Downloads.`;
     } else if (hasOutstanding()) {
       message = `Grid scan ended after four checks found no older rows. ${started} download request(s) started; ${pending} remain pending and ${failed} failed after retries.`;
     } else {
       message = `Download finished: ${started} photo request(s) and ${videoStarted} page-data file(s) completed with no pending or failed files; ${skippedCount()} saved or unavailable items skipped${unavailableNote()}. Four end checks found no older rows.`;
-    }
-    if (nothingFound && autoState.reason === "login_required") {
-      autoState.noRetry = true;
     }
     endScan(hasOutstanding() || repairShort || nothingFound ? "incomplete" : "complete", message);
   }

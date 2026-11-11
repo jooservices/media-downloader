@@ -109,6 +109,35 @@ test("an unrecognized nonempty page is not mislabeled as an empty or private pro
   assert.equal(state.reason, "unknown");
 });
 
+test("an empty single-post scan gets an unknown outcome for the supervisor retry", async () => {
+  const page = scanPage({
+    url: "https://x.com/NASA/status/100",
+    tweak: sandbox => {
+      Object.defineProperty(sandbox.document, "body", {
+        get: () => ({ scrollHeight: 800, innerText: "Something went wrong. Please try again." })
+      });
+    }
+  });
+  const state = await start(page, { url: "https://x.com/NASA/status/100" });
+  assert.equal(state.status, "incomplete");
+  assert.equal(state.reason, "unknown");
+  assert.equal(state.noRetry, false);
+  assert.match(state.message, /page state could not be classified/);
+});
+
+test("a login wall on a single-post scan stays visible without retry", async () => {
+  const page = scanPage({
+    url: "https://x.com/NASA/status/100",
+    tweak: sandbox => {
+      sandbox.document.querySelector = selector => (selector === 'input[type="password"]' ? {} : null);
+    }
+  });
+  const state = await start(page, { url: "https://x.com/NASA/status/100" });
+  assert.equal(state.status, "incomplete");
+  assert.equal(state.reason, "login_required");
+  assert.equal(state.noRetry, true);
+});
+
 test("photos are sized, sent to the background once each pass, and counted", async () => {
   const page = scanPage({ articles: photos(2) });
   const state = await start(page);
@@ -159,6 +188,36 @@ test("a scan awaiting a background operation cannot heartbeat forever", async ()
     false
   );
   assert.equal(page.ns.scan.state.running, true, "the supervisor's silence watchdog ends this pending operation");
+});
+
+test("a stuck verified-output request cannot keep the supervisor watchdog alive", async () => {
+  const article = photos(1)[0];
+  const querySelector = article.querySelector;
+  article.querySelector = selector => (selector === "video" ? {} : querySelector(selector));
+  const page = scanPage({
+    url: "https://x.com/NASA/status/100",
+    articles: [article],
+    onSend: message => {
+      if (message.type === "GET_VERIFIED_OUTPUTS") {
+        return new Promise(() => {});
+      }
+      return settled()(message);
+    }
+  });
+  await page.request({
+    type: "AUTO_START_CLI",
+    job: { ...JOB, url: "https://x.com/NASA/status/100", jobId: "hung-verified-outputs" }
+  });
+  await page.finish(100);
+  const heartbeat = page.intervals.find(interval => interval.ms === 30_000);
+  heartbeat.fn();
+  await Promise.resolve();
+  assert.ok(page.sent.some(message => message.type === "GET_VERIFIED_OUTPUTS"));
+  assert.equal(
+    page.sent.some(message => message.type === "AUTO_HEARTBEAT"),
+    false
+  );
+  assert.equal(page.ns.scan.state.running, true, "the silence watchdog can now expire this stalled request");
 });
 
 test("the limit stops the scan as soon as it is reached and only asks for what fits", async () => {
