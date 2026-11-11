@@ -3,6 +3,7 @@
 const STORAGE_DEFAULTS = {
   pendingDownloads: {},
   pendingItems: {},
+  deferredDownloads: [],
   downloadAttempts: {},
   failedDownloads: {},
   unavailableDownloads: {},
@@ -22,7 +23,6 @@ const isUnavailableError = error => UNAVAILABLE_ERRORS.has(error);
 
 const FINISHED_STATES = ["complete", "interrupted"];
 const MAX_BATCH_ITEMS = 300;
-const SLOT_WAIT_MS = 60000;
 const SUPPORTED_VIDEO_EXTENSIONS = new Set(["mp4", "mov", "m4v", "webm", "mkv", "avi", "3gp"]);
 
 // Runs `update` on the stored url -> [file name targets] map, one operation at a time.
@@ -73,6 +73,7 @@ async function readDownloadState() {
   return {
     pending: { ...stored.pendingDownloads },
     pendingItems: { ...stored.pendingItems },
+    deferred: Array.isArray(stored.deferredDownloads) ? [...stored.deferredDownloads] : [],
     attempts: { ...stored.downloadAttempts },
     failed: { ...stored.failedDownloads },
     unavailable: { ...stored.unavailableDownloads },
@@ -92,6 +93,7 @@ async function writeDownloadState(state) {
   await chrome.storage.local.set({
     pendingDownloads: state.pending,
     pendingItems: state.pendingItems,
+    deferredDownloads: state.deferred,
     downloadAttempts: state.attempts,
     failedDownloads: state.failed,
     unavailableDownloads: state.unavailable,
@@ -313,6 +315,7 @@ async function reconcileDownloads() {
   expireNativeTarget(state);
   await settleKnownUnavailable(state);
   await writeDownloadState(state);
+  await startDeferredDownloads(state);
   return state;
 }
 
@@ -328,8 +331,9 @@ function countPending(state, platform, account) {
     matchesFilter(state.pendingItems[key], platform, account)
   ).length;
   const native = Object.values(state.nativePending).filter(entry => matchesFilter(entry, platform, account)).length;
+  const deferred = state.deferred.filter(item => matchesFilter(item, platform, account)).length;
   const armed = state.nativeTarget?.expiresAt >= Date.now() && matchesFilter(state.nativeTarget, platform, account);
-  return direct + native + (armed ? 1 : 0);
+  return direct + native + deferred + (armed ? 1 : 0);
 }
 
 function statusFor(state, platform, account) {
@@ -355,13 +359,13 @@ async function getDownloadStatus(platform, account) {
   return statusFor(await reconcileDownloads(), platform, account);
 }
 
-async function drainDownloads(platform, account, timeoutMs) {
+async function drainDownloads(platform, account, timeoutMs, getStatus = getDownloadStatus) {
   const timeout = Math.max(1000, Math.min(Number(timeoutMs) || 60000, 120000));
   const deadline = Date.now() + timeout;
-  let status = await getDownloadStatus(platform, account);
+  let status = await getStatus(platform, account);
   while (status.pending && Date.now() < deadline) {
     await pause(750);
-    status = await getDownloadStatus(platform, account);
+    status = await getStatus(platform, account);
   }
   return status;
 }
@@ -392,24 +396,11 @@ function isDownloadable(item) {
 }
 
 async function isSaved(state, key) {
-  return (await ledgerHas(key)) || Object.hasOwn(state.pending, key);
+  return (await ledgerHas(key)) || Object.hasOwn(state.pending, key) || state.deferred.some(item => item.key === key);
 }
 
-const isInNativeFlow = (state, key) => Object.values(state.nativePending).some(entry => entry?.key === key);
-
-// At most MAX_ACTIVE_DOWNLOADS run at once; wait up to a minute for a free slot.
-async function waitForSlot(state, item) {
-  const deadline = Date.now() + SLOT_WAIT_MS;
-  let current = state;
-  while (Object.keys(current.pending).length >= MAX_ACTIVE_DOWNLOADS && Date.now() < deadline) {
-    await pause(500);
-    current = await reconcileDownloads();
-    if (await isSaved(current, item.key)) {
-      break;
-    }
-  }
-  return current;
-}
+const isInNativeFlow = (state, key) =>
+  state.nativeTarget?.key === key || Object.values(state.nativePending).some(entry => entry?.key === key);
 
 function saveTarget(item) {
   const fallback = `photo.${imageExtension(item.url)}`;
@@ -461,29 +452,54 @@ async function processBatchItem(initialState, item) {
   if (previousAttempts >= initialState.maxAttempts) {
     return { state: initialState, skipped: 1, failed: 1 };
   }
-  const state = await waitForSlot(initialState, item);
-  if (await isSaved(state, item.key)) {
-    return { state, skipped: 1 };
+  if (Object.keys(initialState.pending).length >= MAX_ACTIVE_DOWNLOADS) {
+    return { state: initialState, full: true };
   }
-  if (Object.keys(state.pending).length >= MAX_ACTIVE_DOWNLOADS) {
-    return {
-      state,
-      failed: 1,
-      error: "Too many downloads are still pending; this item will be retried on the next scan."
-    };
-  }
-  return startItemDownload(state, item, previousAttempts + 1);
+  return startItemDownload(initialState, item, previousAttempts + 1);
 }
 
-async function downloadBatch(inputItems) {
+async function startDeferredDownloads(state) {
+  while (state.deferred.length && Object.keys(state.pending).length < MAX_ACTIVE_DOWNLOADS) {
+    const [item, ...remaining] = state.deferred;
+    state.deferred = remaining;
+    const result = await processBatchItem(state, item);
+    state = result.state;
+    if (result.full) {
+      state.deferred.unshift(item);
+      break;
+    }
+  }
+  await writeDownloadState(state);
+  return state;
+}
+
+function enqueueDeferredItems(state, items) {
+  const queued = new Set(state.deferred.map(item => item.key));
+  for (const item of items) {
+    if (item?.key && !queued.has(item.key)) {
+      state.deferred.push(item);
+      queued.add(item.key);
+    }
+  }
+  return state.deferred.length;
+}
+
+async function downloadBatch(inputItems, { reconcile = true } = {}) {
   if (!Array.isArray(inputItems)) {
     return { ok: false, error: "No media list was provided." };
   }
   const total = { started: 0, skipped: 0, failed: 0 };
   const errors = [];
-  let state = await reconcileDownloads();
-  for (const item of inputItems.slice(0, MAX_BATCH_ITEMS)) {
+  let state = reconcile ? await reconcileDownloads() : await readDownloadState();
+  const batch = inputItems.slice(0, MAX_BATCH_ITEMS);
+  const batchKeys = new Set(inputItems.map(item => item?.key).filter(Boolean));
+  for (let index = 0; index < batch.length; index++) {
+    const item = batch[index];
     const result = await processBatchItem(state, item);
+    if (result.full) {
+      enqueueDeferredItems(state, inputItems.slice(index));
+      break;
+    }
     state = result.state;
     total.started += result.started ?? 0;
     total.skipped += result.skipped ?? 0;
@@ -492,8 +508,18 @@ async function downloadBatch(inputItems) {
       errors.push(result.error);
     }
   }
-  state = await reconcileDownloads();
-  return { ok: true, ...total, pending: Object.keys(state.pending).length, errors: errors.slice(0, 10) };
+  if (batch.length < inputItems.length) {
+    enqueueDeferredItems(state, inputItems.slice(batch.length));
+  }
+  await writeDownloadState(state);
+  const queued = state.deferred.filter(item => batchKeys.has(item.key)).length;
+  return {
+    ok: true,
+    ...total,
+    queued,
+    pending: Object.keys(state.pending).length + state.deferred.length,
+    errors: errors.slice(0, 10)
+  };
 }
 
 chrome.downloads.onChanged.addListener(async delta => {

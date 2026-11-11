@@ -15,6 +15,8 @@ globalThis.PageMediaSaver ??= {};
   const MAX_POSTS_OPENED_PER_PASS = 3;
   const startedCount = value => (Number.isSafeInteger(value) && value > 0 ? value : 0);
   const POST_DATA_ATTEMPTS = 5;
+  const MAX_PAGE_DATA_FILES_PER_PASS = 8;
+  const CACHE_MESSAGE_TIMEOUT_MS = 1000;
 
   // A whole number in [0, max) from the platform's random source.
   function randomBelow(max) {
@@ -160,13 +162,22 @@ globalThis.PageMediaSaver ??= {};
     );
   }
 
-  async function collectNativeVideoDownloads(platform, account, budget = limitRemaining()) {
-    const containers = globalThis.PageMediaDetection.collectVideoContainers(document, platform);
+  async function collectNativeVideoDownloads(platform, account, budget = limitRemaining(), coveredIds = []) {
+    const allContainers = globalThis.PageMediaDetection.collectVideoContainers(document, platform);
+    const cacheCoverage = new Set(coveredIds.map(String));
+    const containers = allContainers
+      .map(({ container, video }, index) => ({ container, video, index }))
+      .filter(
+        ({ container, video, index }) =>
+          !cacheCoverage.has(String(videoPostToken(platform, container, video, index + 1)))
+      );
     const maxPerScan = Math.min(MAX_NATIVE_VIDEOS_PER_SCAN, budget);
     let videoDownloadsClicked = 0;
     let videoDownloadsSkipped = 0;
-    for (let i = 0; i < containers.length && videoDownloadsClicked < maxPerScan; i++) {
-      const { container, video } = containers[i];
+    for (const { container, video, index } of containers) {
+      if (videoDownloadsClicked >= maxPerScan) {
+        break;
+      }
       const owner = getAccount(platform, container) || account;
       if (scanState().singlePage && owner) {
         scanState().account = owner;
@@ -175,7 +186,7 @@ globalThis.PageMediaSaver ??= {};
         videoDownloadsSkipped++;
         continue;
       }
-      const token = videoPostToken(platform, container, video, i + 1);
+      const token = videoPostToken(platform, container, video, index + 1);
       const key = PageMediaLib.keys.videoKey(platform, token, 1);
       const buttons = actionButtons(container, platform);
       const menuItem = buttons.length ? await findDownloadMenuItem(buttons, platform) : null;
@@ -190,7 +201,11 @@ globalThis.PageMediaSaver ??= {};
       videoDownloadsClicked++;
       await pause(500);
     }
-    return { videoArticlesSeen: containers.length, videoDownloadsClicked, videoDownloadsSkipped };
+    return { videoArticlesSeen: allContainers.length, videoDownloadsClicked, videoDownloadsSkipped };
+  }
+
+  function collectNativeVideosUnlessDeferred(platform, account, budget, cached) {
+    return collectNativeVideoDownloads(platform, account, budget, cached?.coveredIds);
   }
 
   // The post, photo or video ids a link points at (none for links to anything else).
@@ -277,7 +292,7 @@ globalThis.PageMediaSaver ??= {};
         })
         .catch(() => null);
       if (response?.cached) {
-        return response.started || 0;
+        return (response.started || 0) + (response.queued || 0);
       }
     }
     return 0;
@@ -324,34 +339,96 @@ globalThis.PageMediaSaver ??= {};
 
   let lastCacheDiag = null;
 
+  async function requestCachedMedia(message) {
+    if (["Facebook", "TikTok"].includes(message.platform)) {
+      let timeoutId;
+      let response = await Promise.race([
+        chrome.runtime.sendMessage(message).catch(error => ({ error: String(error?.message || error).slice(0, 120) })),
+        new Promise(resolve => {
+          timeoutId = setTimeout(
+            () => resolve({ error: "Cached media request timed out; the profile scan will continue." }),
+            CACHE_MESSAGE_TIMEOUT_MS
+          );
+        })
+      ]);
+      clearTimeout(timeoutId);
+      if (response?.requestId) {
+        response = await Promise.race([
+          chrome.runtime.sendMessage({ type: "CACHED_MEDIA_RESULT", requestId: response.requestId }).catch(error => ({
+            error: String(error?.message || error).slice(0, 120)
+          })),
+          new Promise(resolve => {
+            timeoutId = setTimeout(
+              () => resolve({ error: "Cached media did not start in time; the profile scan will continue." }),
+              CACHE_MESSAGE_TIMEOUT_MS
+            );
+          })
+        ]);
+        clearTimeout(timeoutId);
+      }
+      return response;
+    }
+    try {
+      return await chrome.runtime.sendMessage(message);
+    } catch (error) {
+      return { error: String(error?.message || error).slice(0, 120) };
+    }
+  }
+
+  function cacheDiagnostic(platform, cached, asked, ids) {
+    if (cached?.error) {
+      return { asked, ids: ids ? ids.length : null, error: cached.error };
+    }
+    if (!cached && asked && ["Facebook", "TikTok"].includes(platform)) {
+      return {
+        asked,
+        ids: ids ? ids.length : null,
+        error: "The cache handler returned no response; the profile scan will continue."
+      };
+    }
+    return cached?.diag || { asked, ids: ids ? ids.length : null, noReply: true };
+  }
+
   /** Saves full-size cached media first, then falls back to opening uncovered grid posts. */
   async function collectPageMedia(platform, account) {
     const budget = limitRemaining();
     const ids = pageVideoIds(platform);
     const asked = budget > 0 && !(ids && !ids.length);
+    const cacheBudget = ["Facebook", "TikTok"].includes(platform)
+      ? Math.min(budget, MAX_PAGE_DATA_FILES_PER_PASS)
+      : budget;
     const cached = asked
-      ? await chrome.runtime
-          .sendMessage({
-            type: "DOWNLOAD_CACHED_MEDIA",
-            platform,
-            account,
-            ids,
-            limit: Number.isFinite(budget) ? budget : null
-          })
-          .catch(() => null)
+      ? await requestCachedMedia({
+          type: "DOWNLOAD_CACHED_MEDIA",
+          platform,
+          account,
+          ids,
+          limit: Number.isFinite(cacheBudget) ? cacheBudget : null
+        })
       : null;
-    lastCacheDiag = cached ? cached.diag : { asked, ids: ids ? ids.length : null, noReply: true };
+    lastCacheDiag = cacheDiagnostic(platform, cached, asked, ids);
     const pageDataStarted = startedCount(cached?.started);
+    const pageDataQueued = startedCount(cached?.queued);
     let cachedStarted = pageDataStarted;
+    const cachedQueued = pageDataQueued;
     let openedResult = { started: 0, opened: 0 };
     if (shouldOpenGridPosts(platform)) {
-      openedResult = await openGridPosts(account, budget - cachedStarted, cached?.coveredIds);
+      openedResult = await openGridPosts(
+        account,
+        Math.max(0, budget - cachedStarted - cachedQueued),
+        cached?.coveredIds
+      );
       cachedStarted += startedCount(openedResult.started);
     }
-    const videos = await collectNativeVideoDownloads(platform, account, budget - cachedStarted);
+    const videos = await collectNativeVideosUnlessDeferred(
+      platform,
+      account,
+      Math.max(0, budget - cachedStarted - cachedQueued),
+      cached
+    );
     return {
       ...videos,
-      videoDownloadsClicked: videos.videoDownloadsClicked + cachedStarted,
+      videoDownloadsClicked: videos.videoDownloadsClicked + cachedStarted + cachedQueued,
       ...(!scanState().singlePage && pageDataStarted > 0 ? { gridSaved: pageDataStarted } : {}),
       ...(openedResult.opened ? { postOpened: openedResult.opened } : {}),
       // Files the page delivered that were saved earlier count as seen, so a rescan with nothing new is not "empty".
@@ -402,8 +479,9 @@ globalThis.PageMediaSaver ??= {};
           limit: Number.isFinite(remaining) ? remaining : null
         })
         .catch(() => null);
-      started += response?.started || 0;
-      quiet = response?.started ? 0 : quiet + 1;
+      const accepted = (response?.started || 0) + (response?.queued || 0);
+      started += accepted;
+      quiet = accepted ? 0 : quiet + 1;
     }
     if (location.href !== home) {
       history.back();

@@ -44,9 +44,11 @@ export function jobView(job) {
     message: job.message || "",
     counts: {
       started: Number(job.started || 0),
+      videoStarted: Number(job.videoStarted || 0),
       pending: Number(job.pending || 0),
       failed: Number(job.failed || 0),
-      skipped: Number(job.skipped || 0)
+      skipped: Number(job.skipped || 0),
+      videoSkipped: Number(job.videoSkipped || 0)
     },
     createdAt: job.createdAt || null,
     updatedAt: job.updatedAt || null,

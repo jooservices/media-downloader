@@ -25,6 +25,11 @@ const facebook = parserContext.PageMediaParsers.Facebook;
 // Objects built inside vm contexts have foreign prototypes, which strict deepEqual rejects.
 const plain = value => JSON.parse(JSON.stringify(value));
 
+async function sendCachedMedia(env, request) {
+  const response = await env.send({ type: "DOWNLOAD_CACHED_MEDIA", ...request });
+  return response?.requestId ? env.send({ type: "CACHED_MEDIA_RESULT", requestId: response.requestId }) : response;
+}
+
 const cdn = path => `https://video.twimg.com/amplify_video/111/${path}`;
 const variants = [
   { content_type: "application/x-mpegURL", url: cdn("pl/list.m3u8") },
@@ -437,7 +442,7 @@ test("does not download a cached video twice and filters by account", async () =
   const again = await send({ type: "DOWNLOAD_CACHED_MEDIA", platform: "Twitter", account: "Fxtyoo" });
   assert.equal(started.length, 1);
   assert.equal(again.started, 0);
-  assert.equal(again.skipped, 1);
+  assert.equal(again.pending, 1);
 });
 
 test("page ids never pull in another account's media on the same page", async () => {
@@ -461,7 +466,8 @@ test("page ids never pull in another account's media on the same page", async ()
 });
 
 test("Instagram and Facebook videos are chosen by the page's ids and never cross platforms", async () => {
-  const { send, started } = loadBackground();
+  const env = loadBackground();
+  const { send, started } = env;
   await send({
     type: "MEDIA_FOUND",
     media: [
@@ -506,8 +512,7 @@ test("Instagram and Facebook videos are chosen by the page's ids and never cross
   assert.equal(ig.started, 1);
   assert.equal(started[0].filename, "Instagram/creator/video_DezPoWNzXMt.mp4");
 
-  const fb = await send({
-    type: "DOWNLOAD_CACHED_MEDIA",
+  const fb = await sendCachedMedia(env, {
     platform: "Facebook",
     account: "page.name",
     ids: ["2059757664673295"]
@@ -516,7 +521,7 @@ test("Instagram and Facebook videos are chosen by the page's ids and never cross
   assert.equal(started[1].filename, "Facebook/page.name/video_2059757664673295.mp4");
   assert.equal(started.length, 2, "ids that are not on the page stay in the cache");
 
-  const noIds = await send({ type: "DOWNLOAD_CACHED_MEDIA", platform: "Facebook", account: "page.name" });
-  assert.equal(noIds.started, 0, "an unknown owner is never guessed without page ids");
+  const noIds = await sendCachedMedia(env, { platform: "Facebook", account: "page.name" });
+  assert.equal(noIds.started, 0, "a cache read with no matching owner starts nothing");
   assert.equal((await send({ type: "DOWNLOAD_CACHED_MEDIA", platform: "Nope" })).ok, false);
 });
