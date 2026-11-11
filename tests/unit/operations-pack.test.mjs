@@ -44,6 +44,22 @@ test("runbook covers installation, service lifecycle, recovery, troubleshooting,
   }
 });
 
+test("runbook stops the queue and browser before setup and backs up the effective media path", async () => {
+  const runbook = await read("docs/runbook.md");
+  const upgrade = runbook.split("## Upgrade and rollback")[1].split("## Backup and restore")[0];
+  const backup = runbook.split("## Backup and restore")[1].split("## Logs and health endpoints")[0];
+
+  assert.ok(upgrade.indexOf("Stop `serve`") < upgrade.indexOf("browser setup"));
+  assert.ok(upgrade.indexOf("browser setup") < upgrade.indexOf("Start the queue"));
+  assert.match(upgrade, /browser stop[\s\S]*browser status[\s\S]*`"running": false`/);
+  assert.match(backup, /config\.json[\s\S]*`downloadDir`[\s\S]*takes precedence over `PMS_DOWNLOAD_DIR`/);
+  assert.match(
+    backup,
+    /browser stop[\s\S]*browser status[\s\S]*`"running": false`[\s\S]*Copy the entire data directory/
+  );
+  assert.match(backup, /effective media destination/);
+});
+
 test("observability parsers reject malformed YAML and JSON", () => {
   assert.throws(() => parse("groups: [unfinished"));
   assert.throws(() => JSON.parse('{"panels": ['));

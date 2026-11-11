@@ -104,21 +104,22 @@ Verify the task action path and confirm the service is writing under the expecte
 
 ## Upgrade and rollback
 
-1. Record the current release/commit and check `node cli/mediasaver.mjs status`. Stop `serve` through the service manager (Linux/macOS `service remove` unloads it; on Windows, stop the running task/process as well as unregistering its startup entry).
-2. Back up the data and media folders as described below.
+1. Record the current release/commit and check `node cli/mediasaver.mjs status`. Stop `serve` through the service manager (Linux/macOS `service remove` unloads it; on Windows, stop the running task/process as well as unregistering its startup entry). Keep the queue stopped through browser setup.
+2. In browser-owned mode, stop the detached browser with `node cli/mediasaver.mjs browser stop` and confirm `node cli/mediasaver.mjs browser status` reports `"running": false`. Then back up the data and media folders as described below.
 3. Install the new release in a separate versioned project directory, or update the existing checkout to the chosen release. Source installs run `npm ci`. Keep the same `PMS_DATA_DIR` and `PMS_DOWNLOAD_DIR` values.
-4. Start the queue with `node cli/mediasaver.mjs serve` or reinstall the service. In browser-owned mode, run `node cli/mediasaver.mjs browser setup` after upgrading so the managed profile receives the release's extension, then restart the service. `browser login` is needed only if the platform session has expired.
-5. Check `/v1/health`, `/v1/status`, logs, and a controlled test job before returning the service to normal traffic.
+4. In browser-owned mode, run `node cli/mediasaver.mjs browser setup` while the queue and browser are stopped so the managed profile receives the release's extension. `browser login` is needed only if the platform session has expired; if needed, complete it before restarting the queue.
+5. Start the queue with `node cli/mediasaver.mjs serve` or reinstall the service only after setup completes.
+6. Check `/v1/health`, `/v1/status`, logs, and a controlled test job before returning the service to normal traffic.
 
-To roll back, stop the service, reinstall the previous application version and its matching extension with `browser setup`, then restore the matching data backup if the newer version changed the queue schema or the old version cannot read it. Keep the backup untouched until the rollback has been verified. Never run two queue versions against the same SQLite database at once.
+To roll back, stop the service and managed browser, reinstall the previous application version, and run its matching `browser setup` before restarting the queue. Restore the matching data backup if the newer version changed the queue schema or the old version cannot read it. Keep the backup untouched until the rollback has been verified. Never run two queue versions against the same SQLite database at once.
 
 ## Backup and restore
 
-The default data directory is `%LOCALAPPDATA%\PageMediaSaver` on Windows and `~/PageMediaSaver` on macOS/Linux; `PMS_DATA_DIR` overrides it. It contains `queue.db` (SQLite queue), `config.json`, `api-token`, browser profile metadata/profile data, watch and inbox files, and logs. Media is separate, in the browser download destination or `PMS_DOWNLOAD_DIR`.
+The default data directory is `%LOCALAPPDATA%\PageMediaSaver` on Windows and `~/PageMediaSaver` on macOS/Linux; `PMS_DATA_DIR` overrides it. It contains `queue.db` (SQLite queue), `config.json`, `api-token`, browser profile metadata/profile data, watch and inbox files, and logs. Media is separate. Before copying media, inspect `<PMS_DATA_DIR>/config.json`: a configured `downloadDir` is the effective destination and takes precedence over `PMS_DOWNLOAD_DIR`; otherwise use `PMS_DOWNLOAD_DIR` or the browser's configured download destination.
 
-For a consistent backup, stop `serve` first so SQLite has closed and checkpointed its database. Copy the entire data directory, including `queue.db`, `config.json`, `api-token`, and managed browser profile, plus the media destination. Protect the backup: `api-token` grants API access, and the browser profile contains the user's sign-in session. Do not put either in source control or an unsecured shared folder.
+For a consistent backup, stop `serve` first so SQLite has closed and checkpointed its database. Then run `node cli/mediasaver.mjs browser stop` and confirm `node cli/mediasaver.mjs browser status` reports `"running": false` before copying the profile. Copy the entire data directory, including `queue.db`, `config.json`, `api-token`, and managed browser profile, plus the effective media destination identified above. Protect the backup: `api-token` grants API access, and the browser profile contains the user's sign-in session. Do not put either in source control or an unsecured shared folder.
 
-To restore, stop the service, restore the complete data directory and media destination to the same paths, verify ownership and write access, then start the same application version. If moving to a different host, rerun `browser setup` and `browser login` on that host rather than relying on a copied browser session. The API token is restored with the data folder; rotate it by stopping the service, replacing `api-token` with a new random token, and restarting.
+To restore, stop the service and managed browser, restore the complete data directory and effective media destination to the same paths, and verify ownership and write access. Before restarting the queue, run `browser setup`; if moving to a different host, run `browser login` there rather than relying on a copied browser session. The API token is restored with the data folder; rotate it by stopping the service, replacing `api-token` with a new random token, and restarting.
 
 ## Logs and health endpoints
 
