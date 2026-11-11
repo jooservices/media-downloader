@@ -69,7 +69,7 @@ test("the Windows startup file is a per-user Startup entry", () => {
 test("the Windows startup script runs the queue hidden, with paths quoted for VBScript", () => {
   assert.equal(
     service.windowsStartupScript(LAUNCH),
-    'CreateObject("Wscript.Shell").Run """C:\\Program Files\\nodejs\\node.exe"" ""C:\\tools\\mediasaver.mjs"" serve", 0, False\n'
+    'Set shell = CreateObject("Wscript.Shell")\nSet env = shell.Environment("Process")\nshell.Run """C:\\Program Files\\nodejs\\node.exe"" ""C:\\tools\\mediasaver.mjs"" serve", 0, False\n'
   );
   const quoted = service.windowsStartupScript({ executable: 'C:\\a"b\\node.exe', script: "s.mjs" });
   assert.doesNotMatch(quoted, /a"b/, "a quote in a path cannot break out of the command");
@@ -83,6 +83,25 @@ test("the systemd unit restarts the queue on failure and escapes its paths", () 
   assert.match(unit, /Restart=on-failure\nRestartSec=10\n/);
   assert.match(unit, /WantedBy=default\.target\n$/);
   assert.match(service.systemdUnit(), /ExecStart=/);
+});
+
+test("service launchers persist configured data and download directories", () => {
+  const env = { PMS_DATA_DIR: "C:\\queue data %", PMS_DOWNLOAD_DIR: "D:\\media & files" };
+  const windows = service.windowsStartupScript(LAUNCH, env);
+  assert.ok(windows.includes('env("PMS_DATA_DIR") = "C:\\queue data %"'));
+  assert.ok(windows.includes('env("PMS_DOWNLOAD_DIR") = "D:\\media & files"'));
+
+  const unit = service.systemdUnit(LAUNCH, { PMS_DATA_DIR: "/srv/queue%data", PMS_DOWNLOAD_DIR: "/mnt/media" });
+  assert.match(unit, /Environment="PMS_DATA_DIR=\/srv\/queue%%data"/);
+  assert.match(unit, /Environment="PMS_DOWNLOAD_DIR=\/mnt\/media"/);
+
+  const plist = service.launchdPlist(LAUNCH, { PMS_DATA_DIR: "/srv/queue&data", PMS_DOWNLOAD_DIR: "/mnt/media" });
+  assert.match(
+    plist,
+    /<key>EnvironmentVariables<\/key><dict><key>PMS_DATA_DIR<\/key><string>\/srv\/queue&amp;data<\/string>/
+  );
+  assert.match(plist, /<key>PMS_DOWNLOAD_DIR<\/key><string>\/mnt\/media<\/string><\/dict>/);
+  assert.match(plist, /<key>WorkingDirectory<\/key><string>C:\\tools<\/string>/);
 });
 
 test("the launchd plist keeps the queue alive and escapes XML in paths", () => {
@@ -101,10 +120,19 @@ test("installing on Windows writes the Startup entry, starts the queue now and s
   const lines = capture(t);
   const started = [];
   const env = { APPDATA: path.join(home, "win-roaming") };
-  await service.installService({ platform: "win32", env, launch: LAUNCH, start: launch => started.push(launch) });
+  env.PMS_DATA_DIR = path.join(home, "queue-data");
+  env.PMS_DOWNLOAD_DIR = path.join(home, "downloads");
+  await service.installService({
+    platform: "win32",
+    env,
+    launch: LAUNCH,
+    start: (launch, childEnv) => started.push([launch, childEnv])
+  });
   const file = service.windowsStartupFile(env);
-  assert.equal(await readFile(file, "utf8"), service.windowsStartupScript(LAUNCH));
-  assert.deepEqual(started, [LAUNCH]);
+  const script = await readFile(file, "utf8");
+  assert.equal(script, service.windowsStartupScript(LAUNCH, env));
+  assert.ok(script.includes(`env("PMS_DATA_DIR") = "${env.PMS_DATA_DIR}"`));
+  assert.deepEqual(started, [[LAUNCH, env]]);
   assert.match(
     lines.join(""),
     /The queue starts when you sign in\.\nRequest a download with: POST http:\/\/127\.0\.0\.1:\d+\/downloads/
@@ -115,9 +143,14 @@ test("installing on Linux writes a user unit, then reloads and enables it", asyn
   capture(t);
   const { calls, run } = recorder();
   const userHome = path.join(home, "linux");
-  await service.installService({ platform: "linux", home: userHome, launch: LAUNCH, run });
+  const env = { PMS_DATA_DIR: path.join(home, "persistent-data"), PMS_DOWNLOAD_DIR: path.join(home, "downloads") };
+  await service.installService({ platform: "linux", home: userHome, env, launch: LAUNCH, run });
   const unit = path.join(userHome, ".config", "systemd", "user", "page-media-saver.service");
-  assert.equal(await readFile(unit, "utf8"), service.systemdUnit(LAUNCH));
+  const unitText = await readFile(unit, "utf8");
+  assert.equal(unitText, service.systemdUnit(LAUNCH, env));
+  const escapeSystemdValue = value => value.replaceAll("\\", "\\\\");
+  assert.ok(unitText.includes(`Environment="PMS_DATA_DIR=${escapeSystemdValue(env.PMS_DATA_DIR)}"`));
+  assert.ok(unitText.includes(`Environment="PMS_DOWNLOAD_DIR=${escapeSystemdValue(env.PMS_DOWNLOAD_DIR)}"`));
   assert.deepEqual(calls, [
     ["systemctl", "--user", "daemon-reload"],
     ["systemctl", "--user", "enable", "--now", "page-media-saver.service"]
@@ -143,9 +176,13 @@ test("installing on macOS writes a LaunchAgent and bootstraps it after clearing 
       throw new Error("not loaded"); // no earlier agent: that is fine
     }
   };
-  await service.installService({ platform: "darwin", home: userHome, launch: LAUNCH, run: failingBootout });
+  const env = { PMS_DATA_DIR: path.join(home, "mac-data"), PMS_DOWNLOAD_DIR: path.join(home, "mac-media") };
+  await service.installService({ platform: "darwin", home: userHome, env, launch: LAUNCH, run: failingBootout });
   const plist = path.join(userHome, "Library", "LaunchAgents", "dev.jooservices.page-media-saver.plist");
-  assert.equal(await readFile(plist, "utf8"), service.launchdPlist(LAUNCH));
+  const plistText = await readFile(plist, "utf8");
+  assert.equal(plistText, service.launchdPlist(LAUNCH, env));
+  assert.ok(plistText.includes(`<key>PMS_DATA_DIR</key><string>${env.PMS_DATA_DIR}</string>`));
+  assert.ok(plistText.includes(`<key>PMS_DOWNLOAD_DIR</key><string>${env.PMS_DOWNLOAD_DIR}</string>`));
   assert.deepEqual(
     calls.map(call => call.slice(0, 2)),
     [
@@ -241,8 +278,16 @@ test("startQueue launches the script with `serve`, detached", async () => {
     `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(out)}, JSON.stringify(process.argv.slice(2)));`
   );
   service.startQueue({ executable: process.execPath, script });
+  let args;
   for (let i = 0; i < 100 && !(await exists(out)); i++) {
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  assert.deepEqual(JSON.parse(await readFile(out, "utf8")), ["serve"]);
+  for (let i = 0; i < 100 && args === undefined; i++) {
+    try {
+      args = JSON.parse(await readFile(out, "utf8"));
+    } catch {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
+  assert.deepEqual(args, ["serve"]);
 });

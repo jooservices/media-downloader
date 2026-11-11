@@ -128,7 +128,11 @@ test("tools/list describes every tool with a JSON schema and keeps internals out
   assert.deepEqual(tools.map(tool => tool.name).sort(), [
     "cancel_job",
     "download_account",
+    "get_config",
     "get_job",
+    "get_metrics",
+    "get_status",
+    "get_watched",
     "list_jobs",
     "list_watched",
     "platform_health",
@@ -150,12 +154,16 @@ test("each tool turns its arguments into the right REST request", async () => {
   const server = createMcpServer({ fetchApi: queue.fetchApi });
   await call(server, "download_account", { url: "https://www.instagram.com/a/" });
   await call(server, "download_account", { url: "https://www.instagram.com/a/", again: true });
+  await call(server, "get_config", {});
+  await call(server, "get_status", {});
+  await call(server, "get_metrics", {});
   await call(server, "list_jobs", {});
   await call(server, "list_jobs", { status: "running", limit: 5, offset: 10 });
   await call(server, "get_job", { id: JOB_ID });
   await call(server, "cancel_job", { id: JOB_ID });
   await call(server, "watch_account", { url: "https://x.com/a/" });
   await call(server, "list_watched", {});
+  await call(server, "get_watched", { platform: "instagram", account: "a" });
   await call(server, "unwatch_account", { platform: "twitter", account: "a b" });
   await call(server, "queue_health");
   await call(server, "platform_health", {});
@@ -163,12 +171,16 @@ test("each tool turns its arguments into the right REST request", async () => {
   assert.deepEqual(queue.calls, [
     ["POST", "/v1/jobs", { url: "https://www.instagram.com/a/", again: false }],
     ["POST", "/v1/jobs", { url: "https://www.instagram.com/a/", again: true }],
+    ["GET", "/v1/config", undefined],
+    ["GET", "/v1/status", undefined],
+    ["GET", "/v1/metrics", undefined],
     ["GET", "/v1/jobs", undefined],
     ["GET", "/v1/jobs?status=running&limit=5&offset=10", undefined],
     ["GET", `/v1/jobs/${JOB_ID}`, undefined],
     ["DELETE", `/v1/jobs/${JOB_ID}`, undefined],
     ["POST", "/v1/watches", { url: "https://x.com/a/" }],
     ["GET", "/v1/watches", undefined],
+    ["GET", "/v1/watches/instagram/a", undefined],
     ["DELETE", "/v1/watches/twitter/a%20b", undefined],
     ["GET", "/v1/health", undefined],
     ["GET", "/v1/health/platforms", undefined],
@@ -235,7 +247,10 @@ test("tool arguments are validated against each published schema before making a
   for (const [name, args] of invalidCalls) {
     const result = await call(server, name, args);
     assert.equal(result.result.isError, true, name);
-    assert.match(result.result.content[0].text, /Invalid tool arguments/);
+    assert.match(
+      result.result.content[0].text,
+      name === "list_jobs" ? /^400 Bad Request:/ : /^422 Unprocessable Content:/
+    );
   }
   assert.equal(queue.calls.length, 0, "invalid inputs never reach the REST API");
   const valid = await call(server, "list_jobs", { status: "running", limit: 5, offset: 0 });
@@ -248,10 +263,23 @@ test("missing arguments, unknown tools and an unreachable queue are reported, no
   const server = createMcpServer({ fetchApi: queue.fetchApi });
   const missing = await call(server, "get_job", {});
   assert.equal(missing.result.isError, true);
-  assert.match(missing.result.content[0].text, /arguments\.id is required/);
+  assert.match(missing.result.content[0].text, /^422 Unprocessable Content: Missing required argument: id\./);
   const blank = await call(server, "unwatch_account", { platform: "twitter" });
-  assert.match(blank.result.content[0].text, /arguments\.account is required/);
+  assert.match(blank.result.content[0].text, /^422 Unprocessable Content: Missing required argument: account\./);
   assert.equal(queue.calls.length, 0, "nothing is sent for an incomplete call");
+  for (const [name, args] of [
+    ["list_jobs", { limit: "5" }],
+    ["list_jobs", { limit: 101 }],
+    ["list_jobs", { status: "mystery" }],
+    ["download_account", { url: "http://instagram.com/a/" }],
+    ["download_account", { url: "https://instagram.com/a/", ignored: true }],
+    ["get_config", { ignored: true }],
+    ["unwatch_account", { platform: "myspace", account: "a" }]
+  ]) {
+    const invalid = await call(server, name, args);
+    assert.equal(invalid.result.isError, true, `${name} ${JSON.stringify(args)}`);
+  }
+  assert.equal(queue.calls.length, 0, "invalid schemas are rejected before REST");
   const unknown = await call(server, "format_disk", {});
   assert.equal(unknown.error.code, -32602);
   const noParams = await server.handle(rpc("tools/call"));

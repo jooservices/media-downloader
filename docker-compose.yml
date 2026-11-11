@@ -5,7 +5,20 @@ services:
     build: .
     init: true
     restart: unless-stopped
+    environment:
+      PMS_API_HOST: 0.0.0.0
+      PMS_API_ALLOWED_HOSTS: 127.0.0.1:38542,localhost:38542,media-downloader:38542
     shm_size: 1gb
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:38542/v1/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 3
     ports:
       - "127.0.0.1:38542:38542"
     volumes:

@@ -11,11 +11,53 @@ const require = createRequire(import.meta.url);
 const { version: VERSION } = require("../package.json");
 
 export const SUPPORTED_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
-const URL_SCHEMA = { type: "string", description: "An https link to a profile (Instagram, Facebook, X, TikTok)." };
+const URL_SCHEMA = {
+  type: "string",
+  format: "uri",
+  pattern: "^[hH][tT][tT][pP][sS]://[^\\s]+$",
+  description: "An https profile link from Instagram, Facebook, X, or TikTok."
+};
 
-const JOB_ID_SCHEMA = { type: "string", description: "The id of a job, as returned by download_account or list_jobs." };
+const JOB_ID_SCHEMA = {
+  type: "string",
+  format: "uuid",
+  pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+  description: "The UUID id of a job, as returned by download_account or list_jobs."
+};
 
 export const TOOLS = [
+  {
+    name: "get_config",
+    title: "Read queue configuration",
+    description: "Read the queue's active settings, including worker counts, delays, retry limit, and download folder.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    request: () => ["GET", `${API_BASE}/config`]
+  },
+  {
+    name: "get_status",
+    title: "Read queue status",
+    description: "Read current job counts, extension check-in details, process id, and queue uptime.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    request: () => ["GET", `${API_BASE}/status`]
+  },
+  {
+    name: "queue_status",
+    title: "Get queue status",
+    description: "Show queue activity and configured/effective workers with any platform back-off state.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    request: () => ["GET", `${API_BASE}/status`]
+  },
+  {
+    name: "get_metrics",
+    title: "Read queue metrics",
+    description: "Read Prometheus text metrics for job states, extension check-in time, and uptime.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    request: () => ["GET", `${API_BASE}/metrics`]
+  },
   {
     name: "download_account",
     title: "Download an account",
@@ -40,9 +82,18 @@ export const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        status: { type: "string", enum: ["queued", "running", "complete", "incomplete", "paused", "error"] },
-        limit: { type: "integer", minimum: 1, maximum: 100 },
-        offset: { type: "integer", minimum: 0 }
+        status: {
+          type: "string",
+          enum: ["queued", "running", "complete", "incomplete", "paused", "error"],
+          description: "Filter to this job state."
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          description: "Maximum jobs to return (1–100; default 50)."
+        },
+        offset: { type: "integer", minimum: 0, description: "Number of matching jobs to skip (default 0)." }
       },
       additionalProperties: false
     },
@@ -107,14 +158,44 @@ export const TOOLS = [
     request: () => ["GET", `${API_BASE}/watches`]
   },
   {
+    name: "get_watched",
+    title: "Get a watched account",
+    description:
+      "Read the watched pages associated with one platform account. Use the platform and account from list_watched.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        platform: {
+          type: "string",
+          pattern:
+            "^[iI][nN][sS][tT][aA][gG][rR][aA][mM]$|^[fF][aA][cC][eE][bB][oO][oO][kK]$|^[tT][wW][iI][tT][tT][eE][rR]$|^[tT][iI][kK][tT][oO][kK]$",
+          description: "Platform id shown by list_watched."
+        },
+        account: { type: "string", minLength: 1, description: "Account name shown by list_watched." }
+      },
+      required: ["platform", "account"],
+      additionalProperties: false
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    request: ({ platform, account }) => [
+      "GET",
+      `${API_BASE}/watches/${encodeURIComponent(platform)}/${encodeURIComponent(account)}`
+    ]
+  },
+  {
     name: "unwatch_account",
     title: "Stop watching an account",
     description: "Stop scanning an account automatically. Files already saved are kept.",
     inputSchema: {
       type: "object",
       properties: {
-        platform: { type: "string", description: "instagram, facebook, twitter or tiktok." },
-        account: { type: "string", description: "The account name as shown by list_watched." }
+        platform: {
+          type: "string",
+          pattern:
+            "^[iI][nN][sS][tT][aA][gG][rR][aA][mM]$|^[fF][aA][cC][eE][bB][oO][oO][kK]$|^[tT][wW][iI][tT][tT][eE][rR]$|^[tT][iI][kK][tT][oO][kK]$",
+          description: "Platform id shown by list_watched."
+        },
+        account: { type: "string", minLength: 1, description: "Account name as shown by list_watched." }
       },
       required: ["platform", "account"],
       additionalProperties: false
@@ -140,14 +221,6 @@ export const TOOLS = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: false },
     request: () => ["GET", `${API_BASE}/health/platforms`]
-  },
-  {
-    name: "queue_status",
-    title: "Get queue status",
-    description: "Show queue activity and configured/effective workers with any platform back-off state.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-    annotations: { readOnlyHint: true, openWorldHint: false },
-    request: () => ["GET", `${API_BASE}/status`]
   }
 ];
 
@@ -169,51 +242,78 @@ const textResult = (value, isError = false) => ({
 
 function validateObject(value, schema, name) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return `${name} must be an object`;
+    return `422 Unprocessable Content: ${name} must be an object.`;
   }
-  const properties = schema.properties ?? {};
-  if (schema.additionalProperties === false && Object.keys(value).some(key => !Object.hasOwn(properties, key))) {
-    return `${name} contains an unsupported property`;
+  if (schema.additionalProperties === false) {
+    const extra = Object.keys(value).find(key => !Object.hasOwn(schema.properties || {}, key));
+    if (extra) {
+      return `422 Unprocessable Content: ${name}.${extra} is not allowed.`;
+    }
   }
-  for (const key of schema.required ?? []) {
+  for (const key of schema.required || []) {
     if (!Object.hasOwn(value, key)) {
-      return `${name}.${key} is required`;
+      return `422 Unprocessable Content: Missing required argument: ${key}.`;
     }
   }
   for (const [key, item] of Object.entries(value)) {
-    if (properties[key]) {
-      const error = validateSchema(item, properties[key], `${name}.${key}`);
-      if (error) {
-        return error;
-      }
+    const issue = validateValue(item, schema.properties?.[key], `${name}.${key}`);
+    if (issue) {
+      return issue;
     }
   }
   return null;
 }
 
-function validateSchema(value, schema, name = "arguments") {
-  if (schema.type === "object") {
-    return validateObject(value, schema, name);
-  }
-  if (schema.type === "string" && typeof value !== "string") {
-    return `${name} must be a string`;
-  }
-  if (schema.type === "boolean" && typeof value !== "boolean") {
-    return `${name} must be a boolean`;
-  }
-  if (schema.type === "integer" && !Number.isInteger(value)) {
-    return `${name} must be an integer`;
+function validateScalar(value, schema, name) {
+  const typeIssue = validateType(value, schema, name);
+  if (typeIssue) {
+    return `422 Unprocessable Content: ${typeIssue}`;
   }
   if (schema.enum && !schema.enum.includes(value)) {
-    return `${name} must be one of the allowed values`;
+    return `422 Unprocessable Content: ${name} must be one of: ${schema.enum.join(", ")}.`;
   }
+  return validateScalarConstraints(value, schema, name);
+}
+
+function validateType(value, schema, name) {
+  const validType = schema.type === "integer" ? Number.isInteger(value) : typeof value === schema.type;
+  if (validType) {
+    return null;
+  }
+  const expected = schema.type === "integer" ? "an integer" : `a ${schema.type}`;
+  return `${name} must be ${expected}.`;
+}
+
+function validateScalarConstraints(value, schema, name) {
   if (schema.minimum !== undefined && value < schema.minimum) {
-    return `${name} is below the minimum`;
+    return `422 Unprocessable Content: ${name} must be at least ${schema.minimum}.`;
   }
   if (schema.maximum !== undefined && value > schema.maximum) {
-    return `${name} is above the maximum`;
+    return `422 Unprocessable Content: ${name} must be at most ${schema.maximum}.`;
+  }
+  if (schema.minLength !== undefined && value.length < schema.minLength) {
+    return `422 Unprocessable Content: ${name} must not be empty.`;
+  }
+  if (schema.format === "uri") {
+    try {
+      new URL(value);
+    } catch {
+      return `422 Unprocessable Content: ${name} must be a valid URL.`;
+    }
+  }
+  if (schema.pattern && !new RegExp(schema.pattern, schema.format === "uuid" ? "i" : "").test(value)) {
+    return schema.format === "uuid"
+      ? `400 Bad Request: ${name} must be a UUID.`
+      : `422 Unprocessable Content: url must be an https link.`;
   }
   return null;
+}
+
+function validateValue(value, schema, name) {
+  if (!schema) {
+    return `422 Unprocessable Content: ${name} is not allowed.`;
+  }
+  return schema.type === "object" ? validateObject(value, schema, name) : validateScalar(value, schema, name);
 }
 
 // Turns a REST reply into the text a model should read. Problem documents keep their detail.
@@ -221,9 +321,20 @@ async function describeReply(response) {
   if (response.status === 204) {
     return textResult("Done.");
   }
-  const body = await response.json().catch(() => null);
+  const contentType = response.headers.get("content-type") || "";
+  let body;
+  if (/json/i.test(contentType)) {
+    body = await response.json().catch(() => null);
+  } else {
+    const text = await response.text().catch(() => "");
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = text;
+    }
+  }
   if (response.ok) {
-    return textResult(body ?? "Done.");
+    return textResult(body || "Done.");
   }
   return textResult(`${response.status} ${body?.title || "Error"}: ${body?.detail || "The request failed."}`, true);
 }
@@ -235,22 +346,20 @@ export function createMcpServer({ fetchApi }) {
       return { error: rpcError(null, -32602, `Unknown tool: ${params?.name}`).error };
     }
     const args = params.arguments ?? {};
-    const invalid = validateSchema(args, tool.inputSchema);
-    if (invalid) {
-      return { result: textResult(`Invalid tool arguments: ${invalid}.`, true) };
-    }
-    const blankRequired = (tool.inputSchema.required ?? []).filter(key => typeof args[key] === "string" && !args[key]);
-    if (blankRequired.length) {
-      return { result: textResult(`Invalid tool arguments: ${blankRequired.join(", ")} must not be empty.`, true) };
+    const validation = validateValue(args, tool.inputSchema, "arguments");
+    if (validation) {
+      const mapped = tool.name === "list_jobs" ? validation.replace(/^\d+ [^:]+:/, "400 Bad Request:") : validation;
+      return { result: textResult(mapped, true) };
     }
     try {
       const [method, path, body] = tool.request(args);
       return { result: await describeReply(await fetchApi(method, path, body)) };
-    } catch {
-      // Backend exception details may contain local paths or secrets.
+    } catch (error) {
+      const message =
+        error instanceof Error ? "The download queue is not reachable." : "The download queue could not be contacted.";
       return {
         result: textResult(
-          "The download queue is not reachable. Check that its local API token is available and start it with: node cli/mediasaver.mjs serve",
+          `${message} Check that its local API token is available, then start it with: node cli/mediasaver.mjs serve`,
           true
         )
       };
@@ -297,12 +406,10 @@ export function localApi({ port = API_PORT, tokenFile = API_TOKEN_FILE, fetchImp
     const token = (await readFile(tokenFile, "utf8")).trim();
     const configuredBind = process.env.PMS_API_HOST || "127.0.0.1";
     let host = "127.0.0.1";
-    if (configuredBind === "::1") {
+    if (configuredBind === "::1" || configuredBind === "::") {
       host = "[::1]";
     } else if (configuredBind === "localhost") {
       host = "localhost";
-    } else if (configuredBind === "::") {
-      host = "[::1]";
     } else if (configuredBind !== "0.0.0.0") {
       host = configuredBind.includes(":") ? `[${configuredBind}]` : configuredBind;
     }
