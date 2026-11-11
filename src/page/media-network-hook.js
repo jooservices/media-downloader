@@ -95,7 +95,7 @@
       for (const entry of found) {
         const key = `${entry.platform}:${entry.kind}:${entry.id}:${entry.index}`;
         const previous = announced.get(key);
-        if (previous && !(entry.fullSize === true && previous.fullSize === false)) {
+        if (previous && !(entry.fullSize === true && previous.fullSize !== true)) {
           continue;
         }
         announced.set(key, entry);

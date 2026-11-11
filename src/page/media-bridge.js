@@ -32,6 +32,9 @@
       height: numberOrZero(entry?.height),
       fullSize: fullSizeOf(entry),
       expectedItems: expectedItemsOf(entry),
+      ...(entry?.platform === "Instagram" && entry?.kind === "video" && Number(entry.expectedPhotos) > 0
+        ? { expectedPhotos: Math.max(0, Number(entry.expectedPhotos) || 0) }
+        : {}),
       url: stringOrEmpty(entry?.url)
     };
   }

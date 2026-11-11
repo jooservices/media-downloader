@@ -130,6 +130,7 @@
         id: current.code,
         index: current.index,
         owner: current.owner,
+        ...(current.expectedPhotos > 0 ? { expectedPhotos: current.expectedPhotos } : {}),
         durationMs: Math.round((Number(node.video_duration) || 0) * 1000),
         width: best.width,
         height: best.height,
@@ -201,7 +202,10 @@
         current = {
           code: node.code,
           owner: node.user?.username || node.owner?.username || post?.owner || null,
-          index: 0
+          index: 0,
+          expectedPhotos: Array.isArray(node.carousel_media)
+            ? node.carousel_media.filter(child => child && !Array.isArray(child.video_versions)).length
+            : 0
         };
       }
       if (current) {

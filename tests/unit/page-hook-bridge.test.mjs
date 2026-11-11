@@ -202,6 +202,34 @@ test("hook: only an unknown-size photo for the requested post is promoted after 
   assert.equal(media.find(entry => entry.id === "Dother000001").fullSize, false);
 });
 
+test("hook: an unknown-size grid announcement can upgrade to a matching opened-post original", async () => {
+  let body = JSON.stringify({
+    items: [
+      { code: "Dnullsize001", image_versions2: { candidates: [{ url: `${IG}grid.jpg`, width: 700, height: 900 }] } }
+    ]
+  });
+  const { page, posted } = loadHook({ fetchImpl: async () => textResponse(body) });
+  await page.fetch("https://www.instagram.com/api/v1/feed/");
+  await tick();
+  assert.equal(posted[0].message.media[0].fullSize, null);
+
+  body = JSON.stringify({
+    items: [
+      {
+        code: "Dnullsize001",
+        image_versions2: { candidates: [{ url: `${IG}opened.jpg`, width: 700, height: 900 }] }
+      }
+    ]
+  });
+  page.location.pathname = "/p/Dnullsize001/";
+  await page.fetch("https://www.instagram.com/api/v1/feed/");
+  await tick();
+
+  assert.equal(posted.length, 2);
+  assert.equal(posted[1].message.media[0].fullSize, true);
+  assert.equal(posted[1].message.media[0].url, `${IG}opened.jpg`);
+});
+
 test("hook: a feed response parsed after navigation keeps its photos uncovered", async () => {
   let resolveResponse;
   const { page, posted } = loadHook({
@@ -506,6 +534,25 @@ test("bridge: well-formed media from the page is forwarded with every field norm
       url: ""
     }
   ]);
+});
+
+test("bridge: Instagram carousel video entries retain the expected photo count", () => {
+  const { sent, deliver } = loadBridge();
+  deliver({
+    data: {
+      channel: CHANNEL,
+      media: [
+        {
+          platform: "Instagram",
+          kind: "video",
+          id: "Dvideo0001",
+          expectedPhotos: 2,
+          url: "https://scontent.cdninstagram.com/v/carousel.mp4"
+        }
+      ]
+    }
+  });
+  assert.equal(sent[0].media[0].expectedPhotos, 2);
 });
 
 test("bridge: forwards a rate-limit status without response content", () => {

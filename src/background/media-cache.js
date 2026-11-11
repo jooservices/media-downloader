@@ -17,6 +17,19 @@ const httpsHostname = value => {
   }
 };
 
+function completenessMetadata(entry, platform, kind) {
+  if (["Instagram", "Facebook"].includes(platform) && kind === "photo") {
+    return {
+      fullSize: entry.fullSize === true,
+      expectedItems: Math.max(1, Number(entry.expectedItems) || 1)
+    };
+  }
+  if (platform === "Instagram" && kind === "video" && Number(entry.expectedPhotos) > 0) {
+    return { expectedPhotos: Math.max(0, Number(entry.expectedPhotos) || 0) };
+  }
+  return {};
+}
+
 // A reported entry is kept only when its platform, kind, id and file host all check out.
 function acceptedEntry(entry) {
   const platform = entry?.platform;
@@ -42,12 +55,7 @@ function acceptedEntry(entry) {
     durationMs: Number(entry.durationMs) || 0,
     width: Number(entry.width) || 0,
     height: Number(entry.height) || 0,
-    ...(["Instagram", "Facebook"].includes(platform) && kind === "photo"
-      ? {
-          fullSize: entry.fullSize === true,
-          expectedItems: Math.max(1, Number(entry.expectedItems) || 1)
-        }
-      : {}),
+    ...completenessMetadata(entry, platform, kind),
     url: entry.url
   };
 }
@@ -78,9 +86,12 @@ async function storeMedia(media) {
       entry.width = previous.width;
       entry.height = previous.height;
       entry.fullSize = true;
+    }
+    if (previous?.expectedItems && entry.expectedItems !== undefined) {
       entry.expectedItems = Math.max(previous.expectedItems, entry.expectedItems);
-    } else if (previous?.expectedItems) {
-      entry.expectedItems = Math.max(previous.expectedItems, entry.expectedItems);
+    }
+    if (previous?.expectedPhotos) {
+      entry.expectedPhotos = Math.max(previous.expectedPhotos, entry.expectedPhotos || 0);
     }
     delete mediaCache[cacheKey]; // re-added at the end, so the oldest entries are the ones dropped
     mediaCache[cacheKey] = entry;
@@ -173,9 +184,14 @@ function matchesCoverageRequest(entry, platform, wantedIds, wantedAccount) {
 function isCoveredGroup(group, platform) {
   const photos = group.filter(entry => entry.kind === "photo");
   const otherMedia = group.filter(entry => entry.kind !== "photo");
-  const expectedPhotos = Math.max(...photos.map(entry => Number(entry.expectedItems) || 1));
+  const expectedPhotos = Math.max(
+    0,
+    ...photos.map(entry => Number(entry.expectedItems) || 1),
+    ...otherMedia.map(entry => Number(entry.expectedPhotos) || 0)
+  );
   return (
-    (!photos.length || (photos.every(entry => isFullSizeEntry(entry, platform)) && photos.length >= expectedPhotos)) &&
+    photos.every(entry => isFullSizeEntry(entry, platform)) &&
+    photos.length >= expectedPhotos &&
     otherMedia.every(entry => isFullSizeEntry(entry, platform))
   );
 }

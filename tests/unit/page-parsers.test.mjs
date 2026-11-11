@@ -233,17 +233,19 @@ test("Instagram: a carousel numbers its photos by position and keeps its videos"
         video_versions: [{ url: `${IG}c3.mp4`, width: 10, height: 10 }],
         image_versions2: { candidates: [igImage("poster", 5, 5)] }
       },
+      { image_versions2: { candidates: [] } },
       { image_versions2: { candidates: [igImage("c4", 800, 800)] } }
     ]
   };
   const found = plain(parsers.Instagram.extractMedia(carousel));
   assert.deepEqual(
     found.map(entry => `${entry.kind}:${entry.index}`).sort(),
-    ["photo:1", "photo:4", "video:1"],
+    ["photo:1", "photo:5", "video:1"],
     "the child's own shortcode does not make it a second post"
   );
   assert.equal(found.find(entry => entry.index === 1 && entry.kind === "photo").url, `${IG}c1big.jpg`);
-  assert.equal(found.find(entry => entry.index === 1 && entry.kind === "photo").expectedItems, 2);
+  assert.equal(found.find(entry => entry.index === 1 && entry.kind === "photo").expectedItems, 3);
+  assert.equal(found.find(entry => entry.kind === "video").expectedPhotos, 3);
 });
 
 test("Instagram: a post nested in another inherits the owner and a node is not read twice", () => {

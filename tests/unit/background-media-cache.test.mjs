@@ -273,6 +273,21 @@ test("a partially cached Instagram carousel saves eligible items but remains unc
   assert.equal(env.started.length, 2);
 });
 
+test("an Instagram video does not cover a carousel whose expected photo has no rendition", async () => {
+  const env = loadBackground();
+  await found(env, [
+    video("mixed01", {
+      platform: "Instagram",
+      url: "https://scontent.cdninstagram.com/v/mixed.mp4",
+      expectedPhotos: 1
+    })
+  ]);
+
+  const result = await saveCached(env, { platform: "Instagram", account: "alice", ids: ["mixed01"] });
+  assert.equal(result.started, 1, "the usable video is still saved");
+  assert.deepEqual(plain(result.coveredIds), [], "the missing photo keeps the post eligible for fallback");
+});
+
 test("a later preview cannot replace a cached original or shrink carousel coverage metadata", async () => {
   const env = loadBackground();
   await found(env, [
