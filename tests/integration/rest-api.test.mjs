@@ -417,6 +417,81 @@ test("status and metrics still answer when the queue offers no details", () =>
     assert.doesNotMatch(metrics.text, /pms_jobs\{/);
   }));
 
+test("GET /v1/health/platforms reports per-platform canary state and metrics export gauges", () =>
+  withServer({}, async ({ call }) => {
+    const health = await call("GET", "/v1/health/platforms");
+    assert.equal(health.status, 200);
+    assert.equal(health.body.items.length, 4);
+    assert.equal(health.body.items.find(item => item.platform === "Instagram").state, "ok");
+    assert.equal(health.body.summary.total, 4);
+    assert.equal((await call("GET", "/v1/health/platforms", { auth: false })).status, 401);
+    assert.equal((await call("POST", "/v1/health/platforms", { body: {} })).status, 405);
+    const metrics = await call("GET", "/v1/metrics", { json: false });
+    assert.match(metrics.text, /^pms_platform_health\{platform="instagram"\} 0$/m);
+  }));
+
+test("the API limits request bursts with a problem response", () =>
+  withServer({ rateLimit: 2 }, async ({ call }) => {
+    assert.equal((await call("GET", "/v1/health", { auth: false })).status, 200);
+    assert.equal((await call("GET", "/v1/health", { auth: false })).status, 200);
+    const limited = await call("GET", "/v1/health", { auth: false });
+    assert.equal(limited.status, 429);
+    assert.equal(limited.headers["retry-after"], "60");
+    assert.match(limited.headers["content-type"], /problem\+json/);
+    assert.equal(limited.body.title, "Too Many Requests");
+    assert.equal(limited.body.status, 429);
+  }));
+
+test("rejected and unauthenticated bursts cannot exhaust the authenticated request quota", () =>
+  withServer({ rateLimit: 2 }, async ({ call }) => {
+    for (let index = 0; index < 3; index++) {
+      const rejected = await call("GET", "/v1/jobs?unsupported=1", {
+        headers: { origin: "https://attacker.example" }
+      });
+      assert.equal(rejected.status, index < 2 ? 403 : 429);
+    }
+    for (let index = 0; index < 2; index++) {
+      const rejected = await call("GET", "/v1/jobs", { auth: false });
+      assert.equal(rejected.status, 401);
+    }
+    assert.equal((await call("GET", "/v1/jobs")).status, 200);
+    assert.equal((await call("GET", "/v1/jobs")).status, 200);
+    const limited = await call("GET", "/v1/jobs");
+    assert.equal(limited.status, 429);
+    assert.equal(limited.body.title, "Too Many Requests");
+  }));
+
+test("failed authentication limits also block a valid token after the failure threshold", () =>
+  withServer({ rateLimit: 2 }, async ({ call }) => {
+    for (let index = 0; index < 3; index++) {
+      const invalid = await call("GET", "/v1/jobs", { headers: { authorization: `Bearer wrong-${index}` } });
+      assert.equal(invalid.status, index < 2 ? 401 : 429);
+    }
+
+    const valid = await call("GET", "/v1/jobs");
+    assert.equal(valid.status, 429);
+    assert.equal(valid.body.title, "Too Many Requests");
+    assert.equal(valid.body.detail, "Too many failed authentication attempts. Try again later.");
+    assert.equal(valid.headers["retry-after"], "60");
+  }));
+
+test("unknown routes still enforce Host, Origin, authentication, and rate limits", () =>
+  withServer({ rateLimit: 1 }, async ({ call }) => {
+    const hostile = await call("GET", "/v1/unknown", {
+      headers: { origin: "https://attacker.example" }
+    });
+    assert.equal(hostile.status, 403);
+    const hostileLimited = await call("GET", "/v1/another-unknown", {
+      headers: { origin: "https://attacker.example" }
+    });
+    assert.equal(hostileLimited.status, 429);
+
+    const unknown = await call("GET", "/v1/unknown");
+    assert.equal(unknown.status, 404);
+    const unknownLimited = await call("GET", "/v1/another-unknown");
+    assert.equal(unknownLimited.status, 429);
+  }));
+
 test("beyond this computer the API needs a token, and only the hosts it was told about", async () => {
   const deps = { addUrls: async () => ({}), listJobs: async () => [] };
   await assert.rejects(startApiServer({ port: 0, bind: "0.0.0.0", ...deps }), /only with an API token/);
@@ -424,7 +499,7 @@ test("beyond this computer the API needs a token, and only the hosts it was told
     port: 0,
     bind: "0.0.0.0",
     token: TOKEN,
-    extraHosts: ["api.internal:38542"],
+    extraHosts: ["api.internal:41742"],
     ...deps
   });
   const { port } = server.address();
@@ -438,8 +513,8 @@ test("beyond this computer the API needs a token, and only the hosts it was told
         req.on("error", reject);
         req.end();
       });
-    assert.equal(await ask(`127.0.0.1:${port}`), 200);
-    assert.equal(await ask("api.internal:38542"), 200);
+    assert.equal(await ask(`127.0.0.1:${port}`), 403, "a remote bind does not implicitly trust loopback Host values");
+    assert.equal(await ask("api.internal:41742"), 200);
     assert.equal(await ask("evil.example"), 403);
   } finally {
     await new Promise(resolve => server.close(() => resolve()));

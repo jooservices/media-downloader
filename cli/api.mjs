@@ -10,6 +10,10 @@ import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { normalizeProfileUrl } from "./store.mjs";
 import { loadConfig as readConfig } from "./config.mjs";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const { platformHealth: assessPlatforms } = require("../lib/platform-health.js");
 
 export const API_PORT = Number(process.env.PMS_API_PORT) || 38542;
 export const API_BASE = "/v1";
@@ -219,9 +223,12 @@ async function listJobsRoute({ response, url, deps }) {
     problem(response, 400, page.error);
     return;
   }
-  const all = (await deps.listJobs()).filter(job => !page.status || job.status === page.status);
-  const items = all.slice(page.offset, page.offset + page.limit).map(jobView);
-  const next = page.offset + page.limit < all.length;
+  const selected = await deps.listJobs({ status: page.status, limit: page.limit, offset: page.offset });
+  const total = deps.countJobs
+    ? await deps.countJobs(page.status)
+    : (await deps.listJobs()).filter(job => !page.status || job.status === page.status).length;
+  const items = selected.map(jobView);
+  const next = page.offset + page.limit < total;
   const query = new URLSearchParams({ limit: String(page.limit), offset: String(page.offset + page.limit) });
   if (page.status) {
     query.set("status", page.status);
@@ -229,7 +236,7 @@ async function listJobsRoute({ response, url, deps }) {
   send(
     response,
     200,
-    { items, page: { limit: page.limit, offset: page.offset, total: all.length } },
+    { items, page: { limit: page.limit, offset: page.offset, total } },
     next ? { Link: `<${API_BASE}/jobs?${query}>; rel="next"` } : {}
   );
 }
@@ -262,7 +269,9 @@ async function createJobRoute({ request, response, deps }) {
 }
 
 async function jobRoute({ response, params, deps }) {
-  const job = (await deps.listJobs()).find(item => item.jobId === params[0].toLowerCase());
+  const job = deps.getJob
+    ? await deps.getJob(params[0].toLowerCase())
+    : (await deps.listJobs()).find(item => item.jobId === params[0].toLowerCase());
   if (job) {
     send(response, 200, jobView(job));
   } else {
@@ -384,6 +393,20 @@ function appendPlatformMetrics(lines, platforms) {
   }
 }
 
+async function platformHealthRoute({ response, deps }) {
+  const items = deps.platformHealth ? await deps.platformHealth() : assessPlatforms(await deps.listJobs());
+  send(response, 200, {
+    items,
+    summary: {
+      total: items.length,
+      ok: items.filter(item => item.state === "ok").length,
+      degraded: items.filter(item => item.state === "degraded").length,
+      broken: items.filter(item => item.state === "broken").length
+    }
+  });
+}
+
+// Prometheus text format includes queue state, platform worker/back-off state, canary health and uptime.
 async function metricsRoute({ response, deps }) {
   const state = deps.status ? await deps.status() : {};
   const lines = ["# HELP pms_jobs Jobs in the queue by status.", "# TYPE pms_jobs gauge"];
@@ -391,6 +414,15 @@ async function metricsRoute({ response, deps }) {
     lines.push(`pms_jobs{status="${status}"} ${count}`);
   }
   appendPlatformMetrics(lines, state.platforms ?? {});
+  const health = deps.platformHealth ? await deps.platformHealth() : assessPlatforms(await deps.listJobs());
+  lines.push(
+    "# HELP pms_platform_health Platform canary state (ok=0, degraded=1, broken=2).",
+    "# TYPE pms_platform_health gauge"
+  );
+  for (const item of health) {
+    const value = { ok: 0, degraded: 1, broken: 2 }[item.state] ?? 0;
+    lines.push(`pms_platform_health{platform="${item.platform.toLowerCase()}"} ${value}`);
+  }
   lines.push(
     "# HELP pms_extension_seen_timestamp_seconds When the browser extension last reported in.",
     "# TYPE pms_extension_seen_timestamp_seconds gauge",
@@ -412,6 +444,7 @@ const ROUTES = [
   { path: "/v1/config", pattern: new RegExp(`^${API_BASE}/config$`), GET: configRoute },
   { path: "/v1/status", pattern: new RegExp(`^${API_BASE}/status$`), GET: statusRoute },
   { path: "/v1/metrics", pattern: new RegExp(`^${API_BASE}/metrics$`), GET: metricsRoute },
+  { path: "/v1/health/platforms", pattern: new RegExp(`^${API_BASE}/health/platforms$`), GET: platformHealthRoute },
   {
     path: "/v1/health",
     pattern: new RegExp(`^${API_BASE}/health$`),
@@ -545,9 +578,12 @@ function createApiServer(deps) {
 export function startApiServer({
   addUrls,
   listJobs,
+  countJobs = null,
+  getJob = null,
   removeJob = () => Promise.resolve(false),
   status = null,
   config = readConfig,
+  platformHealth = null,
   port = API_PORT,
   token = null,
   watch = null,
@@ -567,11 +603,14 @@ export function startApiServer({
   const server = createApiServer({
     addUrls,
     listJobs,
+    countJobs,
+    getJob,
     removeJob,
     token,
     watch,
     status,
     config,
+    platformHealth,
     allowedHosts,
     rateLimit,
     limiter

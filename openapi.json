@@ -92,6 +92,52 @@
         }
       }
     },
+    "/v1/health/platforms": {
+      "get": {
+        "operationId": "getPlatformHealth",
+        "description": "Canary health for each supported platform.",
+        "responses": {
+          "200": {
+            "description": "Platform health and aggregate counts",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PlatformHealth" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Problem" },
+          "403": { "$ref": "#/components/responses/Problem" },
+          "405": { "$ref": "#/components/responses/Problem" },
+          "429": { "$ref": "#/components/responses/Problem" },
+          "500": { "$ref": "#/components/responses/Problem" }
+        }
+      },
+      "head": {
+        "operationId": "headGetPlatformHealth",
+        "description": "Protocol-level HEAD equivalent of GET; returns the same status and headers without a body.",
+        "responses": {
+          "200": { "description": "Headers for the corresponding GET response" },
+          "401": { "$ref": "#/components/responses/Problem" },
+          "403": { "$ref": "#/components/responses/Problem" },
+          "405": { "$ref": "#/components/responses/Problem" },
+          "429": { "$ref": "#/components/responses/Problem" },
+          "500": { "$ref": "#/components/responses/Problem" }
+        }
+      },
+      "options": {
+        "operationId": "optionsGetPlatformHealth",
+        "description": "Protocol-level capability query. This HTTP transport does not enable CORS.",
+        "responses": {
+          "204": {
+            "description": "Allowed methods are returned in the Allow header",
+            "headers": { "Allow": { "schema": { "type": "string" } } }
+          },
+          "401": { "$ref": "#/components/responses/Problem" },
+          "403": { "$ref": "#/components/responses/Problem" },
+          "429": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
     "/v1/config": {
       "get": {
         "operationId": "getConfig",
@@ -967,6 +1013,57 @@
           "status": {
             "const": "ok"
           }
+        },
+        "additionalProperties": false
+      },
+      "PlatformHealth": {
+        "type": "object",
+        "required": ["items", "summary"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/PlatformHealthItem" }
+          },
+          "summary": { "$ref": "#/components/schemas/PlatformHealthSummary" }
+        },
+        "additionalProperties": false
+      },
+      "PlatformHealthItem": {
+        "type": "object",
+        "required": [
+          "platform",
+          "state",
+          "reason",
+          "jobs",
+          "successes",
+          "mediaFound",
+          "mediaJobs",
+          "zeroMedia",
+          "consecutiveZeros",
+          "errors"
+        ],
+        "properties": {
+          "platform": { "type": "string" },
+          "state": { "type": "string", "enum": ["ok", "degraded", "broken"] },
+          "reason": { "type": "string" },
+          "jobs": { "type": "integer" },
+          "successes": { "type": "integer" },
+          "mediaFound": { "type": "integer" },
+          "mediaJobs": { "type": "integer" },
+          "zeroMedia": { "type": "integer" },
+          "consecutiveZeros": { "type": "integer" },
+          "errors": { "type": "object", "additionalProperties": { "type": "integer" } }
+        },
+        "additionalProperties": false
+      },
+      "PlatformHealthSummary": {
+        "type": "object",
+        "required": ["total", "ok", "degraded", "broken"],
+        "properties": {
+          "total": { "type": "integer" },
+          "ok": { "type": "integer" },
+          "degraded": { "type": "integer" },
+          "broken": { "type": "integer" }
         },
         "additionalProperties": false
       },

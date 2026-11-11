@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
-import { classify, createNotifier, describe, sendNotification } from "../../cli/notify.mjs";
+import {
+  classify,
+  createNotifier,
+  createPlatformHealthNotifier,
+  describe,
+  sendNotification
+} from "../../cli/notify.mjs";
 
 const job = (extra = {}) => ({
   jobId: "11111111-1111-4111-8111-111111111111",
@@ -226,4 +232,32 @@ test("a broken settings file or a failing web address is logged and does not sto
   });
   await failing.tick();
   assert.match(logs[0], /Could not send a notification: ECONNREFUSED/);
+});
+
+test("platform health notifications debounce state changes and report recovery", async () => {
+  let clock = 0;
+  let state = "broken";
+  const sent = [];
+  const notifier = createPlatformHealthNotifier({
+    loadConfig: async () => ({ notify: NOTIFY }),
+    getHealth: async () => [{ platform: "Instagram", state, reason: `${state} reason` }],
+    now: () => clock,
+    debounceMs: 100,
+    fetchImpl: async (_url, init) => {
+      sent.push(JSON.parse(init.body));
+      return { ok: true };
+    }
+  });
+  await notifier.tick();
+  assert.equal(sent.length, 0);
+  clock = 101;
+  await notifier.tick();
+  assert.equal(sent[0].state, "broken");
+  state = "ok";
+  await notifier.tick();
+  clock = 202;
+  await notifier.tick();
+  assert.equal(sent[1].state, "ok");
+  await notifier.tick();
+  assert.equal(sent.length, 2, "a stable state is announced only once");
 });

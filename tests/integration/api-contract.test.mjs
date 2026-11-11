@@ -400,6 +400,7 @@ test("live REST responses match OpenAPI statuses, headers, media types, and sche
       ["GET", "/v1/status"],
       ["GET", "/v1/metrics"],
       ["GET", "/v1/health"],
+      ["GET", "/v1/health/platforms"],
       ["GET", "/v1/jobs"],
       ["POST", "/v1/jobs", { url: PROFILE_URL }],
       ["GET", `/v1/jobs/${ID}`],
@@ -544,7 +545,8 @@ test("every REST operation is reachable through an MCP tool", () => {
     list_watched: {},
     get_watched: { platform: "instagram", account: "alice" },
     unwatch_account: { platform: "instagram", account: "alice" },
-    queue_health: {}
+    queue_health: {},
+    platform_health: {}
   };
   const mapped = TOOLS.map(tool => {
     const [method, requestPath] = tool.request(args[tool.name]);
@@ -580,6 +582,7 @@ test("the same REST and MCP scenarios produce equal data and mapped errors", () 
       [["GET", "/v1/status"], ["get_status"]],
       [["GET", "/v1/metrics"], ["get_metrics"]],
       [["GET", "/v1/health"], ["queue_health"]],
+      [["GET", "/v1/health/platforms"], ["platform_health"]],
       [["GET", "/v1/jobs"], ["list_jobs"]],
       [
         ["GET", `/v1/jobs/${ID.toUpperCase()}`],
