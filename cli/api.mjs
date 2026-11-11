@@ -87,6 +87,7 @@ const TITLES = {
   403: "Forbidden",
   404: "Not Found",
   405: "Method Not Allowed",
+  429: "Too Many Requests",
   409: "Conflict",
   413: "Content Too Large",
   415: "Unsupported Media Type",
@@ -293,13 +294,7 @@ async function createWatchRoute({ request, response, deps }) {
   if (!allowProperties(payload, ["url"], response)) {
     return;
   }
-  let outcome;
-  try {
-    outcome = await deps.watch.add(url);
-  } catch (error) {
-    problem(response, 422, error?.message || "The link was not accepted.");
-    return;
-  }
+  const outcome = await deps.watch.add(url);
   if (!outcome.added.length) {
     problem(response, 409, "This account is already being watched.");
     return;
@@ -310,7 +305,12 @@ async function createWatchRoute({ request, response, deps }) {
 }
 
 async function findWatch(deps, params) {
-  const id = `${decodeURIComponent(params[0]).toLowerCase()}/${decodeURIComponent(params[1]).toLowerCase()}`;
+  let id;
+  try {
+    id = `${decodeURIComponent(params[0]).toLowerCase()}/${decodeURIComponent(params[1]).toLowerCase()}`;
+  } catch {
+    return null;
+  }
   return watchViews(await deps.watch.list()).find(item => item.id === id) ?? null;
 }
 
@@ -355,12 +355,42 @@ async function configRoute({ response, deps }) {
 }
 
 // Prometheus text format: one gauge per job state, whether an extension has reported in, and uptime.
+const PLATFORM_METRICS = [
+  ["configured_workers", "Configured worker count per platform."],
+  ["effective_workers", "Effective worker count per platform."],
+  ["backoff_until_timestamp_seconds", "Platform back-off end time as a Unix timestamp, or zero."],
+  ["backoff_level", "Consecutive platform back-off level."]
+];
+
+function platformMetricValue(metric, value) {
+  switch (metric) {
+    case "configured_workers":
+      return value.configuredWorkers;
+    case "effective_workers":
+      return value.effectiveWorkers;
+    case "backoff_until_timestamp_seconds":
+      return value.backoffUntil ? Math.round(Date.parse(value.backoffUntil) / 1000) : 0;
+    default:
+      return value.backoffLevel;
+  }
+}
+
+function appendPlatformMetrics(lines, platforms) {
+  for (const [metric, help] of PLATFORM_METRICS) {
+    lines.push(`# HELP pms_platform_${metric} ${help}`, `# TYPE pms_platform_${metric} gauge`);
+    for (const [platform, value] of Object.entries(platforms)) {
+      lines.push(`pms_platform_${metric}{platform="${platform}"} ${Number(platformMetricValue(metric, value)) || 0}`);
+    }
+  }
+}
+
 async function metricsRoute({ response, deps }) {
   const state = deps.status ? await deps.status() : {};
   const lines = ["# HELP pms_jobs Jobs in the queue by status.", "# TYPE pms_jobs gauge"];
   for (const [status, count] of Object.entries(state.jobs ?? {})) {
     lines.push(`pms_jobs{status="${status}"} ${count}`);
   }
+  appendPlatformMetrics(lines, state.platforms ?? {});
   lines.push(
     "# HELP pms_extension_seen_timestamp_seconds When the browser extension last reported in.",
     "# TYPE pms_extension_seen_timestamp_seconds gauge",

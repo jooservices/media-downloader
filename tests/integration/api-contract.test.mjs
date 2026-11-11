@@ -180,7 +180,7 @@ function assertSuccessContract(contract, operation) {
 }
 
 function expectedResponses(operation) {
-  const statuses = new Set(["403", "405", "500"]);
+  const statuses = new Set(["403", "405", "429", "500"]);
   if (operation.method === "GET") {
     statuses.add("200");
   }
