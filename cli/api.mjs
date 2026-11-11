@@ -9,6 +9,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { normalizeProfileUrl } from "./store.mjs";
+import { loadConfig as readConfig } from "./config.mjs";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -18,6 +19,13 @@ export const API_PORT = Number(process.env.PMS_API_PORT) || 38542;
 export const API_BASE = "/v1";
 const MAX_BODY_BYTES = 8192;
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
+const JOB_STATUSES = new Set(["queued", "running", "complete", "incomplete", "paused", "error"]);
+const ALREADY_QUEUED = "already queued or done";
+const DEFAULT_PAGE = 50;
+const MAX_PAGE = 100;
+const RATE_WINDOW_MS = 60_000;
+const RATE_LIMIT = 120;
+
 function isJsonContentType(value) {
   const [mediaType, ...parameters] = value.split(";");
   return (
@@ -25,13 +33,6 @@ function isJsonContentType(value) {
     parameters.every(parameter => /^\s*[\w-]+\s*=\s*(?:[\w.-]+|"[^"]*")\s*$/.test(parameter))
   );
 }
-const JOB_STATUSES = new Set(["queued", "running", "complete", "incomplete", "paused", "error"]);
-const ALREADY_QUEUED = "already queued or done";
-const DEFAULT_PAGE = 50;
-const MAX_PAGE = 100;
-const RATE_WINDOW_MS = 60_000;
-const RATE_LIMIT = 120;
-const PLATFORMS = new Set(["instagram", "facebook", "twitter", "tiktok"]);
 
 export function jobView(job) {
   return {
@@ -97,11 +98,11 @@ const TITLES = {
   403: "Forbidden",
   404: "Not Found",
   405: "Method Not Allowed",
+  429: "Too Many Requests",
   409: "Conflict",
   413: "Content Too Large",
   415: "Unsupported Media Type",
   422: "Unprocessable Content",
-  429: "Too Many Requests",
   500: "Internal Server Error"
 };
 
@@ -128,13 +129,21 @@ function readBody(request) {
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
         tooLarge = true;
+        chunks.length = 0;
         request.resume();
         reject(Object.assign(new Error("The request body is too large."), { status: 413 }));
         return;
       }
       chunks.push(chunk);
     });
-    request.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    request.on("error", reject);
+    request.on("end", () => {
+      if (tooLarge) {
+        reject(Object.assign(new Error("The request body is too large."), { status: 413 }));
+      } else {
+        resolve(Buffer.concat(chunks).toString("utf8"));
+      }
+    });
   });
 }
 
@@ -144,12 +153,7 @@ async function readJsonObject(request, response) {
   try {
     text = await readBody(request);
   } catch (error) {
-    const status = error?.status || 400;
-    problem(
-      response,
-      status,
-      status === 413 ? "The request body is too large." : "The request body could not be read."
-    );
+    problem(response, error?.status || 400, error?.message || "The request body could not be read.");
     return null;
   }
   let payload;
@@ -167,27 +171,36 @@ async function readJsonObject(request, response) {
 }
 
 function readHttpsUrl(payload, response) {
-  if (typeof payload.url !== "string" || payload.url.length > 2048) {
-    problem(response, 422, "url must be a supported profile or post link.");
+  if (typeof payload.url !== "string" || payload.url.length > 2048 || payload.url !== payload.url.trim()) {
+    problem(response, 422, "url must be an https link.");
     return null;
   }
   try {
     const parsed = new URL(payload.url);
-    if (parsed.username || parsed.password || parsed.port) {
+    if (!isHttpsUrl(payload.url) || parsed.username || parsed.password || parsed.port) {
       throw new Error("URL authority is not allowed.");
     }
     normalizeProfileUrl(payload.url);
   } catch {
-    problem(response, 422, "Use a supported Instagram, Facebook, X, or TikTok profile or post URL.");
+    problem(response, 422, "url must be an https link.");
     return null;
   }
   return payload.url;
 }
 
-function hasOnlyKeys(payload, allowed, response) {
-  const unknown = Object.keys(payload).find(key => !allowed.includes(key));
-  if (unknown) {
-    problem(response, 422, "The request contains an unsupported field.");
+function isHttpsUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && Boolean(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function allowProperties(payload, allowed, response) {
+  const unexpected = Object.keys(payload).find(key => !allowed.includes(key));
+  if (unexpected) {
+    problem(response, 422, `Unexpected property: ${unexpected}.`);
     return false;
   }
   return true;
@@ -217,10 +230,11 @@ async function listJobsRoute({ response, url, deps }) {
     problem(response, 400, page.error);
     return;
   }
-  const selected = await deps.listJobs({ status: page.status, limit: page.limit, offset: page.offset });
-  const total = deps.countJobs
-    ? await deps.countJobs(page.status)
-    : (await deps.listJobs()).filter(job => !page.status || job.status === page.status).length;
+  const all = deps.countJobs ? null : (await deps.listJobs()).filter(job => !page.status || job.status === page.status);
+  const selected = deps.countJobs
+    ? await deps.listJobs({ status: page.status, limit: page.limit, offset: page.offset })
+    : all.slice(page.offset, page.offset + page.limit);
+  const total = deps.countJobs ? await deps.countJobs(page.status) : all.length;
   const items = selected.map(jobView);
   const next = page.offset + page.limit < total;
   const query = new URLSearchParams({ limit: String(page.limit), offset: String(page.offset + page.limit) });
@@ -237,15 +251,15 @@ async function listJobsRoute({ response, url, deps }) {
 
 async function createJobRoute({ request, response, deps }) {
   const payload = await readJsonObject(request, response);
-  if (payload && !hasOnlyKeys(payload, ["url", "again"], response)) {
-    return;
-  }
-  if (payload && payload.again !== undefined && typeof payload.again !== "boolean") {
-    problem(response, 422, "again must be a boolean.");
-    return;
-  }
   const url = payload && readHttpsUrl(payload, response);
   if (!url) {
+    return;
+  }
+  if (!allowProperties(payload, ["url", "again"], response)) {
+    return;
+  }
+  if (payload.again !== undefined && typeof payload.again !== "boolean") {
+    problem(response, 422, "again must be a boolean.");
     return;
   }
   const { created, skipped } = await deps.addUrls([url], { force: payload.again === true });
@@ -290,20 +304,14 @@ async function listWatchesRoute({ response, deps }) {
 
 async function createWatchRoute({ request, response, deps }) {
   const payload = await readJsonObject(request, response);
-  if (payload && !hasOnlyKeys(payload, ["url"], response)) {
-    return;
-  }
   const url = payload && readHttpsUrl(payload, response);
   if (!url) {
     return;
   }
-  let outcome;
-  try {
-    outcome = await deps.watch.add(url);
-  } catch {
-    problem(response, 500, "The request failed.");
+  if (!allowProperties(payload, ["url"], response)) {
     return;
   }
+  const outcome = await deps.watch.add(url);
   if (!outcome.added.length) {
     problem(response, 409, "This account is already being watched.");
     return;
@@ -314,18 +322,12 @@ async function createWatchRoute({ request, response, deps }) {
 }
 
 async function findWatch(deps, params) {
-  let platform;
-  let account;
+  let id;
   try {
-    platform = decodeURIComponent(params[0]).toLowerCase();
-    account = decodeURIComponent(params[1]).toLowerCase();
+    id = `${decodeURIComponent(params[0]).toLowerCase()}/${decodeURIComponent(params[1]).toLowerCase()}`;
   } catch {
     return null;
   }
-  if (!PLATFORMS.has(platform)) {
-    return null;
-  }
-  const id = `${platform}/${account}`;
   return watchViews(await deps.watch.list()).find(item => item.id === id) ?? null;
 }
 
@@ -356,6 +358,20 @@ const ID = "([0-9a-f-]{36})";
 const SEGMENT = "([^/]+)";
 const startedAt = Date.now();
 
+async function statusRoute({ response, deps }) {
+  const state = deps.status ? await deps.status() : {};
+  send(response, 200, { uptimeSeconds: Math.round((Date.now() - startedAt) / 1000), ...state });
+}
+
+async function configRoute({ response, deps }) {
+  const config = await deps.config();
+  send(response, 200, {
+    ...config,
+    notify: config.notify ? { enabled: true, format: config.notify.format, events: config.notify.events } : null
+  });
+}
+
+// Prometheus text format: one gauge per job state, whether an extension has reported in, and uptime.
 const PLATFORM_METRICS = [
   ["configured_workers", "Configured worker count per platform."],
   ["effective_workers", "Effective worker count per platform."],
@@ -385,11 +401,6 @@ function appendPlatformMetrics(lines, platforms) {
   }
 }
 
-async function statusRoute({ response, deps }) {
-  const state = deps.status ? await deps.status() : {};
-  send(response, 200, { uptimeSeconds: Math.round((Date.now() - startedAt) / 1000), ...state });
-}
-
 async function platformHealthRoute({ response, deps }) {
   const items = deps.platformHealth ? await deps.platformHealth() : assessPlatforms(await deps.listJobs());
   send(response, 200, {
@@ -403,7 +414,7 @@ async function platformHealthRoute({ response, deps }) {
   });
 }
 
-// Prometheus text format: one gauge per job state, whether an extension has reported in, and uptime.
+// Prometheus text format includes queue state, platform worker/back-off state, canary health and uptime.
 async function metricsRoute({ response, deps }) {
   const state = deps.status ? await deps.status() : {};
   const lines = ["# HELP pms_jobs Jobs in the queue by status.", "# TYPE pms_jobs gauge"];
@@ -411,14 +422,6 @@ async function metricsRoute({ response, deps }) {
     lines.push(`pms_jobs{status="${status}"} ${count}`);
   }
   appendPlatformMetrics(lines, state.platforms ?? {});
-  lines.push(
-    "# HELP pms_extension_seen_timestamp_seconds When the browser extension last reported in.",
-    "# TYPE pms_extension_seen_timestamp_seconds gauge",
-    `pms_extension_seen_timestamp_seconds ${state.extension?.at ? Math.round(Date.parse(state.extension.at) / 1000) : 0}`,
-    "# HELP pms_uptime_seconds Seconds since the API started.",
-    "# TYPE pms_uptime_seconds gauge",
-    `pms_uptime_seconds ${Math.round((Date.now() - startedAt) / 1000)}`
-  );
   const health = deps.platformHealth ? await deps.platformHealth() : assessPlatforms(await deps.listJobs());
   lines.push(
     "# HELP pms_platform_health Platform canary state (ok=0, degraded=1, broken=2).",
@@ -428,6 +431,14 @@ async function metricsRoute({ response, deps }) {
     const value = { ok: 0, degraded: 1, broken: 2 }[item.state] ?? 0;
     lines.push(`pms_platform_health{platform="${item.platform.toLowerCase()}"} ${value}`);
   }
+  lines.push(
+    "# HELP pms_extension_seen_timestamp_seconds When the browser extension last reported in.",
+    "# TYPE pms_extension_seen_timestamp_seconds gauge",
+    `pms_extension_seen_timestamp_seconds ${state.extension?.at ? Math.round(Date.parse(state.extension.at) / 1000) : 0}`,
+    "# HELP pms_uptime_seconds Seconds since the API started.",
+    "# TYPE pms_uptime_seconds gauge",
+    `pms_uptime_seconds ${Math.round((Date.now() - startedAt) / 1000)}`
+  );
   const payload = lines.join(String.fromCharCode(10)) + String.fromCharCode(10);
   response.writeHead(200, {
     "Content-Type": "text/plain; version=0.0.4; charset=utf-8",
@@ -438,24 +449,46 @@ async function metricsRoute({ response, deps }) {
 }
 
 const ROUTES = [
-  { pattern: new RegExp(`^${API_BASE}/status$`), GET: statusRoute },
-  { pattern: new RegExp(`^${API_BASE}/metrics$`), GET: metricsRoute },
-  { pattern: new RegExp(`^${API_BASE}/health/platforms$`), GET: platformHealthRoute },
+  { path: "/v1/config", pattern: new RegExp(`^${API_BASE}/config$`), GET: configRoute },
+  { path: "/v1/status", pattern: new RegExp(`^${API_BASE}/status$`), GET: statusRoute },
+  { path: "/v1/metrics", pattern: new RegExp(`^${API_BASE}/metrics$`), GET: metricsRoute },
+  { path: "/v1/health/platforms", pattern: new RegExp(`^${API_BASE}/health/platforms$`), GET: platformHealthRoute },
   {
+    path: "/v1/health",
     pattern: new RegExp(`^${API_BASE}/health$`),
     open: true,
     GET: ({ response }) => send(response, 200, { status: "ok" })
   },
-  { pattern: new RegExp(`^${API_BASE}/jobs$`), GET: listJobsRoute, POST: createJobRoute },
-  { pattern: new RegExp(`^${API_BASE}/jobs/${ID}$`, "i"), GET: jobRoute, DELETE: deleteJobRoute },
-  { pattern: new RegExp(`^${API_BASE}/watches$`), GET: listWatchesRoute, POST: createWatchRoute, needs: "watch" },
+  { path: "/v1/jobs", pattern: new RegExp(`^${API_BASE}/jobs$`), GET: listJobsRoute, POST: createJobRoute },
   {
+    path: "/v1/jobs/{id}",
+    pattern: new RegExp(`^${API_BASE}/jobs/${ID}$`, "i"),
+    GET: jobRoute,
+    DELETE: deleteJobRoute
+  },
+  {
+    path: "/v1/watches",
+    pattern: new RegExp(`^${API_BASE}/watches$`),
+    GET: listWatchesRoute,
+    POST: createWatchRoute,
+    needs: "watch"
+  },
+  {
+    path: "/v1/watches/{platform}/{account}",
     pattern: new RegExp(`^${API_BASE}/watches/${SEGMENT}/${SEGMENT}$`),
     GET: watchRoute,
     DELETE: deleteWatchRoute,
     needs: "watch"
   }
 ];
+export const API_OPERATIONS = ROUTES.flatMap(routeDefinition =>
+  ["GET", "POST", "DELETE"]
+    .filter(method => routeDefinition[method])
+    .map(method => ({
+      method,
+      path: routeDefinition.path
+    }))
+);
 const METHODS = ["GET", "POST", "DELETE"];
 
 function hasValidToken(request, token) {
@@ -490,7 +523,6 @@ function createLimiter() {
   };
 }
 
-// Host, token and body type are checked before any route runs. Returns false after it has answered.
 function rateLimited(request, response, deps, category) {
   if (!deps.limiter(request, Date.now(), deps.rateLimit, category)) {
     return false;
@@ -593,7 +625,6 @@ async function dispatchRoute(request, response, deps, url, candidate, match) {
     return;
   }
   if (request.method === "POST" && !isJsonContentType(request.headers["content-type"] || "")) {
-    // JSON only: a web page cannot send this type to another origin without a CORS preflight, which is never answered.
     problem(response, 415, "Content-Type must be application/json.");
     return;
   }
@@ -644,6 +675,7 @@ export function startApiServer({
   getJob = null,
   removeJob = () => Promise.resolve(false),
   status = null,
+  config = readConfig,
   platformHealth = null,
   port = API_PORT,
   token = null,
@@ -670,6 +702,7 @@ export function startApiServer({
     token,
     watch,
     status,
+    config,
     platformHealth,
     allowedHosts,
     rateLimit,

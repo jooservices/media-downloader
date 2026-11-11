@@ -121,28 +121,27 @@ The queue starts that browser when a job needs it and opens every job in a windo
 
 Settings for containers and servers: `PMS_DATA_DIR` (where everything is kept), `PMS_DOWNLOAD_DIR` (the download folder when `config.json` names none), `PMS_BROWSER` and `PMS_BROWSER_ARGS` (the browser to run and extra switches), `PMS_API_HOST` and `PMS_API_ALLOWED_HOSTS` (listen beyond this computer, which needs the token, and the Host names to accept).
 
-The API token can be replaced with `node cli/mediasaver.mjs api-token rotate`; restart `serve` or the installed service afterwards. Remote binding uses plain HTTP, so place it behind a TLS reverse proxy and restrict access. See [the REST API security notes](docs/security.md) for the threat model and deployment guidance.
-
 ## REST API
 
 While `serve` runs it offers a REST API on `http://127.0.0.1:38542/v1`. It listens on loopback only, rejects any other Host header, sends no CORS headers, and every call except `GET /v1/health` needs the token that `serve` keeps in `api-token` (`Authorization: Bearer <token>`). Bodies are JSON (`Content-Type: application/json`); errors are RFC 9457 `application/problem+json` documents.
-
-The OpenAPI description is [docs/openapi.yaml](docs/openapi.yaml).
 
 | Resource                           | Methods                                                                                                                  |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `/v1/health/platforms`             | `GET` → 200, per-platform canary state, reason, counts, and error classes                                                |
 | `/v1/health`                       | `GET` → 200                                                                                                              |
+| `/v1/config`                       | `GET` → 200, active queue settings                                                                                       |
+| `/v1/status`                       | `GET` → 200, queue and extension state                                                                                   |
+| `/v1/metrics`                      | `GET` → 200, Prometheus text                                                                                             |
 | `/v1/jobs`                         | `GET` → 200, a page of jobs (`?status=&limit=&offset=`, `Link: rel="next"`); `POST {"url", "again"?}` → 201 + `Location` |
 | `/v1/jobs/{id}`                    | `GET` → 200 · `DELETE` → 204 (cancels an active job, removes a finished one)                                             |
 | `/v1/watches`                      | `GET` → 200 · `POST {"url"}` → 201 + `Location`                                                                          |
 | `/v1/watches/{platform}/{account}` | `GET` → 200 · `DELETE` → 204                                                                                             |
-| `/v1/status`                       | `GET` → 200, queue and per-platform worker/back-off state                                                                |
-| `/v1/metrics`                      | `GET` → 200, Prometheus text metrics                                                                                     |
 
 Other answers: 400 malformed JSON or query, 401 no/wrong token, 404 unknown resource, 405 wrong method (with `Allow`), 409 the account is already queued, done or watched (send `"again": true` to run it anew), 413 body too large, 415 not JSON, 422 a link that is not a supported profile.
 
-`GET /v1/status` includes `platforms`, keyed by `instagram`, `facebook`, `twitter`, and `tiktok`. Each entry has `configuredWorkers`, `effectiveWorkers`, `backoffUntil` (an ISO timestamp or `null`), and `backoffLevel`. A detected rate limit or challenge pauses new jobs for that platform for 15 minutes, doubling up to two hours on repeated signals. Other platforms continue normally. `GET /v1/metrics` exposes the same values as `pms_platform_configured_workers`, `pms_platform_effective_workers`, `pms_platform_backoff_until_timestamp_seconds`, and `pms_platform_backoff_level` gauges.
+The `/v1/config` response redacts notification webhook URLs and returns only whether notifications are enabled, their format, and selected events. The complete request, response, status-code, and schema contract is in [openapi.json](openapi.json). Contract tests compare its operations to the server route registry.
+
+`GET /v1/status` includes `platforms`, keyed by `instagram`, `facebook`, `twitter`, and `tiktok`. Each entry reports configured and effective worker counts, the back-off end time, and the back-off level. A detected rate limit or challenge pauses new jobs for that platform for 15 minutes, doubling up to two hours on repeated signals. Other platforms continue normally. `GET /v1/metrics` exposes the same values as `pms_platform_configured_workers`, `pms_platform_effective_workers`, `pms_platform_backoff_until_timestamp_seconds`, and `pms_platform_backoff_level` gauges.
 
 ```powershell
 $token = (Get-Content "$env:LOCALAPPDATAPageMediaSaverapi-token").Trim()
@@ -155,15 +154,23 @@ A Facebook profile still adds Photos, Reels and Videos, so `items` can hold seve
 
 ## MCP (for AI assistants)
 
-`node cli/mediasaver.mjs mcp` is an MCP server on stdin/stdout. It only calls the REST API above, so the queue (`serve`, or `service install`) must be running. Tools: `download_account`, `list_jobs`, `get_job`, `cancel_job`, `watch_account`, `list_watched`, `unwatch_account`, `queue_health`, `queue_status`, `platform_health`. In an MCP client's configuration:
+`node cli/mediasaver.mjs mcp` is an MCP server on stdin/stdout. It only calls the REST API above, so the queue (`serve`, or `service install`) must be running. Its tools cover every REST operation: `download_account`, `list_jobs`, `get_job`, `cancel_job`, `get_config`, `get_status`, `queue_status`, `get_metrics`, `watch_account`, `list_watched`, `get_watched`, `unwatch_account`, `queue_health`, and `platform_health`. MCP validates argument types, required fields, enumerated values, bounds, HTTPS links, and unknown properties before making a request. REST problem responses are returned to the agent with their HTTP status, title, and detail. In an MCP client's configuration:
 
 ```json
 {
   "mcpServers": {
-    "media-downloader": { "command": "node", "args": ["C:\path\to\media-downloader\cli\mediasaver.mjs", "mcp"] }
+    "media-downloader": { "command": "node", "args": ["C:\\path\\to\\media-downloader\\cli\\mediasaver.mjs", "mcp"] }
   }
 }
 ```
+
+### AI-agent quickstart
+
+1. Start the queue with `node cli/mediasaver.mjs serve` (or install its user service), and add the MCP server configuration above to the agent's MCP settings.
+2. Ask the agent to download a profile, for example: “Queue a download of `https://www.instagram.com/name/` and tell me the job id.” The agent calls `download_account` with the profile URL.
+3. The agent can call `get_job` with the returned id to check progress, or `list_jobs` with `status: "running"` to inspect active jobs. Files are saved by the queue using the configured download location.
+
+The agent can also call `watch_account` to enable recurring scans, `get_config` to inspect active settings, `get_status` to inspect queue health details, and `get_metrics` for Prometheus text. These tools use the same authenticated local API and validation as REST.
 
 `watch` is `serve` for a fixed list of accounts (`watch add <url>` writes them to `%LOCALAPPDATA%\PageMediaSaver\watch.txt`). About every 6 hours (each account waits up to 20% longer, by a fixed amount of its own, so they do not all wake together; an account whose last scans ended in trouble is visited at half, then a quarter, of that pace) an account whose last scan has finished is queued again, so new stories, highlights, reels and photos are picked up. Anything already saved is skipped. A Facebook profile link is queued as the profile plus its Photos, Reels and Videos tabs. An Instagram profile scan also opens the current story tray and highlight reels. When a job ends, the CLI prints the account folder and how many files were new versus already saved.
 

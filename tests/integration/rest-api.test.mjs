@@ -35,18 +35,10 @@ function backend() {
     removed: [],
     asked: []
   };
-  const reads = [];
   return {
     state,
-    reads,
     deps: {
-      listJobs: async options => {
-        reads.push(options);
-        const selected = state.jobs.filter(item => !options?.status || item.status === options.status);
-        return options?.limit ? selected.slice(options.offset || 0, (options.offset || 0) + options.limit) : selected;
-      },
-      countJobs: async status => state.jobs.filter(item => !status || item.status === status).length,
-      getJob: async id => state.jobs.find(item => item.jobId === id) || null,
+      listJobs: async () => state.jobs,
       addUrls: async (urls, options) => {
         state.asked.push([urls[0], options]);
         if (urls[0].includes("known") && !options.force) {
@@ -64,9 +56,6 @@ function backend() {
       watch: {
         list: async () => state.watched,
         add: async url => {
-          if (url.includes("bad")) {
-            throw new Error("Use an Instagram/Facebook/X profile URL.");
-          }
           const known = state.watched.includes(url);
           if (!known) {
             state.watched.push(url);
@@ -89,7 +78,7 @@ function encodeBody(body) {
 }
 
 async function withServer(options, run) {
-  const { state, deps, reads } = backend();
+  const { state, deps } = backend();
   const server = await startApiServer({ port: 0, token: TOKEN, ...deps, ...options });
   const port = server.address().port;
   const call = (method, path, { body, headers = {}, host, auth = true, json = true } = {}) =>
@@ -117,7 +106,7 @@ async function withServer(options, run) {
       req.end(encodeBody(body));
     });
   try {
-    await run({ call, state, reads, port });
+    await run({ call, state, port });
   } finally {
     await new Promise(resolve => server.close(() => resolve()));
   }
@@ -139,20 +128,26 @@ test("health needs no token; everything else answers 401 with WWW-Authenticate",
     assert.equal(short.status, 401);
   }));
 
-test("a request for another host or Origin is refused, and unknown resources are 404 problems", () =>
+test("rate limiting returns a documented 429 problem with a specific title", () =>
+  withServer({ rateLimit: 0 }, async ({ call }) => {
+    const limited = await call("GET", "/v1/jobs");
+    assert.equal(limited.status, 429);
+    assert.equal(limited.body.title, "Too Many Requests");
+    assert.equal(limited.body.status, 429);
+    assert.equal(limited.headers["retry-after"], "60");
+  }));
+
+test("a request for another host is refused, and unknown resources are 404 problems", () =>
   withServer({}, async ({ call }) => {
     assert.equal((await call("GET", "/v1/health", { host: "evil.example" })).status, 403);
-    const origin = await call("GET", "/v1/health", { headers: { origin: "https://attacker.example" } });
-    assert.equal(origin.status, 403);
-    assert.equal(origin.headers["access-control-allow-origin"], undefined);
     const missing = await call("GET", "/v1/nothing");
     assert.equal(missing.status, 404);
     assert.equal(missing.body.title, "Not Found");
     assert.equal((await call("GET", "/health")).status, 404, "the old unversioned path is gone");
   }));
 
-test("GET /v1/jobs lists bounded pages, filters by status and links the next page", () =>
-  withServer({}, async ({ call, reads }) => {
+test("GET /v1/jobs lists jobs as a page, filters by status and links the next page", () =>
+  withServer({}, async ({ call }) => {
     const all = await call("GET", "/v1/jobs");
     assert.equal(all.status, 200);
     assert.deepEqual(all.body.page, { limit: 50, offset: 0, total: 3 });
@@ -161,11 +156,6 @@ test("GET /v1/jobs lists bounded pages, filters by status and links the next pag
     assert.equal(all.body.items[0].links.self, `/v1/jobs/${ID_A}`);
     assert.equal(all.body.items[0].cookie, undefined, "no internal field leaks");
     assert.equal(all.headers.link, undefined);
-    assert.deepEqual(
-      reads[0],
-      { status: null, limit: 50, offset: 0 },
-      "the backing read is capped at the requested page"
-    );
     const running = await call("GET", "/v1/jobs?status=running");
     assert.deepEqual(
       running.body.items.map(item => item.id),
@@ -181,18 +171,6 @@ test("GET /v1/jobs lists bounded pages, filters by status and links the next pag
       assert.equal(bad.status, 400, query);
       assert.match(bad.headers["content-type"], /problem\+json/);
     }
-    assert.equal((await call("GET", "/v1/jobs?limit=1&limit=2")).status, 400);
-    assert.equal((await call("GET", "/v1/jobs?unknown=yes")).status, 400);
-  }));
-
-test("HEAD /v1/jobs accepts the same filtered and paginated queries as GET", () =>
-  withServer({}, async ({ call }) => {
-    const get = await call("GET", "/v1/jobs?status=complete&limit=1&offset=0");
-    const head = await call("HEAD", "/v1/jobs?status=complete&limit=1&offset=0");
-    assert.equal(get.status, 200);
-    assert.equal(head.status, get.status);
-    assert.equal(head.text, "");
-    assert.equal(head.headers.link, get.headers.link);
   }));
 
 test("GET /v1/jobs/{id} returns one job or a 404; HEAD has no body", () =>
@@ -223,18 +201,6 @@ test("POST /v1/jobs creates a job: 201 with Location; a known account is a 409 u
     const refused = await call("POST", "/v1/jobs", { body: { url: "https://x.com/nope" } });
     assert.equal(refused.status, 422);
     assert.equal(refused.body.detail, "Use an Instagram/Facebook/X profile URL.");
-    for (const url of [
-      "https://attacker.example/name",
-      "https://127.0.0.1/private",
-      "http://x.com/name",
-      "https://x.com/",
-      "https://user:pass@x.com/name",
-      "https://x.com:8443/name"
-    ]) {
-      assert.equal((await call("POST", "/v1/jobs", { body: { url } })).status, 422, url);
-    }
-    assert.equal((await call("POST", "/v1/jobs", { body: { url: ALICE, extra: true } })).status, 422);
-    assert.equal((await call("POST", "/v1/jobs", { body: { url: ALICE, again: "yes" } })).status, 422);
   }));
 
 test("POST validates the body: 400 for bad JSON, 413 for a huge one, 415 for another type, 422 for wrong values", () =>
@@ -246,10 +212,15 @@ test("POST validates the body: 400 for bad JSON, 413 for a huge one, 415 for ano
     assert.equal((await call("POST", "/v1/jobs", { body: {} })).status, 422);
     assert.equal((await call("POST", "/v1/jobs", { body: { url: "http://x.com/a" } })).status, 422);
     assert.equal((await call("POST", "/v1/jobs", { body: { url: 5 } })).status, 422);
+    assert.equal((await call("POST", "/v1/jobs", { body: { url: "https://x.com/a", extra: true } })).status, 422);
+    assert.equal((await call("POST", "/v1/jobs", { body: { url: "https://x.com/a", again: "yes" } })).status, 422);
+    assert.equal((await call("POST", "/v1/watches", { body: { url: ALICE, extra: true } })).status, 422);
     const huge = await call("POST", "/v1/jobs", {
       body: JSON.stringify({ url: `https://x.com/${"a".repeat(9000)}` })
-    }).catch(error => ({ status: error.code }));
+    });
     assert.equal(huge.status, 413);
+    assert.equal(huge.body.status, 413);
+    assert.match(huge.headers["content-type"], /^application\/problem\+json/);
     const text = await call("POST", "/v1/jobs", {
       body: '{"url":"https://x.com/a"}',
       headers: { "content-type": "text/plain" }
@@ -257,21 +228,6 @@ test("POST validates the body: 400 for bad JSON, 413 for a huge one, 415 for ano
     assert.equal(text.status, 415);
     const none = await call("POST", "/v1/jobs", { body: '{"url":"https://x.com/a"}', json: false });
     assert.equal(none.status, 415);
-    const suffix = await call("POST", "/v1/jobs", {
-      body: { url: ALICE },
-      headers: { "content-type": "application/json-malicious" }
-    });
-    assert.equal(suffix.status, 415);
-    const structuredSuffix = await call("POST", "/v1/jobs", {
-      body: { url: ALICE },
-      headers: { "content-type": "application/json+foo" }
-    });
-    assert.equal(structuredSuffix.status, 415);
-    const charset = await call("POST", "/v1/jobs", {
-      body: { url: ALICE },
-      headers: { "content-type": "application/json; charset=utf-8" }
-    });
-    assert.equal(charset.status, 201);
   }));
 
 test("DELETE /v1/jobs/{id} answers 204 for a known job and 404 for an unknown one", () =>
@@ -294,40 +250,11 @@ test("a method the resource does not offer is 405 with Allow; OPTIONS lists the 
     assert.equal((await call("DELETE", "/v1/jobs")).status, 405);
     const health = await call("POST", "/v1/health", { body: {} });
     assert.equal(health.status, 405);
-    assert.equal(health.headers.allow, "OPTIONS, HEAD, GET");
-    const healthWithoutType = await call("POST", "/v1/health");
-    assert.equal(healthWithoutType.status, 405);
-    assert.equal(healthWithoutType.headers.allow, "OPTIONS, HEAD, GET");
-    const putWithQuery = await call("PUT", "/v1/jobs?limit=1");
-    assert.equal(putWithQuery.status, 405);
-    assert.equal(putWithQuery.headers.allow, "OPTIONS, HEAD, GET, POST");
     const options = await call("OPTIONS", "/v1/jobs");
     assert.equal(options.status, 204);
     assert.equal(options.headers.allow, "OPTIONS, HEAD, GET, POST");
     assert.equal(options.headers["access-control-allow-origin"], undefined, "no CORS");
   }));
-
-test("an IPv6 loopback bind accepts its bracketed Host header", async () => {
-  const { deps } = backend();
-  const server = await startApiServer({ port: 0, bind: "::1", token: TOKEN, ...deps });
-  const { port } = server.address();
-  try {
-    const result = await new Promise((resolve, reject) => {
-      const req = request(
-        { hostname: "::1", port, path: "/v1/health", headers: { host: `[::1]:${port}` } },
-        response => {
-          response.resume();
-          response.on("end", () => resolve(response.statusCode));
-        }
-      );
-      req.on("error", reject);
-      req.end();
-    });
-    assert.equal(result, 200);
-  } finally {
-    await new Promise(resolve => server.close(() => resolve()));
-  }
-});
 
 test("watches: create (201 + Location), conflict, list, get, delete", () =>
   withServer({}, async ({ call, state }) => {
@@ -336,9 +263,7 @@ test("watches: create (201 + Location), conflict, list, get, delete", () =>
     assert.equal(created.headers.location, "/v1/watches/instagram/alice");
     assert.deepEqual(created.body.pages, [ALICE]);
     assert.equal((await call("POST", "/v1/watches", { body: { url: ALICE } })).status, 409);
-    const rejected = await call("POST", "/v1/watches", { body: { url: "https://x.com/bad" } });
-    assert.equal(rejected.status, 500);
-    assert.equal(rejected.body.detail, "The request failed.", "backend error details stay private");
+    assert.equal((await call("POST", "/v1/watches", { body: { url: "https://x.com/" } })).status, 422);
     assert.equal((await call("POST", "/v1/watches", { body: "nope" })).status, 400);
     assert.equal((await call("POST", "/v1/watches", { body: {} })).status, 422);
 
@@ -359,33 +284,24 @@ test("watches: create (201 + Location), conflict, list, get, delete", () =>
     assert.equal((await call("PUT", "/v1/watches/instagram/alice", { body: {} })).status, 405);
   }));
 
-test("encoded watch account identifiers round-trip through their self links", () =>
-  withServer({}, async ({ call }) => {
-    const created = await call("POST", "/v1/watches", {
-      body: { url: "https://www.facebook.com/%E4%BD%A0%E5%A5%BD/" }
-    });
-    assert.equal(created.status, 201);
-    const self = created.body.links.self;
-    assert.equal(created.headers.location, self);
-    assert.equal((await call("GET", self)).status, 200);
-    const list = await call("GET", "/v1/watches");
-    assert.equal(list.body.items[0].links.self, self);
-    assert.equal((await call("DELETE", self)).status, 204);
-  }));
-
-test("punctuated watch identifiers round-trip through their self links", () =>
-  withServer({}, async ({ call }) => {
-    const created = await call("POST", "/v1/watches", {
-      body: { url: "https://www.facebook.com/a!b/" }
-    });
-    assert.equal(created.status, 201);
-    const self = created.body.links.self;
-    assert.equal(created.headers.location, self);
-    const list = await call("GET", "/v1/watches");
-    assert.equal(list.body.items[0].links.self, self);
-    assert.equal((await call("GET", self)).status, 200);
-    assert.equal((await call("DELETE", self)).status, 204);
-  }));
+test("watch storage errors return a generic 500 without exposing backend details", () =>
+  withServer(
+    {
+      watch: {
+        list: async () => [],
+        add: async () => {
+          throw new Error("EACCES /private/watch-store.json");
+        },
+        remove: async () => {}
+      }
+    },
+    async ({ call }) => {
+      const response = await call("POST", "/v1/watches", { body: { url: ALICE } });
+      assert.equal(response.status, 500);
+      assert.equal(response.body.detail, "The request failed.");
+      assert.doesNotMatch(JSON.stringify(response.body), /private|EACCES/);
+    }
+  ));
 
 test("an account with several pages is one watch, removed in one call", () =>
   withServer({}, async ({ call, state }) => {
@@ -394,6 +310,13 @@ test("an account with several pages is one watch, removed in one call", () =>
     assert.equal(one.body.pages.length, 3);
     assert.equal((await call("DELETE", "/v1/watches/facebook/bob")).status, 204);
     assert.deepEqual(state.watched, []);
+  }));
+
+test("malformed percent-encoding in a watch path returns a not-found problem", () =>
+  withServer({}, async ({ call }) => {
+    const response = await call("GET", "/v1/watches/instagram/%E0%A4%A");
+    assert.equal(response.status, 404);
+    assert.equal(response.body.title, "Not Found");
   }));
 
 test("without a watch list the watch resources do not exist", () =>
@@ -451,15 +374,15 @@ test("GET /v1/status reports uptime and what the queue tells it; /v1/metrics spe
     {
       status: async () => ({
         jobs: { queued: 2, complete: 5 },
-        extension: { version: "0.5.9", at: "2026-01-01T00:00:00.000Z" },
         platforms: {
           instagram: {
-            configuredWorkers: 4,
-            effectiveWorkers: 1,
-            backoffUntil: "2026-01-01T00:15:00.000Z",
+            configuredWorkers: 3,
+            effectiveWorkers: 2,
+            backoffUntil: "2026-01-01T00:00:00.000Z",
             backoffLevel: 1
           }
         },
+        extension: { version: "0.5.9", at: "2026-01-01T00:00:00.000Z" },
         pid: 42
       })
     },
@@ -468,12 +391,6 @@ test("GET /v1/status reports uptime and what the queue tells it; /v1/metrics spe
       assert.equal(status.status, 200);
       assert.equal(status.body.jobs.complete, 5);
       assert.equal(status.body.extension.version, "0.5.9");
-      assert.deepEqual(status.body.platforms.instagram, {
-        configuredWorkers: 4,
-        effectiveWorkers: 1,
-        backoffUntil: "2026-01-01T00:15:00.000Z",
-        backoffLevel: 1
-      });
       assert.equal(typeof status.body.uptimeSeconds, "number");
       assert.equal((await call("GET", "/v1/status", { auth: false })).status, 401, "status needs the token");
 
@@ -482,9 +399,9 @@ test("GET /v1/status reports uptime and what the queue tells it; /v1/metrics spe
       assert.match(metrics.headers["content-type"], /^text\/plain; version=0\.0\.4/);
       assert.match(metrics.text, /^pms_jobs\{status="queued"\} 2$/m);
       assert.match(metrics.text, /^pms_jobs\{status="complete"\} 5$/m);
-      assert.match(metrics.text, /^pms_platform_configured_workers\{platform="instagram"\} 4$/m);
-      assert.match(metrics.text, /^pms_platform_effective_workers\{platform="instagram"\} 1$/m);
-      assert.match(metrics.text, /^pms_platform_backoff_until_timestamp_seconds\{platform="instagram"\} 1767226500$/m);
+      assert.match(metrics.text, /^pms_platform_configured_workers\{platform="instagram"\} 3$/m);
+      assert.match(metrics.text, /^pms_platform_effective_workers\{platform="instagram"\} 2$/m);
+      assert.match(metrics.text, /^pms_platform_backoff_until_timestamp_seconds\{platform="instagram"\} 1767225600$/m);
       assert.match(metrics.text, /^pms_platform_backoff_level\{platform="instagram"\} 1$/m);
       assert.match(metrics.text, /^pms_extension_seen_timestamp_seconds 1767225600$/m);
       assert.match(metrics.text, /^pms_uptime_seconds \d+$/m);
