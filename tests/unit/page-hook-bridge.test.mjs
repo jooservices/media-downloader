@@ -230,6 +230,38 @@ test("hook: an unknown-size grid announcement can upgrade to a matching opened-p
   assert.equal(posted[1].message.media[0].url, `${IG}opened.jpg`);
 });
 
+test("hook: story tray promotes only unknown-size photos owned by the requested account", async () => {
+  const body = JSON.stringify({
+    reels_media: [
+      {
+        items: [
+          {
+            pk: "3917000000000000001",
+            product_type: "story",
+            media_type: 1,
+            user: { username: "someone" },
+            image_versions2: { candidates: [{ url: `${IG}story.jpg`, width: 700, height: 900 }] }
+          },
+          {
+            pk: "3917000000000000002",
+            product_type: "story",
+            media_type: 1,
+            user: { username: "someone_else" },
+            image_versions2: { candidates: [{ url: `${IG}other-story.jpg`, width: 700, height: 900 }] }
+          }
+        ]
+      }
+    ]
+  });
+  const second = loadHook({ pathname: "/stories/someone/", fetchImpl: async () => textResponse(body) });
+  await second.page.fetch("https://www.instagram.com/api/v1/feed/");
+  await tick();
+
+  const media = second.posted.flatMap(item => item.message.media);
+  assert.equal(media.find(entry => entry.id === "3917000000000000001").fullSize, true);
+  assert.equal(media.find(entry => entry.id === "3917000000000000002").fullSize, null);
+});
+
 test("hook: a feed response parsed after navigation keeps its photos uncovered", async () => {
   let resolveResponse;
   const { page, posted } = loadHook({

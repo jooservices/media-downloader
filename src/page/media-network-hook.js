@@ -26,16 +26,19 @@
       const segments = url.pathname.split("/").filter(Boolean);
       const page = site.classify?.(segments, url);
       let postId = null;
+      let storyAccount = null;
       if (platform === "Instagram" && page?.mediaPage) {
         if (page.kind === "post") {
           postId = segments[1];
         } else if (page.kind === "story" && segments.length === 3) {
           postId = segments[2];
+        } else if (page.kind === "story" && segments.length === 2) {
+          storyAccount = page.account;
         }
       }
-      return { instagramPostId: postId || null };
+      return { instagramPostId: postId || null, instagramStoryAccount: storyAccount || null };
     } catch {
-      return { instagramPostId: null };
+      return { instagramPostId: null, instagramStoryAccount: null };
     }
   }
 
@@ -83,8 +86,11 @@
           .map(entry =>
             entry.kind === "photo" &&
             entry.platform === "Instagram" &&
-            entry.id === context.instagramPostId &&
-            entry.fullSize === null
+            entry.fullSize === null &&
+            (entry.id === context.instagramPostId ||
+              (/^\d{3,40}$/.test(entry.id) &&
+                typeof context.instagramStoryAccount === "string" &&
+                entry.owner?.toLowerCase() === context.instagramStoryAccount.toLowerCase()))
               ? { ...entry, fullSize: true }
               : entry
           );
