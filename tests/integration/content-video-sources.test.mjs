@@ -484,7 +484,7 @@ test("a profile grid opens three unseen posts per pass and saves each one's cach
     gridLink(page, path)
   );
   const started = await page.ns.videoSources.openGridPosts("jasondchen", 10);
-  assert.equal(started, 3);
+  assert.deepEqual(plain(started), { started: 3, opened: 3 });
   assert.deepEqual(plain(page.links.map(link => link.clicked ?? 0)), [1, 1, 1, 0]);
   const requests = page.sent.filter(message => message.type === "DOWNLOAD_CACHED_MEDIA");
   assert.deepEqual(plain(requests.map(request => request.ids)), [["Daaa00001"], ["Dbbb00002"], ["Dccc00003"]]);
@@ -495,20 +495,263 @@ test("a profile grid opens three unseen posts per pass and saves each one's cach
   );
 
   const next = await page.ns.videoSources.openGridPosts("jasondchen", 10);
-  assert.equal(next, 1, "only the post that was never opened is left");
-  assert.equal(await page.ns.videoSources.openGridPosts("jasondchen", 10), 0);
+  assert.deepEqual(plain(next), { started: 1, opened: 1 }, "only the post that was never opened is left");
+  assert.deepEqual(plain(await page.ns.videoSources.openGridPosts("jasondchen", 10)), { started: 0, opened: 0 });
 });
 
 test("posts the cache already answered for, a spent budget, and a single post page open nothing", async () => {
   const page = gridPage();
   page.links = [gridLink(page, "/p/Dseen00001/")];
-  assert.equal(await page.ns.videoSources.openGridPosts("jasondchen", 5, ["Dseen00001"]), 0);
+  assert.deepEqual(plain(await page.ns.videoSources.openGridPosts("jasondchen", 5, ["Dseen00001"])), {
+    started: 0,
+    opened: 0
+  });
   assert.equal(page.links[0].clicked, undefined);
-  assert.equal(await page.ns.videoSources.openGridPosts("jasondchen", 0), 0);
+  assert.deepEqual(plain(await page.ns.videoSources.openGridPosts("jasondchen", 0)), { started: 0, opened: 0 });
   page.ns.scan.state.singlePage = true;
   page.links = [gridLink(page, "/p/Dnew000001/")];
-  assert.equal(await page.ns.videoSources.openGridPosts("jasondchen", 5), 0);
+  assert.deepEqual(plain(await page.ns.videoSources.openGridPosts("jasondchen", 5)), { started: 0, opened: 0 });
   assert.equal(page.links[0].clicked, undefined);
+});
+
+test("malformed cache coverage metadata does not stop the grid fallback", async () => {
+  const page = gridPage();
+  page.links = [gridLink(page, "/p/Dmalformed1/")];
+  assert.deepEqual(plain(await page.ns.videoSources.openGridPosts("jasondchen", 3, 42)), { started: 1, opened: 1 });
+  assert.equal(page.links[0].clicked, 1);
+});
+
+test("Facebook opened-post fallback waits for the deferred result before spending its budget", async () => {
+  const messages = [];
+  const page = loadPage({
+    url: "https://www.facebook.com/example/photos/",
+    onSend: message => {
+      messages.push(message);
+      if (message.type === "DOWNLOAD_CACHED_MEDIA") {
+        return { ok: true, requestId: "facebook-open-1", started: 0, cached: 0 };
+      }
+      if (message.type === "CACHED_MEDIA_RESULT") {
+        return { ok: true, cached: 1, started: 1, queued: 0 };
+      }
+      return { ok: true };
+    }
+  });
+  const links = ["100000000000000001", "100000000000000002"].map(id => ({
+    href: `https://www.facebook.com/photo/?fbid=${id}`,
+    isConnected: true,
+    getAttribute: () => `/photo/?fbid=${id}`,
+    getClientRects: () => [{}],
+    closest: () => null,
+    click() {
+      this.clicked = (this.clicked || 0) + 1;
+    }
+  }));
+  page.document.querySelectorAll = selector => (selector === "a[href]" || selector.includes("/photo/") ? links : []);
+
+  const result = await page.ns.videoSources.openGridPosts("example", 1);
+  assert.deepEqual(plain(result), { started: 1, opened: 1 });
+  assert.deepEqual(plain(links.map(link => link.clicked || 0)), [1, 0]);
+  assert.deepEqual(
+    plain(messages.filter(message => message.type !== "CLI_PAGE_READY").map(message => message.type)),
+    ["DOWNLOAD_CACHED_MEDIA", "CACHED_MEDIA_RESULT"],
+    "the actual started count is resolved before the next post consumes the limit"
+  );
+  const requests = messages.filter(message => message.type !== "CLI_PAGE_READY");
+  assert.equal(requests[0].limit, 1);
+  assert.equal(requests[1].requestId, "facebook-open-1");
+});
+
+function cachedGridPage({ coveredIds, started = 0, skipped = 0, openedStarted = 1 } = {}) {
+  let gridRequest = true;
+  const page = loadPage({
+    url: "https://www.instagram.com/jasondchen/",
+    onSend: message => {
+      if (message.type !== "DOWNLOAD_CACHED_MEDIA") {
+        return { ok: true };
+      }
+      if (gridRequest) {
+        gridRequest = false;
+        return { ok: true, started, skipped, cached: started + skipped, coveredIds };
+      }
+      return { ok: true, started: openedStarted, cached: openedStarted ? 1 : 0 };
+    }
+  });
+  const links = ["/p/Dgrid000001/", "/reel/Dgrid000002/"].map(path => gridLink(page, path));
+  page.document.querySelectorAll = selector => (selector === GRID || selector === "a[href]" ? links : []);
+  return { ...page, links };
+}
+
+test("a grid whose page data has every full-size file saves from data without opening posts", async () => {
+  const page = cachedGridPage({ coveredIds: ["Dgrid000001", "Dgrid000002"], started: 2 });
+  const result = await page.context.PageMediaSaver.videoSources.collectPageMedia("Instagram", "jasondchen");
+  assert.deepEqual(plain(page.links.map(link => link.clicked ?? 0)), [0, 0]);
+  assert.equal(result.gridSaved, 2);
+  assert.equal(result.postOpened || 0, 0);
+});
+
+test("page-data downloads on a single post are not counted as grid files", async () => {
+  const page = menuPage({
+    url: "https://x.com/NASA/status/12345",
+    onSend: settled({ DOWNLOAD_CACHED_MEDIA: () => ({ ok: true, started: 1, cached: 1 }) })
+  });
+  page.ns.scan.state.singlePage = true;
+  const result = await page.ns.videoSources.collectPageMedia("Twitter", "NASA");
+  assert.equal(result.videoDownloadsClicked, 1);
+  assert.equal(result.gridSaved, undefined);
+  assert.equal(result.postOpened, undefined);
+});
+
+test("Facebook profile pages do not navigate into a post during profile tab expansion", async () => {
+  const page = loadPage({
+    url: "https://www.facebook.com/example/",
+    onSend: settled({
+      DOWNLOAD_CACHED_MEDIA: () => ({ ok: true, started: 1, cached: 1, coveredIds: [] })
+    })
+  });
+  const reelLink = {
+    href: "https://www.facebook.com/reel/2000000000000000001/",
+    isConnected: true,
+    getAttribute: () => "/reel/2000000000000000001/",
+    click() {
+      this.clicked = (this.clicked || 0) + 1;
+    }
+  };
+  page.document.querySelectorAll = selector =>
+    selector === 'a[href*="/photo/"], a[href*="/reel/"], a[href*="/videos/"], a[href*="/watch/"]' ? [reelLink] : [];
+
+  await page.context.PageMediaSaver.videoSources.collectPageMedia("Facebook", "example");
+  assert.equal(reelLink.clicked || 0, 0, "the profile job must finish its tab expansion in its own page");
+});
+
+test("Facebook photo-tab files already in page data save without opening a photo", async () => {
+  const page = loadPage({
+    url: "https://www.facebook.com/example/photos/",
+    onSend: settled({
+      DOWNLOAD_CACHED_MEDIA: () => ({ ok: true, started: 1, cached: 1, coveredIds: ["1086989087485347"] })
+    })
+  });
+  const photoLink = {
+    href: "https://www.facebook.com/photo/?fbid=1086989087485347",
+    isConnected: true,
+    getAttribute: () => "/photo/?fbid=1086989087485347",
+    getClientRects: () => [{}],
+    closest: () => null,
+    click() {
+      this.clicked = true;
+    }
+  };
+  page.document.querySelectorAll = selector =>
+    selector === "a[href]" || selector.includes("/photo/") ? [photoLink] : [];
+  const result = await page.ns.videoSources.collectPageMedia("Facebook", "example");
+  assert.equal(result.gridSaved, 1);
+  assert.equal(result.videoDownloadsClicked, 1);
+  assert.deepEqual(plain(page.sent.find(message => message.type === "DOWNLOAD_CACHED_MEDIA").ids), [
+    "1086989087485347"
+  ]);
+  assert.equal(photoLink.clicked, undefined);
+});
+
+test("Facebook mixed tab data saves full-size media and opens only uncovered preview posts", async () => {
+  const destinations = [
+    ["1086989087485347", "/photo/?fbid=1086989087485347"],
+    ["1086989087485348", "/photo/?fbid=1086989087485348"],
+    ["2000000000000000001", "/reel/2000000000000000001/"]
+  ];
+  const ids = destinations.map(([id]) => id);
+  const links = destinations.map(([, href]) => {
+    return {
+      href: `https://www.facebook.com${href}`,
+      isConnected: true,
+      getAttribute: () => href,
+      getClientRects: () => [{}],
+      closest: () => null,
+      click() {
+        this.clicked = (this.clicked || 0) + 1;
+      }
+    };
+  });
+  let first = true;
+  const page = loadPage({
+    url: "https://www.facebook.com/example/photos/",
+    onSend: message => {
+      if (message.type !== "DOWNLOAD_CACHED_MEDIA") {
+        return { ok: true };
+      }
+      if (first) {
+        first = false;
+        return { ok: true, started: 1, cached: 1, coveredIds: [ids[0]] };
+      }
+      if (message.ids?.[0] === ids[1]) {
+        return { ok: true, started: 2, cached: 2 };
+      }
+      return { ok: true, started: 0, cached: 0 };
+    }
+  });
+  page.document.querySelectorAll = selector =>
+    selector === "a[href]" || selector.includes("/photo/") || selector.includes("/reel/") ? links : [];
+
+  const result = await page.ns.videoSources.collectPageMedia("Facebook", "example");
+  assert.deepEqual(plain(links.map(link => link.clicked || 0)), [0, 1, 1]);
+  assert.equal(result.videoDownloadsClicked, 3, "one grid file and two files from the opened carousel");
+  assert.equal(result.gridSaved, 1);
+  assert.equal(result.postOpened, 2, "the opened post with no cached file still counts");
+});
+
+test("Facebook video tabs open uncovered watch links", async () => {
+  const link = {
+    href: "https://www.facebook.com/watch/?v=2000000000000000002",
+    isConnected: true,
+    getAttribute: () => "/watch/?v=2000000000000000002",
+    getClientRects: () => [{}],
+    closest: () => null,
+    click() {
+      this.clicked = (this.clicked || 0) + 1;
+    }
+  };
+  let first = true;
+  const page = loadPage({
+    url: "https://www.facebook.com/example/videos/",
+    onSend: message => {
+      if (message.type !== "DOWNLOAD_CACHED_MEDIA") {
+        return { ok: true };
+      }
+      if (first) {
+        first = false;
+        return { ok: true, started: 0, cached: 0, coveredIds: [] };
+      }
+      return { ok: true, started: 1, cached: 1 };
+    }
+  });
+  page.document.querySelectorAll = selector => (selector === "a[href]" || selector.includes("/watch/") ? [link] : []);
+
+  const result = await page.ns.videoSources.collectPageMedia("Facebook", "example");
+  assert.equal(link.clicked, 1);
+  assert.equal(result.videoDownloadsClicked, 1);
+  assert.equal(result.postOpened, 1);
+});
+
+test("a grid with thumbnail-only items opens posts and keeps the existing per-pass cap", async () => {
+  const page = cachedGridPage({ coveredIds: [], openedStarted: 1 });
+  const result = await page.context.PageMediaSaver.videoSources.collectPageMedia("Instagram", "jasondchen");
+  assert.deepEqual(plain(page.links.map(link => link.clicked ?? 0)), [1, 1]);
+  assert.equal(result.gridSaved || 0, 0);
+  assert.equal(result.postOpened, 2);
+});
+
+test("a mixed grid opens only posts without full-size files already in page data", async () => {
+  const page = cachedGridPage({ coveredIds: ["Dgrid000001"], started: 1, openedStarted: 1 });
+  const result = await page.context.PageMediaSaver.videoSources.collectPageMedia("Instagram", "jasondchen");
+  assert.deepEqual(plain(page.links.map(link => link.clicked ?? 0)), [0, 1]);
+  assert.equal(result.gridSaved, 1);
+  assert.equal(result.postOpened, 1);
+});
+
+test("an item already saved in the ledger is covered by page data and its post stays closed", async () => {
+  const page = cachedGridPage({ coveredIds: ["Dgrid000001"], started: 0, skipped: 1 });
+  const result = await page.context.PageMediaSaver.videoSources.collectPageMedia("Instagram", "jasondchen");
+  assert.equal(page.links[0].clicked, undefined);
+  assert.equal(result.gridSaved || 0, 0, "only newly started files count as saved from the grid");
+  assert.equal(result.videoDownloadsSkipped, 1);
 });
 
 test("grid links that are hidden, inside a dialog, detached, id-less or past the stop are left alone", async () => {
@@ -521,13 +764,13 @@ test("grid links that are hidden, inside a dialog, detached, id-less or past the
     gridLink(page, "/p/Ddetached01/", { isConnected: false }),
     gridLink(page, "/p/Dafter00001/")
   ];
-  assert.equal(await page.ns.videoSources.openGridPosts("jasondchen", 10), 1);
+  assert.deepEqual(plain(await page.ns.videoSources.openGridPosts("jasondchen", 10)), { started: 1, opened: 1 });
   assert.deepEqual(plain(page.links.map(link => link.clicked ?? 0)), [0, 0, 0, 1, 0, 0]);
 
   const stopped = gridPage();
   stopped.links = [gridLink(stopped, "/p/Dstopped001/")];
   stopped.ns.scan.requestStop();
-  assert.equal(await stopped.ns.videoSources.openGridPosts("jasondchen", 10), 0);
+  assert.deepEqual(plain(await stopped.ns.videoSources.openGridPosts("jasondchen", 10)), { started: 0, opened: 0 });
   assert.equal(stopped.links[0].clicked, undefined);
 });
 
@@ -542,18 +785,22 @@ test("opening a post waits for its data a few times, then gives up on it", async
     })
   });
   page.links = [gridLink(page, "/p/Dslow000001/")];
-  assert.equal(await page.ns.videoSources.openGridPosts("jasondchen", Infinity), 2);
+  assert.deepEqual(plain(await page.ns.videoSources.openGridPosts("jasondchen", Infinity)), { started: 2, opened: 1 });
   assert.equal(asked, 3);
   assert.equal(page.sent.find(message => message.type === "DOWNLOAD_CACHED_MEDIA").limit, null);
 
   const never = gridPage({ onSend: () => Promise.reject(new Error("asleep")) });
   never.links = [gridLink(never, "/p/Dnever00001/")];
-  assert.equal(await never.ns.videoSources.openGridPosts("jasondchen", 3), 0);
+  assert.deepEqual(plain(await never.ns.videoSources.openGridPosts("jasondchen", 3)), { started: 0, opened: 1 });
   assert.equal(never.sent.filter(message => message.type === "DOWNLOAD_CACHED_MEDIA").length, 5, "five attempts");
 
   const empty = gridPage({ onSend: settled({ DOWNLOAD_CACHED_MEDIA: () => ({ ok: true, cached: 1 }) }) });
   empty.links = [gridLink(empty, "/p/Dnostart001/")];
-  assert.equal(await empty.ns.videoSources.openGridPosts("jasondchen", 3), 0, "cached files that all started earlier");
+  assert.deepEqual(
+    plain(await empty.ns.videoSources.openGridPosts("jasondchen", 3)),
+    { started: 0, opened: 1 },
+    "cached files that all started earlier still count as opened"
+  );
 });
 
 test("a post that changed the address is left with the overlay's close button, then history", async () => {

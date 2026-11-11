@@ -16,7 +16,31 @@
   const DATA_URL = site.dataUrl;
 
   const CHANNEL = "page-media-saver:media";
-  const announced = new Set();
+  const announced = new Map();
+
+  function requestPageContext() {
+    try {
+      const url = new URL(
+        global.location.href || `https://${global.location.hostname}${global.location.pathname || "/"}`
+      );
+      const segments = url.pathname.split("/").filter(Boolean);
+      const page = site.classify?.(segments, url);
+      let postId = null;
+      let storyAccount = null;
+      if (platform === "Instagram" && page?.mediaPage) {
+        if (page.kind === "post") {
+          postId = segments[1];
+        } else if (page.kind === "story" && segments.length === 3) {
+          postId = segments[2];
+        } else if (page.kind === "story" && segments.length === 2) {
+          storyAccount = page.account;
+        }
+      }
+      return { instagramPostId: postId || null, instagramStoryAccount: storyAccount || null };
+    } catch {
+      return { instagramPostId: null, instagramStoryAccount: null };
+    }
+  }
 
   // The scan runs in another world but shares the page's DOM, so the hook leaves its counters on the root
   // element. When a scan finds nothing, they tell whether the hook ran and what it could read.
@@ -51,23 +75,36 @@
     }
   }
 
-  function publishDocuments(documents) {
+  function publishDocuments(documents, context = requestPageContext()) {
     const fresh = [];
     stats.documents += documents.length;
     for (const document of documents) {
       let found = [];
       try {
-        found = parser.extractMedia(document);
+        found = parser
+          .extractMedia(document)
+          .map(entry =>
+            entry.kind === "photo" &&
+            entry.platform === "Instagram" &&
+            entry.fullSize === null &&
+            (entry.id === context.instagramPostId ||
+              (/^\d{3,40}$/.test(entry.id) &&
+                typeof context.instagramStoryAccount === "string" &&
+                entry.owner?.toLowerCase() === context.instagramStoryAccount.toLowerCase()))
+              ? { ...entry, fullSize: true }
+              : entry
+          );
       } catch {
         /* an unexpected shape must not break the page */
       }
       stats.found += found.length;
       for (const entry of found) {
         const key = `${entry.platform}:${entry.kind}:${entry.id}:${entry.index}`;
-        if (announced.has(key)) {
+        const previous = announced.get(key);
+        if (previous && !(entry.fullSize === true && previous.fullSize !== true)) {
           continue;
         }
-        announced.add(key);
+        announced.set(key, entry);
         fresh.push(entry);
       }
     }
@@ -83,10 +120,11 @@
     }
   }
 
-  const publishText = text => publishDocuments(parseJsonLoose(text));
+  const publishText = (text, context) => publishDocuments(parseJsonLoose(text), context);
 
   const nativeFetch = global.fetch;
   global.fetch = async function pageMediaSaverFetch(input, init) {
+    const context = requestPageContext();
     const response = await nativeFetch.call(this, input, init);
     try {
       const url = typeof input === "string" ? input : input?.url || String(input);
@@ -95,7 +133,7 @@
         response
           .clone()
           .text()
-          .then(publishText)
+          .then(text => publishText(text, context))
           .catch(() => {});
       }
     } catch {
@@ -107,11 +145,12 @@
   const nativeOpen = global.XMLHttpRequest.prototype.open;
   global.XMLHttpRequest.prototype.open = function pageMediaSaverOpen(method, url, ...rest) {
     if (DATA_URL.test(String(url))) {
+      const context = requestPageContext();
       this.addEventListener("load", () => {
         try {
           publishRateLimit(this.status);
           if (this.responseType === "" || this.responseType === "text") {
-            publishText(this.responseText);
+            publishText(this.responseText, context);
           }
         } catch {
           /* ignore unreadable responses */

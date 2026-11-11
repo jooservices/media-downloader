@@ -17,6 +17,19 @@ const httpsHostname = value => {
   }
 };
 
+function completenessMetadata(entry, platform, kind) {
+  if (["Instagram", "Facebook"].includes(platform) && kind === "photo") {
+    return {
+      fullSize: entry.fullSize === true,
+      expectedItems: Math.max(1, Number(entry.expectedItems) || 1)
+    };
+  }
+  if (platform === "Instagram" && kind === "video" && Number(entry.expectedPhotos) > 0) {
+    return { expectedPhotos: Math.max(0, Number(entry.expectedPhotos) || 0) };
+  }
+  return {};
+}
+
 // A reported entry is kept only when its platform, kind, id and file host all check out.
 function acceptedEntry(entry) {
   const platform = entry?.platform;
@@ -42,6 +55,7 @@ function acceptedEntry(entry) {
     durationMs: Number(entry.durationMs) || 0,
     width: Number(entry.width) || 0,
     height: Number(entry.height) || 0,
+    ...completenessMetadata(entry, platform, kind),
     url: entry.url
   };
 }
@@ -58,8 +72,26 @@ async function storeMedia(media) {
       continue;
     }
     const cacheKey = `${entry.platform}:${entry.kind}:${entry.id}:${entry.index}`;
+    const previous = mediaCache[cacheKey];
     if (!Object.hasOwn(mediaCache, cacheKey)) {
       added++;
+    }
+    if (
+      previous?.fullSize === true &&
+      entry.fullSize === false &&
+      ["Instagram", "Facebook"].includes(entry.platform) &&
+      entry.kind === "photo"
+    ) {
+      entry.url = previous.url;
+      entry.width = previous.width;
+      entry.height = previous.height;
+      entry.fullSize = true;
+    }
+    if (previous?.expectedItems && entry.expectedItems !== undefined) {
+      entry.expectedItems = Math.max(previous.expectedItems, entry.expectedItems);
+    }
+    if (previous?.expectedPhotos) {
+      entry.expectedPhotos = Math.max(previous.expectedPhotos, entry.expectedPhotos || 0);
     }
     delete mediaCache[cacheKey]; // re-added at the end, so the oldest entries are the ones dropped
     mediaCache[cacheKey] = entry;
@@ -123,6 +155,58 @@ function cacheDiagnostics(mediaCache, platform, wantedIds, wantedAccount, select
     wantedIds: wantedIds ? wantedIds.size : null,
     selected
   };
+}
+
+// Old Instagram and Facebook photos lack a completeness marker, so they cannot cover a grid item.
+function isFullSizeEntry(entry, platform) {
+  return entry.kind === "photo" && ["Instagram", "Facebook"].includes(platform)
+    ? entry.fullSize === true
+    : entry.fullSize !== false;
+}
+
+function matchesCachedRequest(entry, platform, wantedIds, wantedAccount) {
+  return (
+    entry.platform === platform &&
+    isFullSizeEntry(entry, platform) &&
+    ownerMatches(entry, wantedAccount) &&
+    (wantedIds ? wantedIds.has(entry.id) : Boolean(entry.owner))
+  );
+}
+
+function matchesCoverageRequest(entry, platform, wantedIds, wantedAccount) {
+  return (
+    entry.platform === platform &&
+    ownerMatches(entry, wantedAccount) &&
+    (wantedIds ? wantedIds.has(entry.id) : Boolean(entry.owner))
+  );
+}
+
+function isCoveredGroup(group, platform) {
+  const photos = group.filter(entry => entry.kind === "photo");
+  const otherMedia = group.filter(entry => entry.kind !== "photo");
+  const expectedPhotos = Math.max(
+    0,
+    ...photos.map(entry => Number(entry.expectedItems) || 1),
+    ...otherMedia.map(entry => Number(entry.expectedPhotos) || 0)
+  );
+  return (
+    photos.every(entry => isFullSizeEntry(entry, platform)) &&
+    photos.length >= expectedPhotos &&
+    otherMedia.every(entry => isFullSizeEntry(entry, platform))
+  );
+}
+
+function coveredIdsFor(mediaCache, platform, wantedIds, wantedAccount) {
+  const byId = new Map();
+  for (const entry of Object.values(mediaCache)) {
+    if (!matchesCoverageRequest(entry, platform, wantedIds, wantedAccount)) {
+      continue;
+    }
+    const group = byId.get(entry.id) || [];
+    group.push(entry);
+    byId.set(entry.id, group);
+  }
+  return [...byId].filter(([, group]) => isCoveredGroup(group, platform)).map(([id]) => id);
 }
 
 // `ids` (post or media ids read from the page's own links) selects entries on
@@ -198,14 +282,10 @@ async function downloadCachedMediaNow({ platform, account, ids, limit }, { inQue
   const { mediaCache = {} } = await chrome.storage.local.get({ mediaCache: {} });
   const wantedIds = Array.isArray(ids) ? new Set(ids.map(String)) : null;
   const wantedAccount = account ? cleanPart(account).toLowerCase() : null;
-  const entries = Object.values(mediaCache).filter(
-    entry =>
-      entry.platform === platform &&
-      (wantedIds
-        ? wantedIds.has(entry.id) && ownerMatches(entry, wantedAccount)
-        : Boolean(entry.owner) && ownerMatches(entry, wantedAccount))
+  const entries = Object.values(mediaCache).filter(entry =>
+    matchesCachedRequest(entry, platform, wantedIds, wantedAccount)
   );
-  const coveredIds = [...new Set(entries.map(entry => entry.id))];
+  const coveredIds = coveredIdsFor(mediaCache, platform, wantedIds, wantedAccount);
   // What the cache held for this page, so a scan that saves nothing can say why.
   const diag = cacheDiagnostics(mediaCache, platform, wantedIds, wantedAccount, entries.length);
   const items = entries.map(entry => cachedMediaItem(entry, account));

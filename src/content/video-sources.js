@@ -13,6 +13,7 @@ globalThis.PageMediaSaver ??= {};
   const MAX_HIGHLIGHTS = 40;
   const MENU_BUTTONS_TRIED = 2;
   const MAX_POSTS_OPENED_PER_PASS = 3;
+  const startedCount = value => (Number.isSafeInteger(value) && value > 0 ? value : 0);
   const POST_DATA_ATTEMPTS = 5;
   const MAX_PAGE_DATA_FILES_PER_PASS = 8;
   const CACHE_MESSAGE_TIMEOUT_MS = 1000;
@@ -258,6 +259,13 @@ globalThis.PageMediaSaver ??= {};
 
   const pageSite = () => PageMediaLib.sites.forHost(location.hostname);
 
+  function shouldOpenGridPosts(platform) {
+    if (!siteOf(platform)?.opensGridPosts) {
+      return false;
+    }
+    return platform !== "Facebook" || /\/(?:photos|reels|videos)\/?$/i.test(location.pathname);
+  }
+
   const gridLinks = () => {
     const selector = pageSite()?.gridLinks;
     if (!selector) {
@@ -268,26 +276,21 @@ globalThis.PageMediaSaver ??= {};
     );
   };
 
-  const postIdOf = link => {
-    const pattern = pageSite()?.postId;
-    return pattern ? link.getAttribute("href").match(pattern)?.[1] : null;
-  };
+  const postIdOf = link => idsInHref(pageSite()?.name, link.href || link.getAttribute("href"))[0] || null;
 
   // The opened post makes the page request its data; give the hook a few seconds to cache it, then save it.
   async function saveOpenedPost(platform, account, id, remaining) {
     for (let attempt = 0; attempt < POST_DATA_ATTEMPTS; attempt++) {
       await pause(900);
-      const response = await chrome.runtime
-        .sendMessage({
-          type: "DOWNLOAD_CACHED_MEDIA",
-          platform,
-          account,
-          ids: [id],
-          limit: Number.isFinite(remaining) ? remaining : null
-        })
-        .catch(() => null);
+      const response = await requestCachedMedia({
+        type: "DOWNLOAD_CACHED_MEDIA",
+        platform,
+        account,
+        ids: [id],
+        limit: Number.isFinite(remaining) ? remaining : null
+      });
       if (response?.cached) {
-        return (response.started || 0) + (response.queued || 0);
+        return startedCount(response.started) + startedCount(response.queued);
       }
     }
     return 0;
@@ -304,16 +307,12 @@ globalThis.PageMediaSaver ??= {};
     await pause(800 + randomBelow(700));
   }
 
-  // An Instagram profile grid only carries thumbnails. Opening a post (a reel or a
-  // photo post) makes the page request that post's own data, which the page-world
-  // hook caches, so open a few unseen posts per pass (like a person clicking
-  // through) and save each one's cached files. `alreadyCovered` are ids the cache
-  // already answered for.
+  /** Opens uncovered posts, keeping file starts separate from the number of posts opened. */
   async function openGridPosts(account, budget, alreadyCovered = []) {
     if (scanState().singlePage || budget <= 0) {
-      return 0;
+      return { started: 0, opened: 0 };
     }
-    for (const id of alreadyCovered) {
+    for (const id of Array.isArray(alreadyCovered) ? alreadyCovered.slice(0, 4000) : []) {
       openedGridPosts.add(id);
     }
     let started = 0;
@@ -333,11 +332,9 @@ globalThis.PageMediaSaver ??= {};
       started += await saveOpenedPost(pageSite()?.name, account, id, budget - started);
       await leavePost(gridUrl);
     }
-    return started;
+    return { started, opened };
   }
 
-  // Saves the photos and videos the platform already delivered to this page in its own
-  // data responses first; the on-page menu flow only handles videos the cache missed.
   let lastCacheDiag = null;
 
   async function requestCachedMedia(message) {
@@ -390,6 +387,7 @@ globalThis.PageMediaSaver ??= {};
     return cached?.diag || { asked, ids: ids ? ids.length : null, noReply: true };
   }
 
+  /** Saves full-size cached media first, then falls back to opening uncovered grid posts. */
   async function collectPageMedia(platform, account) {
     const budget = limitRemaining();
     const ids = pageVideoIds(platform);
@@ -407,25 +405,30 @@ globalThis.PageMediaSaver ??= {};
         })
       : null;
     lastCacheDiag = cacheDiagnostic(platform, cached, asked, ids);
-    const cachedStarted = cached?.started || 0;
-    const cachedQueued = cached?.queued || 0;
-    let cachedGridStarted = 0;
-    if (siteOf(platform)?.opensGridPosts) {
-      cachedGridStarted = await openGridPosts(
+    const pageDataStarted = startedCount(cached?.started);
+    const pageDataQueued = startedCount(cached?.queued);
+    let cachedStarted = pageDataStarted;
+    const cachedQueued = pageDataQueued;
+    let openedResult = { started: 0, opened: 0 };
+    if (shouldOpenGridPosts(platform)) {
+      openedResult = await openGridPosts(
         account,
         Math.max(0, budget - cachedStarted - cachedQueued),
         cached?.coveredIds
       );
+      cachedStarted += startedCount(openedResult.started);
     }
     const videos = await collectNativeVideosUnlessDeferred(
       platform,
       account,
-      Math.max(0, budget - cachedStarted - cachedQueued - cachedGridStarted),
+      Math.max(0, budget - cachedStarted - cachedQueued),
       cached
     );
     return {
       ...videos,
-      videoDownloadsClicked: videos.videoDownloadsClicked + cachedStarted + cachedQueued + cachedGridStarted,
+      videoDownloadsClicked: videos.videoDownloadsClicked + cachedStarted + cachedQueued,
+      ...(!scanState().singlePage && pageDataStarted > 0 ? { gridSaved: pageDataStarted } : {}),
+      ...(openedResult.opened ? { postOpened: openedResult.opened } : {}),
       // Files the page delivered that were saved earlier count as seen, so a rescan with nothing new is not "empty".
       videoDownloadsSkipped: (videos.videoDownloadsSkipped || 0) + (cached?.skipped || 0)
     };

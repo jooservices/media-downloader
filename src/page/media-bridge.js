@@ -9,6 +9,36 @@
   // bridge must not depend on any other script having loaded first: the browser does not promise an order across
   // content-script entries, and a data response can arrive before the page is even parsed.
 
+  function fullSizeOf(entry) {
+    if (entry?.kind === "photo" && ["Instagram", "Facebook"].includes(entry.platform)) {
+      return entry.fullSize === true;
+    }
+    return entry?.fullSize !== false;
+  }
+
+  const stringOrEmpty = value => String(value || "");
+  const numberOrZero = value => Number(value) || 0;
+  const expectedItemsOf = entry => Math.max(1, Number(entry?.expectedItems) || 1);
+
+  function normalizeMedia(entry) {
+    return {
+      platform: stringOrEmpty(entry?.platform),
+      kind: entry?.kind === "photo" ? "photo" : "video",
+      id: stringOrEmpty(entry?.id),
+      index: Number(entry?.index) || 1,
+      owner: entry?.owner ? String(entry.owner) : null,
+      durationMs: numberOrZero(entry?.durationMs),
+      width: numberOrZero(entry?.width),
+      height: numberOrZero(entry?.height),
+      fullSize: fullSizeOf(entry),
+      expectedItems: expectedItemsOf(entry),
+      ...(entry?.platform === "Instagram" && entry?.kind === "video" && Number(entry.expectedPhotos) > 0
+        ? { expectedPhotos: Math.max(0, Number(entry.expectedPhotos) || 0) }
+        : {}),
+      url: stringOrEmpty(entry?.url)
+    };
+  }
+
   window.addEventListener("message", event => {
     if (event.source !== window || event.origin !== location.origin) {
       return;
@@ -26,17 +56,7 @@
     }
     const media = event.data.media
       .slice(0, 100)
-      .map(entry => ({
-        platform: String(entry?.platform || ""),
-        kind: entry?.kind === "photo" ? "photo" : "video",
-        id: String(entry?.id || ""),
-        index: Number(entry?.index) || 1,
-        owner: entry?.owner ? String(entry.owner) : null,
-        durationMs: Number(entry?.durationMs) || 0,
-        width: Number(entry?.width) || 0,
-        height: Number(entry?.height) || 0,
-        url: String(entry?.url || "")
-      }))
+      .map(normalizeMedia)
       .filter(entry => entry.platform && entry.id);
     if (media.length) {
       chrome.runtime.sendMessage({ type: "MEDIA_FOUND", media }).catch(() => {});

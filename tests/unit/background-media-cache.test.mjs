@@ -142,6 +142,183 @@ test("with post ids from the page, entries of unknown owner are saved into the s
   assert.equal(any.started, 1, "without a scanned account any owner is accepted");
 });
 
+test("the same full-size item reached from grid data and its opened post is saved only once", async () => {
+  const env = loadBackground();
+  const item = photo("same001", {
+    platform: "Instagram",
+    url: "https://scontent.cdninstagram.com/v/same.jpg",
+    width: 1080,
+    height: 1350,
+    fullSize: true
+  });
+  await found(env, [item]);
+  const fromGrid = await saveCached(env, { platform: "Instagram", account: "alice", ids: ["same001"] });
+  await found(env, [item]);
+  const fromPost = await saveCached(env, { platform: "Instagram", account: "alice", ids: ["same001"] });
+
+  assert.equal(fromGrid.started, 1);
+  assert.equal(fromPost.started, 0);
+  assert.equal(fromPost.pending, 1, "an active download remains reserved without starting twice");
+  assert.equal(env.started.length, 1);
+  assert.equal(env.started[0].filename, "Instagram/Alice/same001_01_1080x1350.jpg");
+});
+
+test("Instagram and Facebook previews do not cover grid ids, but full-size parser entries do", async () => {
+  const env = loadBackground();
+  await found(env, [
+    photo("igpreview", {
+      platform: "Instagram",
+      owner: "alice",
+      url: "https://scontent.cdninstagram.com/v/preview.jpg",
+      width: 320,
+      height: 400,
+      fullSize: false
+    }),
+    photo("fbpreview", {
+      platform: "Facebook",
+      owner: "",
+      url: "https://scontent.fbcdn.net/v/preview.jpg",
+      width: 320,
+      height: 240,
+      fullSize: false
+    }),
+    photo("igfull001", {
+      platform: "Instagram",
+      owner: "alice",
+      url: "https://scontent.cdninstagram.com/v/full.jpg",
+      width: 1440,
+      height: 1800,
+      fullSize: true
+    }),
+    photo("fbfull001", {
+      platform: "Facebook",
+      owner: "",
+      url: "https://scontent.fbcdn.net/v/full.jpg",
+      width: 2048,
+      height: 1536,
+      fullSize: true
+    })
+  ]);
+
+  const previews = await saveCached(env, {
+    platform: "Instagram",
+    account: "alice",
+    ids: ["igpreview"],
+    limit: null
+  });
+  assert.equal(previews.started, 0);
+  assert.deepEqual(plain(previews.coveredIds), []);
+  const facebookPreview = await saveCached(env, {
+    platform: "Facebook",
+    account: "alice",
+    ids: ["fbpreview"],
+    limit: null
+  });
+  assert.equal(facebookPreview.started, 0);
+  assert.deepEqual(plain(facebookPreview.coveredIds), []);
+
+  const instagram = await saveCached(env, { platform: "Instagram", account: "alice", ids: ["igfull001"] });
+  const facebook = await saveCached(env, { platform: "Facebook", account: "alice", ids: ["fbfull001"] });
+  assert.equal(instagram.started, 1);
+  assert.equal(facebook.started, 1);
+  assert.deepEqual(plain(instagram.coveredIds), ["igfull001"]);
+  assert.deepEqual(plain(facebook.coveredIds), ["fbfull001"]);
+});
+
+test("a partially cached Instagram carousel saves eligible items but remains uncovered for post fallback", async () => {
+  const env = loadBackground();
+  await found(env, [
+    photo("carousel1", {
+      platform: "Instagram",
+      index: 1,
+      expectedItems: 2,
+      fullSize: true,
+      url: "https://scontent.cdninstagram.com/v/carousel1.jpg"
+    }),
+    photo("carousel1", {
+      platform: "Instagram",
+      index: 2,
+      expectedItems: 2,
+      fullSize: false,
+      url: "https://scontent.cdninstagram.com/v/carousel1-preview.jpg"
+    })
+  ]);
+
+  const grid = await saveCached(env, { platform: "Instagram", account: "alice", ids: ["carousel1"] });
+  assert.equal(grid.started, 1, "the eligible original is saved immediately");
+  assert.deepEqual(plain(grid.coveredIds), [], "the incomplete sibling keeps the post available to fallback");
+
+  await found(env, [
+    photo("carousel1", {
+      platform: "Instagram",
+      index: 1,
+      expectedItems: 2,
+      fullSize: true,
+      url: "https://scontent.cdninstagram.com/v/carousel1.jpg"
+    }),
+    photo("carousel1", {
+      platform: "Instagram",
+      index: 2,
+      expectedItems: 2,
+      fullSize: true,
+      url: "https://scontent.cdninstagram.com/v/carousel1-largest.jpg"
+    })
+  ]);
+  const opened = await saveCached(env, { platform: "Instagram", account: "alice", ids: ["carousel1"] });
+  assert.equal(opened.started, 1, "opening the post saves the incomplete sibling");
+  assert.equal(env.started.length, 2, "the already completed sibling is not started twice");
+  const repeated = await saveCached(env, { platform: "Instagram", account: "alice", ids: ["carousel1"] });
+  assert.equal(repeated.started, 0);
+  assert.equal(repeated.pending, 2, "both carousel items remain reserved while their downloads are active");
+  assert.equal(env.started.length, 2);
+});
+
+test("an Instagram video does not cover a carousel whose expected photo has no rendition", async () => {
+  const env = loadBackground();
+  await found(env, [
+    video("mixed01", {
+      platform: "Instagram",
+      url: "https://scontent.cdninstagram.com/v/mixed.mp4",
+      expectedPhotos: 1
+    })
+  ]);
+
+  const result = await saveCached(env, { platform: "Instagram", account: "alice", ids: ["mixed01"] });
+  assert.equal(result.started, 1, "the usable video is still saved");
+  assert.deepEqual(plain(result.coveredIds), [], "the missing photo keeps the post eligible for fallback");
+});
+
+test("a later preview cannot replace a cached original or shrink carousel coverage metadata", async () => {
+  const env = loadBackground();
+  await found(env, [
+    photo("upgrade01", {
+      platform: "Instagram",
+      index: 1,
+      expectedItems: 1,
+      fullSize: true,
+      url: "https://scontent.cdninstagram.com/v/original.jpg"
+    })
+  ]);
+  await found(env, [
+    photo("upgrade01", {
+      platform: "Instagram",
+      index: 1,
+      expectedItems: 2,
+      fullSize: false,
+      url: "https://scontent.cdninstagram.com/v/preview.jpg"
+    })
+  ]);
+
+  const cached = env.storage.mediaCache["Instagram:photo:upgrade01:1"];
+  assert.equal(cached.url, "https://scontent.cdninstagram.com/v/original.jpg");
+  assert.equal(cached.fullSize, true);
+  assert.equal(cached.expectedItems, 2);
+
+  const result = await saveCached(env, { platform: "Instagram", account: "alice", ids: ["upgrade01"] });
+  assert.deepEqual(plain(result.coveredIds), [], "the newly reported carousel sibling remains uncovered");
+  assert.equal(env.started[0].url, "https://scontent.cdninstagram.com/v/original.jpg");
+});
+
 test("without a scanned account only entries with a known owner are taken", async () => {
   const env = loadBackground();
   await found(env, [photo("aye1"), photo("bee1", { owner: "" })]);

@@ -121,6 +121,44 @@ test("Instagram: only the largest photo rendition is saved, never a smaller cand
   assert.equal(found[0].kind, "photo");
   assert.equal(found[0].url, `${IG}big.jpg`);
   assert.equal(found[0].owner, "someone");
+  assert.equal(found[0].fullSize, null, "the response does not identify the original dimensions");
+});
+
+test("Instagram: declared smaller originals are complete, while a larger listed candidate wins", () => {
+  const post = {
+    code: "Dsmallorig1",
+    original_width: 700,
+    original_height: 900,
+    image_versions2: { candidates: [igImage("preview", 320, 400), igImage("original", 700, 900)] }
+  };
+  const [original] = plain(parsers.Instagram.extractMedia({ items: [post] }));
+  assert.equal(original.url, `${IG}original.jpg`);
+  assert.equal(original.fullSize, true);
+});
+
+test("Instagram: candidate lists without declared dimensions stay uncovered even when a preview is 1080p", () => {
+  const post = {
+    code: "Dcandidate1",
+    image_versions2: { candidates: [igImage("preview", 1080, 1440), igImage("largest", 3072, 4096)] }
+  };
+  const [largest] = plain(parsers.Instagram.extractMedia({ items: [post] }));
+  assert.equal(largest.url, `${IG}largest.jpg`);
+  assert.equal(largest.fullSize, null, "the page did not identify the original dimensions");
+});
+
+test("Instagram: a thumbnail-only candidate stays uncovered until an original rendition is present", () => {
+  const post = {
+    code: "Dpreview001",
+    original_width: 1440,
+    original_height: 1800,
+    image_versions2: { candidates: [igImage("preview", 320, 400)] }
+  };
+  const [preview] = plain(parsers.Instagram.extractMedia({ items: [post] }));
+  assert.equal(preview.fullSize, false);
+  post.image_versions2.candidates.push(igImage("original", 1440, 1800));
+  const [original] = plain(parsers.Instagram.extractMedia({ items: [post] }));
+  assert.equal(original.url, `${IG}original.jpg`);
+  assert.equal(original.fullSize, true);
 });
 
 test("Instagram: no usable rendition means no photo and no thumbnail fallback", () => {
@@ -195,16 +233,19 @@ test("Instagram: a carousel numbers its photos by position and keeps its videos"
         video_versions: [{ url: `${IG}c3.mp4`, width: 10, height: 10 }],
         image_versions2: { candidates: [igImage("poster", 5, 5)] }
       },
+      { image_versions2: { candidates: [] } },
       { image_versions2: { candidates: [igImage("c4", 800, 800)] } }
     ]
   };
   const found = plain(parsers.Instagram.extractMedia(carousel));
   assert.deepEqual(
     found.map(entry => `${entry.kind}:${entry.index}`).sort(),
-    ["photo:1", "photo:4", "video:1"],
+    ["photo:1", "photo:5", "video:1"],
     "the child's own shortcode does not make it a second post"
   );
   assert.equal(found.find(entry => entry.index === 1 && entry.kind === "photo").url, `${IG}c1big.jpg`);
+  assert.equal(found.find(entry => entry.index === 1 && entry.kind === "photo").expectedItems, 3);
+  assert.equal(found.find(entry => entry.kind === "video").expectedPhotos, 3);
 });
 
 test("Instagram: a post nested in another inherits the owner and a node is not read twice", () => {
@@ -296,6 +337,16 @@ test("Facebook: a photo keeps the largest listed rendition, not a thumbnail", ()
   const [saved] = plain(parsers.Facebook.extractMedia({ node: photo }));
   assert.equal(saved.url, `${FB}l.jpg`);
   assert.equal(saved.width, 2048);
+  assert.equal(saved.fullSize, true);
+});
+
+test("Facebook: a grid thumbnail without viewer_image is not treated as full-size", () => {
+  const [preview] = plain(
+    parsers.Facebook.extractMedia({
+      node: { __typename: "Photo", id: "1086989087485348", image: { uri: `${FB}preview.jpg`, width: 320, height: 240 } }
+    })
+  );
+  assert.equal(preview.fullSize, false);
 });
 
 test("Facebook: a photo with no usable image, or a bad id, is skipped", () => {

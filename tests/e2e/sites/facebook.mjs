@@ -70,6 +70,34 @@ export const FB_TABS = {
   videos: { links: ["/{account}/videos/2000000000000000002/"], data: () => video("2000000000000000002") }
 };
 
+function postTabForUrl(url, account) {
+  const reel = /^\/(?:reel|video)\/(\d+)\/?$/i.exec(url.pathname);
+  if (reel) {
+    const kind = url.pathname.toLowerCase().startsWith("/reel/") ? "reel" : "video";
+    return `${kind}:${reel[1]}`;
+  }
+  const ownerVideo = /^\/([^/]+)\/videos\/(\d+)\/?$/i.exec(url.pathname);
+  if (ownerVideo && ownerVideo[1].toLowerCase() === account.toLowerCase()) {
+    return `video:${ownerVideo[2]}`;
+  }
+  if (/^\/photo\/?$/i.test(url.pathname) && url.searchParams.has("fbid")) {
+    return `photo:${url.searchParams.get("fbid")}`;
+  }
+  return null;
+}
+
+function dataForTab(tab) {
+  const post = /^(reel|video):(\d+)$/.exec(tab);
+  if (post) {
+    return video(post[2]);
+  }
+  const photoId = /^photo:(\d+)$/.exec(tab);
+  if (photoId) {
+    return photosTab([photoId[1]]);
+  }
+  return FB_TABS[tab].data();
+}
+
 export function facebookRoutes(account) {
   return [
     serveMedia(FB_MEDIA, new Set(FB_HOSTS)),
@@ -78,10 +106,19 @@ export function facebookRoutes(account) {
         return false;
       }
       if (url.pathname.startsWith("/api/graphql/")) {
-        sendJson(response, FB_TABS[url.searchParams.get("tab") ?? ""].data());
+        const tab = url.searchParams.get("tab") ?? "";
+        sendJson(response, dataForTab(tab));
         return true;
       }
       const match = new RegExp(`^/${account}/?([a-z]*)/?$`, "i").exec(url.pathname);
+      const postTab = postTabForUrl(url, account);
+      if (postTab) {
+        sendHtml(
+          response,
+          `<!doctype html><title>post</title><body><script>fetch("/api/graphql/?tab=${postTab}", { method: "POST", body: "q=1" })</script></body>`
+        );
+        return true;
+      }
       if (!match) {
         response.writeHead(404);
         response.end();

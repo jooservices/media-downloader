@@ -186,6 +186,7 @@ test("a cached full-size photo is saved as <post id>_<position>_<WxH>.<ext> in t
         owner: "jasondchen",
         width: 3072,
         height: 4096,
+        fullSize: true,
         url: "https://scontent.cdninstagram.com/l.jpg"
       },
       {
@@ -228,6 +229,7 @@ test("a photo and a video of the same post do not block each other", async () =>
         owner: "u",
         width: 1440,
         height: 1920,
+        fullSize: true,
         url: "https://scontent.cdninstagram.com/p.jpg"
       },
       {

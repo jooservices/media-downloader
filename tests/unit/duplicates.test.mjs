@@ -199,6 +199,7 @@ test("a full-size photo is not blocked by a thumbnail an older version recorded 
         owner: null,
         width: 2048,
         height: 1365,
+        fullSize: true,
         url: "https://scontent.fsgn19-1.fna.fbcdn.net/big.jpg"
       }
     ]

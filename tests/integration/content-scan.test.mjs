@@ -250,6 +250,79 @@ test("videos the page data started use up the limit before any photo is taken", 
   assert.equal(state.status, "complete");
 });
 
+test("a grid scan reports files saved from page data and from opened posts", async () => {
+  let firstGridRead = true;
+  const page = scanPage({
+    url: "https://www.instagram.com/jasondchen/",
+    onSend: message => {
+      if (message.type === "DOWNLOAD_CACHED_MEDIA") {
+        const isGridRead = message.ids?.length > 1;
+        const firstGrid = isGridRead && firstGridRead;
+        if (isGridRead) {
+          firstGridRead = false;
+        }
+        const openedCarousel = !isGridRead && message.ids?.[0] === "DgridCounter2";
+        const started = Number(firstGrid) + (openedCarousel ? 2 : 0);
+        return {
+          ok: true,
+          started,
+          skipped: 0,
+          cached: started,
+          coveredIds: firstGrid ? ["DgridCounter1"] : []
+        };
+      }
+      return { ok: true, pending: 0, failed: 0, retryable: 0 };
+    }
+  });
+  const gridLinks = ["DgridCounter1", "DgridCounter2"].map(id => ({
+    href: `https://www.instagram.com/p/${id}/`,
+    isConnected: true,
+    clicked: 0,
+    getAttribute: () => `/p/${id}/`,
+    getClientRects: () => [{}],
+    closest: () => null,
+    click() {
+      this.clicked++;
+    }
+  }));
+  page.document.querySelectorAll = selector =>
+    ['a[href*="/reel/"], a[href*="/p/"]', "a[href]"].includes(selector) ? gridLinks : [];
+  const state = await start(page, { url: "https://www.instagram.com/jasondchen/" });
+  assert.equal(state.gridSaved, 1);
+  assert.equal(state.postOpened, 1);
+  assert.deepEqual(
+    gridLinks.map(link => link.clicked),
+    [0, 1]
+  );
+  assert.match(state.message, /1 from the grid, 1 opened/);
+});
+
+test("X profile videos from page data are counted while the photo collector still downloads photos", async () => {
+  let videoStarted = false;
+  let photoStarted = false;
+  const page = scanPage({
+    articles: photos(1),
+    onSend: message => {
+      if (message.type === "DOWNLOAD_CACHED_MEDIA") {
+        const first = !videoStarted;
+        videoStarted = true;
+        return { ok: true, started: first ? 1 : 0, cached: first ? 1 : 0 };
+      }
+      if (message.type === "DOWNLOAD_ITEMS") {
+        const started = photoStarted ? 0 : message.items.length;
+        photoStarted = true;
+        return { ok: true, started, skipped: 0, failed: 0, pending: 0 };
+      }
+      return { ok: true, pending: 0, failed: 0, retryable: 0 };
+    }
+  });
+  const state = await start(page);
+  assert.equal(state.started, 1);
+  assert.equal(state.videoStarted, 1);
+  assert.equal(state.gridSaved, 1);
+  assert.equal(state.postOpened, 0);
+});
+
 test("downloads still pending are drained, failed ones retried at most twice, then reported", async () => {
   const drains = [
     { pending: 2, failed: 0, retryable: 0 },

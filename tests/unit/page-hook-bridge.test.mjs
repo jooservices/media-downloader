@@ -16,12 +16,19 @@ const igPost = code => ({
 
 // ---- the page-world hook -----------------------------------------------------------------
 
-function loadHook({ hostname = "www.instagram.com", fetchImpl, parser, document = null, extraXhr } = {}) {
+function loadHook({
+  hostname = "www.instagram.com",
+  pathname = "/someone/",
+  fetchImpl,
+  parser,
+  document = null,
+  extraXhr
+} = {}) {
   const posted = [];
   const timers = [];
   const page = {
     URL,
-    location: { hostname, origin: `https://${hostname}` },
+    location: { hostname, origin: `https://${hostname}`, pathname },
     fetch: fetchImpl,
     postMessage: (message, origin) => posted.push({ message, origin }),
     XMLHttpRequest: class {
@@ -101,6 +108,186 @@ test("hook: fetch accepts a Request-like object, passes the real response back, 
   assert.equal(posted.length, 1, "the same photo is announced once");
   assert.equal(posted[0].message.media[0].id, "Dfetch0001");
   assert.equal(posted[0].message.media[0].kind, "photo");
+});
+
+test("hook: a full-size photo replaces an earlier preview announcement with the same identity", async () => {
+  let body = JSON.stringify({
+    items: [
+      {
+        code: "Dupgrade001",
+        original_width: 1440,
+        original_height: 1800,
+        image_versions2: { candidates: [{ url: `${IG}preview.jpg`, width: 320, height: 400 }] }
+      }
+    ]
+  });
+  const { page, posted } = loadHook({ fetchImpl: async () => textResponse(body) });
+  await page.fetch("https://www.instagram.com/api/v1/feed/");
+  await tick();
+  assert.equal(posted[0].message.media[0].fullSize, false);
+
+  body = JSON.stringify({
+    items: [
+      {
+        code: "Dupgrade001",
+        image_versions2: { candidates: [{ url: `${IG}original.jpg`, width: 700, height: 900 }] }
+      }
+    ]
+  });
+  page.location.pathname = "/p/Dupgrade001/";
+  await page.fetch("https://www.instagram.com/api/v1/feed/");
+  await tick();
+  assert.equal(posted.length, 2);
+  assert.equal(
+    posted[1].message.media[0].fullSize,
+    true,
+    "an opened post identifies its largest candidate as complete"
+  );
+  assert.equal(posted[1].message.media[0].url, `${IG}original.jpg`);
+  assert.deepEqual(
+    [posted[1].message.media[0].width, posted[1].message.media[0].height],
+    [700, 900],
+    "a valid original smaller than 1080 pixels remains saveable after opening the post"
+  );
+
+  body = JSON.stringify({
+    items: [
+      {
+        code: "Dupgrade001",
+        original_width: 1440,
+        original_height: 1800,
+        image_versions2: { candidates: [{ url: `${IG}preview-late.jpg`, width: 320, height: 400 }] }
+      }
+    ]
+  });
+  await page.fetch("https://www.instagram.com/api/v1/feed/");
+  await tick();
+  assert.equal(posted.length, 2, "a later preview never replaces or re-announces the original");
+});
+
+test("hook: only an unknown-size photo for the requested post is promoted after SPA navigation", async () => {
+  let resolveResponse;
+  const { page, posted } = loadHook({
+    fetchImpl: () =>
+      new Promise(resolve => {
+        resolveResponse = resolve;
+      })
+  });
+  page.location.pathname = "/p/Drequested001/";
+  const request = page.fetch("https://www.instagram.com/api/v1/feed/");
+  page.location.pathname = "/p/Dother000001/";
+  resolveResponse(
+    textResponse(
+      JSON.stringify({
+        items: [
+          {
+            code: "Drequested001",
+            image_versions2: { candidates: [{ url: `${IG}requested.jpg`, width: 700, height: 900 }] }
+          },
+          {
+            code: "Dother000001",
+            original_width: 1440,
+            original_height: 1800,
+            image_versions2: { candidates: [{ url: `${IG}other-preview.jpg`, width: 320, height: 400 }] }
+          }
+        ]
+      })
+    )
+  );
+  await request;
+  await tick();
+
+  const media = posted.flatMap(item => item.message.media);
+  assert.equal(media.find(entry => entry.id === "Drequested001").fullSize, true);
+  assert.equal(media.find(entry => entry.id === "Dother000001").fullSize, false);
+});
+
+test("hook: an unknown-size grid announcement can upgrade to a matching opened-post original", async () => {
+  let body = JSON.stringify({
+    items: [
+      { code: "Dnullsize001", image_versions2: { candidates: [{ url: `${IG}grid.jpg`, width: 700, height: 900 }] } }
+    ]
+  });
+  const { page, posted } = loadHook({ fetchImpl: async () => textResponse(body) });
+  await page.fetch("https://www.instagram.com/api/v1/feed/");
+  await tick();
+  assert.equal(posted[0].message.media[0].fullSize, null);
+
+  body = JSON.stringify({
+    items: [
+      {
+        code: "Dnullsize001",
+        image_versions2: { candidates: [{ url: `${IG}opened.jpg`, width: 700, height: 900 }] }
+      }
+    ]
+  });
+  page.location.pathname = "/p/Dnullsize001/";
+  await page.fetch("https://www.instagram.com/api/v1/feed/");
+  await tick();
+
+  assert.equal(posted.length, 2);
+  assert.equal(posted[1].message.media[0].fullSize, true);
+  assert.equal(posted[1].message.media[0].url, `${IG}opened.jpg`);
+});
+
+test("hook: story tray promotes only unknown-size photos owned by the requested account", async () => {
+  const body = JSON.stringify({
+    reels_media: [
+      {
+        items: [
+          {
+            pk: "3917000000000000001",
+            product_type: "story",
+            media_type: 1,
+            user: { username: "someone" },
+            image_versions2: { candidates: [{ url: `${IG}story.jpg`, width: 700, height: 900 }] }
+          },
+          {
+            pk: "3917000000000000002",
+            product_type: "story",
+            media_type: 1,
+            user: { username: "someone_else" },
+            image_versions2: { candidates: [{ url: `${IG}other-story.jpg`, width: 700, height: 900 }] }
+          }
+        ]
+      }
+    ]
+  });
+  const second = loadHook({ pathname: "/stories/someone/", fetchImpl: async () => textResponse(body) });
+  await second.page.fetch("https://www.instagram.com/api/v1/feed/");
+  await tick();
+
+  const media = second.posted.flatMap(item => item.message.media);
+  assert.equal(media.find(entry => entry.id === "3917000000000000001").fullSize, true);
+  assert.equal(media.find(entry => entry.id === "3917000000000000002").fullSize, null);
+});
+
+test("hook: a feed response parsed after navigation keeps its photos uncovered", async () => {
+  let resolveResponse;
+  const { page, posted } = loadHook({
+    fetchImpl: () =>
+      new Promise(resolve => {
+        resolveResponse = resolve;
+      })
+  });
+  const request = page.fetch("https://www.instagram.com/api/v1/feed/");
+  page.location.pathname = "/p/Dlatepost001/";
+  resolveResponse(
+    textResponse(
+      JSON.stringify({
+        items: [
+          {
+            code: "Dlatepost001",
+            image_versions2: { candidates: [{ url: `${IG}late.jpg`, width: 700, height: 900 }] }
+          }
+        ]
+      })
+    )
+  );
+  await request;
+  await tick();
+
+  assert.equal(posted[0].message.media[0].fullSize, null);
 });
 
 test("hook: a response that cannot be read never breaks the page's own request", async () => {
@@ -341,6 +528,8 @@ test("bridge: well-formed media from the page is forwarded with every field norm
           durationMs: "x",
           width: "1080",
           height: 720,
+          fullSize: false,
+          expectedItems: 1,
           url: `${IG}a.jpg`
         },
         { platform: "Facebook", id: "9", index: 0 }
@@ -359,10 +548,43 @@ test("bridge: well-formed media from the page is forwarded with every field norm
       durationMs: 0,
       width: 1080,
       height: 720,
+      fullSize: false,
+      expectedItems: 1,
       url: `${IG}a.jpg`
     },
-    { platform: "Facebook", kind: "video", id: "9", index: 1, owner: null, durationMs: 0, width: 0, height: 0, url: "" }
+    {
+      platform: "Facebook",
+      kind: "video",
+      id: "9",
+      index: 1,
+      owner: null,
+      durationMs: 0,
+      width: 0,
+      height: 0,
+      fullSize: true,
+      expectedItems: 1,
+      url: ""
+    }
   ]);
+});
+
+test("bridge: Instagram carousel video entries retain the expected photo count", () => {
+  const { sent, deliver } = loadBridge();
+  deliver({
+    data: {
+      channel: CHANNEL,
+      media: [
+        {
+          platform: "Instagram",
+          kind: "video",
+          id: "Dvideo0001",
+          expectedPhotos: 2,
+          url: "https://scontent.cdninstagram.com/v/carousel.mp4"
+        }
+      ]
+    }
+  });
+  assert.equal(sent[0].media[0].expectedPhotos, 2);
 });
 
 test("bridge: forwards a rate-limit status without response content", () => {

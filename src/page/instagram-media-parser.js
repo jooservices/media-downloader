@@ -38,6 +38,27 @@
   const pickBestVersion = versions => pickLargest(versions, isDirectVideoUrl);
   const pickBestImage = candidates => pickLargest(candidates, isDirectImageUrl);
 
+  // Without declared original dimensions, an available candidate may still be
+  // a resized grid rendition. Leave it uncovered so opening the post can fetch
+  // the largest candidate from the full response.
+  function isFullSizeImage(node, best) {
+    if (!best) {
+      return false;
+    }
+    const width = Number(node?.original_width) || 0;
+    const height = Number(node?.original_height) || 0;
+    if (width > 0 && height > 0) {
+      return best.width >= width && best.height >= height;
+    }
+    return false;
+  }
+
+  function imageFullSizeStatus(node, best) {
+    const width = Number(node?.original_width) || 0;
+    const height = Number(node?.original_height) || 0;
+    return width > 0 && height > 0 ? isFullSizeImage(node, best) : null;
+  }
+
   function isPostNode(node) {
     return (
       typeof node.code === "string" &&
@@ -77,7 +98,7 @@
     // A carousel's items carry a shortcode of their own, but they are part of the post.
     const carouselItems = new WeakSet();
 
-    const addPhoto = (current, node, position) => {
+    const addPhoto = (current, node, position, expectedItems = 1) => {
       const best = pickBestImage(node?.image_versions2?.candidates);
       if (!best) {
         return;
@@ -90,7 +111,9 @@
         owner: current.owner,
         width: best.width,
         height: best.height,
-        url: best.url
+        url: best.url,
+        fullSize: imageFullSizeStatus(node, best),
+        expectedItems
       });
     };
 
@@ -107,6 +130,7 @@
         id: current.code,
         index: current.index,
         owner: current.owner,
+        ...(current.expectedPhotos > 0 ? { expectedPhotos: current.expectedPhotos } : {}),
         durationMs: Math.round((Number(node.video_duration) || 0) * 1000),
         width: best.width,
         height: best.height,
@@ -134,7 +158,8 @@
         durationMs: video ? Math.round((Number(node.video_duration) || 0) * 1000) : undefined,
         width: best.width,
         height: best.height,
-        url: best.url
+        url: best.url,
+        fullSize: video ? true : imageFullSizeStatus(node, best)
       });
     };
 
@@ -143,12 +168,13 @@
         addPhoto(current, node, 1);
         return;
       }
+      const expectedItems = node.carousel_media.filter(child => child && !Array.isArray(child.video_versions)).length;
       node.carousel_media.forEach((child, i) => {
         if (child && typeof child === "object") {
           carouselItems.add(child);
         }
         if (!Array.isArray(child?.video_versions)) {
-          addPhoto(current, child, i + 1);
+          addPhoto(current, child, i + 1, expectedItems);
         }
       });
     };
@@ -176,7 +202,10 @@
         current = {
           code: node.code,
           owner: node.user?.username || node.owner?.username || post?.owner || null,
-          index: 0
+          index: 0,
+          expectedPhotos: Array.isArray(node.carousel_media)
+            ? node.carousel_media.filter(child => child && !Array.isArray(child.video_versions)).length
+            : 0
         };
       }
       if (current) {
@@ -195,5 +224,11 @@
   }
 
   global.PageMediaParsers ??= {};
-  global.PageMediaParsers.Instagram = Object.freeze({ extractMedia, pickBestVersion, pickBestImage, isDirectVideoUrl });
+  global.PageMediaParsers.Instagram = Object.freeze({
+    extractMedia,
+    pickBestVersion,
+    pickBestImage,
+    isDirectVideoUrl,
+    isFullSizeImage
+  });
 })(globalThis);
