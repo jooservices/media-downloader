@@ -516,6 +516,39 @@ test("a live page heartbeat prevents a throttled progress gap from expiring the 
   assert.equal(env.job("1").status, "running");
 });
 
+test("the newest liveness signal wins when an older heartbeat is delayed", async () => {
+  const env = setup({}, [
+    queued("1", "Twitter", "a", {
+      status: "running",
+      lastHeartbeatAt: "2026-01-01T00:00:00.000Z",
+      lastProgressAt: "2026-01-01T00:14:59.000Z",
+      updatedAt: "2026-01-01T00:14:59.000Z"
+    })
+  ]);
+  env.advance(STALE_RUNNING_MS);
+  assert.equal((await env.tick()).expired, 0);
+  assert.equal(env.job("1").status, "running");
+});
+
+test("starting a retry clears the prior attempt's progress timestamp", async () => {
+  const env = setup({}, [
+    queued("1", "Twitter", "a", {
+      status: "error",
+      attempts: 1,
+      lastProgressAt: "2026-01-01T00:00:00.000Z",
+      message: "The Edge profile tab was closed before the scan finished."
+    })
+  ]);
+  assert.equal((await env.tick()).requeued, 1);
+  env.advance(60_001);
+  await env.tick();
+  await env.tick();
+  assert.equal(env.job("1").status, "queued");
+  assert.ok(env.job("1").openedAt, "the retry has been launched and awaits PAGE_READY");
+  assert.equal(env.job("1").attempts, 2);
+  assert.equal(env.job("1").lastProgressAt, null);
+});
+
 test("malformed liveness timestamps fail closed instead of leaving a job stuck forever", async () => {
   const env = setup({}, [
     queued("1", "Twitter", "a", {

@@ -96,6 +96,19 @@ test("an empty DOM without login or page evidence reports unknown", async () => 
   assert.equal(state.reason, "unknown");
 });
 
+test("an unrecognized nonempty page is not mislabeled as an empty or private profile", async () => {
+  const page = scanPage({
+    url: "https://x.com/NASA/",
+    tweak: sandbox => {
+      Object.defineProperty(sandbox.document, "body", {
+        get: () => ({ scrollHeight: 800, innerText: "Something went wrong. Please try again." })
+      });
+    }
+  });
+  const state = await start(page);
+  assert.equal(state.reason, "unknown");
+});
+
 test("photos are sized, sent to the background once each pass, and counted", async () => {
   const page = scanPage({ articles: photos(2) });
   const state = await start(page);
@@ -122,6 +135,30 @@ test("an active scan sends independent heartbeats while progress is unchanged", 
   await Promise.resolve();
   assert.ok(page.sent.some(message => message.type === "AUTO_HEARTBEAT" && message.jobId === "heartbeat-1"));
   await page.finish();
+});
+
+test("a scan awaiting a background operation cannot heartbeat forever", async () => {
+  const page = scanPage({
+    articles: photos(1),
+    onSend: message => {
+      if (message.type === "DOWNLOAD_ITEMS") {
+        return new Promise(() => {});
+      }
+      return settled()(message);
+    }
+  });
+  await page.request({ type: "AUTO_START_CLI", job: { ...JOB, jobId: "hung-download" } });
+  for (let i = 0; i < 100; i++) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  const heartbeat = page.intervals.find(interval => interval.ms === 30_000);
+  heartbeat.fn();
+  await Promise.resolve();
+  assert.equal(
+    page.sent.some(message => message.type === "AUTO_HEARTBEAT"),
+    false
+  );
+  assert.equal(page.ns.scan.state.running, true, "the supervisor's silence watchdog ends this pending operation");
 });
 
 test("the limit stops the scan as soon as it is reached and only asks for what fits", async () => {

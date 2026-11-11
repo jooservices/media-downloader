@@ -17,6 +17,7 @@ globalThis.PageMediaSaver ??= {};
   const LAZY_LOAD_POLLS = 12;
   const STALL_CHECKS = 8;
   const HEARTBEAT_MS = 30_000;
+  let pendingMessages = 0;
 
   let autoRunning = false;
   let autoStopRequested = false;
@@ -41,10 +42,19 @@ globalThis.PageMediaSaver ??= {};
 
   // This timer reports liveness independently of scrolling, downloads, or scan progress.
   window.setInterval(() => {
-    if (autoState.running && autoState.jobId) {
+    if (autoState.running && autoState.jobId && pendingMessages === 0) {
       chrome.runtime.sendMessage({ type: "AUTO_HEARTBEAT", jobId: autoState.jobId }).catch(() => {});
     }
   }, HEARTBEAT_MS);
+
+  async function sendScanMessage(message) {
+    pendingMessages++;
+    try {
+      return await chrome.runtime.sendMessage(message);
+    } finally {
+      pendingMessages--;
+    }
+  }
 
   function pageHeight() {
     return Math.max(document.documentElement?.scrollHeight || 0, document.body?.scrollHeight || 0);
@@ -106,7 +116,7 @@ globalThis.PageMediaSaver ??= {};
     let retries = 0;
     let drains = 0;
     while (drains < 10) {
-      status = await chrome.runtime.sendMessage({
+      status = await sendScanMessage({
         type: "DRAIN_DOWNLOADS",
         platform: autoState.platform,
         account: autoState.account,
@@ -125,7 +135,7 @@ globalThis.PageMediaSaver ??= {};
         break;
       }
 
-      const retry = await chrome.runtime.sendMessage({
+      const retry = await sendScanMessage({
         type: "RETRY_FAILED_DOWNLOADS",
         platform: autoState.platform,
         account: autoState.account
@@ -139,7 +149,7 @@ globalThis.PageMediaSaver ??= {};
         break;
       }
     }
-    status = await chrome.runtime.sendMessage({
+    status = await sendScanMessage({
       type: "DOWNLOAD_STATUS",
       platform: autoState.platform,
       account: autoState.account
@@ -195,10 +205,15 @@ globalThis.PageMediaSaver ??= {};
     ) {
       return "login_required";
     }
-    if (!document.body || !url || !bodyText.trim()) {
+    if (!document.body || !url) {
       return "unknown";
     }
-    return "empty_or_private";
+    const privateNotice =
+      /\b(private account|this account is private|account is private|content isn't available|content is unavailable|page isn't available|page is unavailable|user not found)\b/i.test(
+        bodyText
+      );
+    const pageEvidence = /\b(profile|posts|photos|videos|followers|following|reels|timeline)\b/i.test(bodyText);
+    return privateNotice || (pageEvidence && (isProfileGrid() || isMediaPostPage())) ? "empty_or_private" : "unknown";
   }
 
   async function finishAtLimit() {
@@ -336,7 +351,7 @@ globalThis.PageMediaSaver ??= {};
       item.jobId = autoState.jobId;
     }
     recordOutputFiles(items);
-    const response = await chrome.runtime.sendMessage({ type: "DOWNLOAD_ITEMS", items });
+    const response = await sendScanMessage({ type: "DOWNLOAD_ITEMS", items });
     if (!response?.ok) {
       throw new Error(response?.error || "The download request failed.");
     }

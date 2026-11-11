@@ -105,7 +105,7 @@ test("the tab running a job is not closed when its page changes during the scan"
   assert.equal((await store.listJobs()).find(item => item.jobId === job.jobId).status, "running");
 });
 
-test("a sign-in page ends the job without retries and closes the tab", async () => {
+test("a sign-in redirect stays visible as a non-retryable login result and closes the tab", async () => {
   const job = await createJob("https://www.instagram.com/kim/");
   const result = await handleBridgeMessage(
     tagged(job, 20, "https://www.instagram.com/accounts/login/?next=%2Fkim%2F"),
@@ -113,7 +113,9 @@ test("a sign-in page ends the job without retries and closes the tab", async () 
   );
   assert.equal(result.close, true);
   const saved = (await store.listJobs()).find(item => item.jobId === job.jobId);
-  assert.equal(saved.status, "error");
+  assert.equal(saved.status, "incomplete");
+  assert.equal(saved.reason, "login_required");
+  assert.equal(saved.noRetry, true);
   assert.equal(saved.needsLogin, true);
   assert.match(saved.message, /asked to sign in/);
 });

@@ -195,7 +195,9 @@ async function judgeTaggedTab(message) {
     const pathname = new URL(message.pageUrl).pathname;
     const securityCheck = /\/(checkpoint|challenge)(\/|$)/i.test(pathname);
     await updateJob(tagged.jobId, job => {
-      job.status = "error";
+      job.status = "incomplete";
+      job.reason = "login_required";
+      job.noRetry = true;
       job.needsLogin = true;
       job.message = securityCheck
         ? `${job.platform} showed a checkpoint or security challenge. Sign in with Edge's profile; the queue continues by itself.`

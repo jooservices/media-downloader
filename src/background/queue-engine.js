@@ -141,7 +141,13 @@ function createQueueEngine({ store, settings, login, tabs, now, random, log }) {
       const message = securityCheck
         ? "The site showed a checkpoint or security challenge. Sign in to continue."
         : "The site asked to sign in.";
-      await failJob(job.jobId, message, { needsLogin: true });
+      await store.updateJob(job.jobId, current => {
+        current.status = "incomplete";
+        current.reason = "login_required";
+        current.noRetry = true;
+        current.needsLogin = true;
+        current.message = message;
+      });
       tick().catch(() => undefined);
     }
   }
