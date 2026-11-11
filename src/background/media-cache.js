@@ -42,7 +42,12 @@ function acceptedEntry(entry) {
     durationMs: Number(entry.durationMs) || 0,
     width: Number(entry.width) || 0,
     height: Number(entry.height) || 0,
-    ...(["Instagram", "Facebook"].includes(platform) && kind === "photo" ? { fullSize: entry.fullSize !== false } : {}),
+    ...(["Instagram", "Facebook"].includes(platform) && kind === "photo"
+      ? {
+          fullSize: entry.fullSize === true,
+          expectedItems: Math.max(1, Number(entry.expectedItems) || 1)
+        }
+      : {}),
     url: entry.url
   };
 }
@@ -133,6 +138,46 @@ function isFullSizeEntry(entry, platform) {
     : entry.fullSize !== false;
 }
 
+function matchesCachedRequest(entry, platform, wantedIds, wantedAccount) {
+  return (
+    entry.platform === platform &&
+    isFullSizeEntry(entry, platform) &&
+    ownerMatches(entry, wantedAccount) &&
+    (wantedIds ? wantedIds.has(entry.id) : Boolean(entry.owner))
+  );
+}
+
+function matchesCoverageRequest(entry, platform, wantedIds, wantedAccount) {
+  return (
+    entry.platform === platform &&
+    ownerMatches(entry, wantedAccount) &&
+    (wantedIds ? wantedIds.has(entry.id) : Boolean(entry.owner))
+  );
+}
+
+function isCoveredGroup(group, platform) {
+  const photos = group.filter(entry => entry.kind === "photo");
+  const otherMedia = group.filter(entry => entry.kind !== "photo");
+  const expectedPhotos = Math.max(...photos.map(entry => Number(entry.expectedItems) || 1));
+  return (
+    (!photos.length || (photos.every(entry => isFullSizeEntry(entry, platform)) && photos.length >= expectedPhotos)) &&
+    otherMedia.every(entry => isFullSizeEntry(entry, platform))
+  );
+}
+
+function coveredIdsFor(mediaCache, platform, wantedIds, wantedAccount) {
+  const byId = new Map();
+  for (const entry of Object.values(mediaCache)) {
+    if (!matchesCoverageRequest(entry, platform, wantedIds, wantedAccount)) {
+      continue;
+    }
+    const group = byId.get(entry.id) || [];
+    group.push(entry);
+    byId.set(entry.id, group);
+  }
+  return [...byId].filter(([, group]) => isCoveredGroup(group, platform)).map(([id]) => id);
+}
+
 // `ids` (post or media ids read from the page's own links) selects entries on
 // pages where the cached owner is unknown; without them only entries whose
 // cached owner matches `account` are saved, so unrelated feed media never lands
@@ -145,15 +190,10 @@ async function downloadCachedMedia({ platform, account, ids, limit }) {
   const { mediaCache = {} } = await chrome.storage.local.get({ mediaCache: {} });
   const wantedIds = Array.isArray(ids) ? new Set(ids.map(String)) : null;
   const wantedAccount = account ? cleanPart(account).toLowerCase() : null;
-  const entries = Object.values(mediaCache).filter(
-    entry =>
-      entry.platform === platform &&
-      isFullSizeEntry(entry, platform) &&
-      (wantedIds
-        ? wantedIds.has(entry.id) && ownerMatches(entry, wantedAccount)
-        : Boolean(entry.owner) && ownerMatches(entry, wantedAccount))
+  const entries = Object.values(mediaCache).filter(entry =>
+    matchesCachedRequest(entry, platform, wantedIds, wantedAccount)
   );
-  const coveredIds = [...new Set(entries.map(entry => entry.id))];
+  const coveredIds = coveredIdsFor(mediaCache, platform, wantedIds, wantedAccount);
   // What the cache held for this page, so a scan that saves nothing can say why.
   const diag = cacheDiagnostics(mediaCache, platform, wantedIds, wantedAccount, entries.length);
   const items = entries.map(entry => cachedMediaItem(entry, account));

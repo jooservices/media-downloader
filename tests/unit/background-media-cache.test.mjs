@@ -222,6 +222,54 @@ test("Instagram and Facebook previews do not cover grid ids, but full-size parse
   assert.deepEqual(plain(facebook.coveredIds), ["fbfull001"]);
 });
 
+test("a partially cached Instagram carousel saves eligible items but remains uncovered for post fallback", async () => {
+  const env = loadBackground();
+  await found(env, [
+    photo("carousel1", {
+      platform: "Instagram",
+      index: 1,
+      expectedItems: 2,
+      fullSize: true,
+      url: "https://scontent.cdninstagram.com/v/carousel1.jpg"
+    }),
+    photo("carousel1", {
+      platform: "Instagram",
+      index: 2,
+      expectedItems: 2,
+      fullSize: false,
+      url: "https://scontent.cdninstagram.com/v/carousel1-preview.jpg"
+    })
+  ]);
+
+  const grid = await saveCached(env, { platform: "Instagram", account: "alice", ids: ["carousel1"] });
+  assert.equal(grid.started, 1, "the eligible original is saved immediately");
+  assert.deepEqual(plain(grid.coveredIds), [], "the incomplete sibling keeps the post available to fallback");
+
+  await found(env, [
+    photo("carousel1", {
+      platform: "Instagram",
+      index: 1,
+      expectedItems: 2,
+      fullSize: true,
+      url: "https://scontent.cdninstagram.com/v/carousel1.jpg"
+    }),
+    photo("carousel1", {
+      platform: "Instagram",
+      index: 2,
+      expectedItems: 2,
+      fullSize: true,
+      url: "https://scontent.cdninstagram.com/v/carousel1-largest.jpg"
+    })
+  ]);
+  const opened = await saveCached(env, { platform: "Instagram", account: "alice", ids: ["carousel1"] });
+  assert.equal(opened.started, 1, "opening the post saves the incomplete sibling");
+  assert.equal(env.started.length, 2, "the already completed sibling is not started twice");
+  const repeated = await saveCached(env, { platform: "Instagram", account: "alice", ids: ["carousel1"] });
+  assert.equal(repeated.started, 0);
+  assert.equal(repeated.skipped, 2);
+  assert.equal(env.started.length, 2);
+});
+
 test("without a scanned account only entries with a known owner are taken", async () => {
   const env = loadBackground();
   await found(env, [photo("aye1"), photo("bee1", { owner: "" })]);

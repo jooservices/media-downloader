@@ -38,9 +38,9 @@
   const pickBestVersion = versions => pickLargest(versions, isDirectVideoUrl);
   const pickBestImage = candidates => pickLargest(candidates, isDirectImageUrl);
 
-  // A grid response can contain only a resized preview. Treat it as complete
-  // only when its dimensions match the post's declared original or reach the
-  // largest rendition Instagram normally exposes for photos.
+  // Without declared original dimensions, an available candidate may still be
+  // a resized grid rendition. Leave it uncovered so opening the post can fetch
+  // the largest candidate from the full response.
   function isFullSizeImage(node, best) {
     if (!best) {
       return false;
@@ -50,7 +50,7 @@
     if (width > 0 && height > 0) {
       return best.width >= width && best.height >= height;
     }
-    return Math.max(best.width, best.height) >= 1080;
+    return false;
   }
 
   function isPostNode(node) {
@@ -92,7 +92,7 @@
     // A carousel's items carry a shortcode of their own, but they are part of the post.
     const carouselItems = new WeakSet();
 
-    const addPhoto = (current, node, position) => {
+    const addPhoto = (current, node, position, expectedItems = 1) => {
       const best = pickBestImage(node?.image_versions2?.candidates);
       if (!best) {
         return;
@@ -106,7 +106,8 @@
         width: best.width,
         height: best.height,
         url: best.url,
-        fullSize: isFullSizeImage(node, best)
+        fullSize: isFullSizeImage(node, best),
+        expectedItems
       });
     };
 
@@ -160,12 +161,13 @@
         addPhoto(current, node, 1);
         return;
       }
+      const expectedItems = node.carousel_media.filter(child => child && !Array.isArray(child.video_versions)).length;
       node.carousel_media.forEach((child, i) => {
         if (child && typeof child === "object") {
           carouselItems.add(child);
         }
         if (!Array.isArray(child?.video_versions)) {
-          addPhoto(current, child, i + 1);
+          addPhoto(current, child, i + 1, expectedItems);
         }
       });
     };

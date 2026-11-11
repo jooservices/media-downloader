@@ -16,12 +16,19 @@ const igPost = code => ({
 
 // ---- the page-world hook -----------------------------------------------------------------
 
-function loadHook({ hostname = "www.instagram.com", fetchImpl, parser, document = null, extraXhr } = {}) {
+function loadHook({
+  hostname = "www.instagram.com",
+  pathname = "/someone/",
+  fetchImpl,
+  parser,
+  document = null,
+  extraXhr
+} = {}) {
   const posted = [];
   const timers = [];
   const page = {
     URL,
-    location: { hostname, origin: `https://${hostname}` },
+    location: { hostname, origin: `https://${hostname}`, pathname },
     fetch: fetchImpl,
     postMessage: (message, origin) => posted.push({ message, origin }),
     XMLHttpRequest: class {
@@ -101,6 +108,61 @@ test("hook: fetch accepts a Request-like object, passes the real response back, 
   assert.equal(posted.length, 1, "the same photo is announced once");
   assert.equal(posted[0].message.media[0].id, "Dfetch0001");
   assert.equal(posted[0].message.media[0].kind, "photo");
+});
+
+test("hook: a full-size photo replaces an earlier preview announcement with the same identity", async () => {
+  let body = JSON.stringify({
+    items: [
+      {
+        code: "Dupgrade001",
+        original_width: 1440,
+        original_height: 1800,
+        image_versions2: { candidates: [{ url: `${IG}preview.jpg`, width: 320, height: 400 }] }
+      }
+    ]
+  });
+  const { page, posted } = loadHook({ fetchImpl: async () => textResponse(body) });
+  await page.fetch("https://www.instagram.com/api/v1/feed/");
+  await tick();
+  assert.equal(posted[0].message.media[0].fullSize, false);
+
+  body = JSON.stringify({
+    items: [
+      {
+        code: "Dupgrade001",
+        image_versions2: { candidates: [{ url: `${IG}original.jpg`, width: 700, height: 900 }] }
+      }
+    ]
+  });
+  page.location.pathname = "/p/Dupgrade001/";
+  await page.fetch("https://www.instagram.com/api/v1/feed/");
+  await tick();
+  assert.equal(posted.length, 2);
+  assert.equal(
+    posted[1].message.media[0].fullSize,
+    true,
+    "an opened post identifies its largest candidate as complete"
+  );
+  assert.equal(posted[1].message.media[0].url, `${IG}original.jpg`);
+  assert.deepEqual(
+    [posted[1].message.media[0].width, posted[1].message.media[0].height],
+    [700, 900],
+    "a valid original smaller than 1080 pixels remains saveable after opening the post"
+  );
+
+  body = JSON.stringify({
+    items: [
+      {
+        code: "Dupgrade001",
+        original_width: 1440,
+        original_height: 1800,
+        image_versions2: { candidates: [{ url: `${IG}preview-late.jpg`, width: 320, height: 400 }] }
+      }
+    ]
+  });
+  await page.fetch("https://www.instagram.com/api/v1/feed/");
+  await tick();
+  assert.equal(posted.length, 2, "a later preview never replaces or re-announces the original");
 });
 
 test("hook: a response that cannot be read never breaks the page's own request", async () => {
@@ -342,6 +404,7 @@ test("bridge: well-formed media from the page is forwarded with every field norm
           width: "1080",
           height: 720,
           fullSize: false,
+          expectedItems: 1,
           url: `${IG}a.jpg`
         },
         { platform: "Facebook", id: "9", index: 0 }
@@ -361,6 +424,7 @@ test("bridge: well-formed media from the page is forwarded with every field norm
       width: 1080,
       height: 720,
       fullSize: false,
+      expectedItems: 1,
       url: `${IG}a.jpg`
     },
     {
@@ -373,6 +437,7 @@ test("bridge: well-formed media from the page is forwarded with every field norm
       width: 0,
       height: 0,
       fullSize: true,
+      expectedItems: 1,
       url: ""
     }
   ]);

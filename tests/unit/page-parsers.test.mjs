@@ -121,7 +121,29 @@ test("Instagram: only the largest photo rendition is saved, never a smaller cand
   assert.equal(found[0].kind, "photo");
   assert.equal(found[0].url, `${IG}big.jpg`);
   assert.equal(found[0].owner, "someone");
-  assert.equal(found[0].fullSize, true);
+  assert.equal(found[0].fullSize, false, "a 1080 candidate may still be a resized preview");
+});
+
+test("Instagram: declared smaller originals are complete, while a larger listed candidate wins", () => {
+  const post = {
+    code: "Dsmallorig1",
+    original_width: 700,
+    original_height: 900,
+    image_versions2: { candidates: [igImage("preview", 320, 400), igImage("original", 700, 900)] }
+  };
+  const [original] = plain(parsers.Instagram.extractMedia({ items: [post] }));
+  assert.equal(original.url, `${IG}original.jpg`);
+  assert.equal(original.fullSize, true);
+});
+
+test("Instagram: candidate lists without declared dimensions stay uncovered even when a preview is 1080p", () => {
+  const post = {
+    code: "Dcandidate1",
+    image_versions2: { candidates: [igImage("preview", 1080, 1440), igImage("largest", 3072, 4096)] }
+  };
+  const [largest] = plain(parsers.Instagram.extractMedia({ items: [post] }));
+  assert.equal(largest.url, `${IG}largest.jpg`);
+  assert.equal(largest.fullSize, false, "the page did not identify the original dimensions");
 });
 
 test("Instagram: a thumbnail-only candidate stays uncovered until an original rendition is present", () => {
@@ -221,6 +243,7 @@ test("Instagram: a carousel numbers its photos by position and keeps its videos"
     "the child's own shortcode does not make it a second post"
   );
   assert.equal(found.find(entry => entry.index === 1 && entry.kind === "photo").url, `${IG}c1big.jpg`);
+  assert.equal(found.find(entry => entry.index === 1 && entry.kind === "photo").expectedItems, 2);
 });
 
 test("Instagram: a post nested in another inherits the owner and a node is not read twice", () => {

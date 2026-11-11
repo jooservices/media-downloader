@@ -244,6 +244,13 @@ globalThis.PageMediaSaver ??= {};
 
   const pageSite = () => PageMediaLib.sites.forHost(location.hostname);
 
+  function shouldOpenGridPosts(platform) {
+    if (!siteOf(platform)?.opensGridPosts) {
+      return false;
+    }
+    return platform !== "Facebook" || /\/(?:photos|reels|videos)\/?$/i.test(location.pathname);
+  }
+
   const gridLinks = () => {
     const selector = pageSite()?.gridLinks;
     if (!selector) {
@@ -337,7 +344,7 @@ globalThis.PageMediaSaver ??= {};
     const pageDataStarted = startedCount(cached?.started);
     let cachedStarted = pageDataStarted;
     let openedResult = { started: 0, opened: 0 };
-    if (siteOf(platform)?.opensGridPosts) {
+    if (shouldOpenGridPosts(platform)) {
       openedResult = await openGridPosts(account, budget - cachedStarted, cached?.coveredIds);
       cachedStarted += startedCount(openedResult.started);
     }

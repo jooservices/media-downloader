@@ -442,6 +442,28 @@ test("page-data downloads on a single post are not counted as grid files", async
   assert.equal(result.postOpened, undefined);
 });
 
+test("Facebook profile pages do not navigate into a post during profile tab expansion", async () => {
+  const page = loadPage({
+    url: "https://www.facebook.com/example/",
+    onSend: settled({
+      DOWNLOAD_CACHED_MEDIA: () => ({ ok: true, started: 1, cached: 1, coveredIds: [] })
+    })
+  });
+  const reelLink = {
+    href: "https://www.facebook.com/reel/2000000000000000001/",
+    isConnected: true,
+    getAttribute: () => "/reel/2000000000000000001/",
+    click() {
+      this.clicked = (this.clicked || 0) + 1;
+    }
+  };
+  page.document.querySelectorAll = selector =>
+    selector === 'a[href*="/photo/"], a[href*="/reel/"], a[href*="/videos/"], a[href*="/watch/"]' ? [reelLink] : [];
+
+  await page.context.PageMediaSaver.videoSources.collectPageMedia("Facebook", "example");
+  assert.equal(reelLink.clicked || 0, 0, "the profile job must finish its tab expansion in its own page");
+});
+
 test("Facebook photo-tab files already in page data save without opening a photo", async () => {
   const page = loadPage({
     url: "https://www.facebook.com/example/photos/",

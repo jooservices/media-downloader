@@ -16,7 +16,7 @@
   const DATA_URL = site.dataUrl;
 
   const CHANNEL = "page-media-saver:media";
-  const announced = new Set();
+  const announced = new Map();
 
   // The scan runs in another world but shares the page's DOM, so the hook leaves its counters on the root
   // element. When a scan finds nothing, they tell whether the hook ran and what it could read.
@@ -54,20 +54,34 @@
   function publishDocuments(documents) {
     const fresh = [];
     stats.documents += documents.length;
+    let mediaPage = false;
+    try {
+      const currentSite = global.PageMediaLib.sites.forHost(global.location.hostname);
+      const url = new URL(
+        global.location.href || `https://${global.location.hostname}${global.location.pathname || "/"}`
+      );
+      const page = currentSite?.classify?.(url.pathname.split("/").filter(Boolean), url);
+      mediaPage = Boolean(page?.mediaPage);
+    } catch {
+      /* an unclassifiable address must not break the page */
+    }
     for (const document of documents) {
       let found = [];
       try {
-        found = parser.extractMedia(document);
+        found = parser
+          .extractMedia(document)
+          .map(entry => (mediaPage && entry.kind === "photo" ? { ...entry, fullSize: true } : entry));
       } catch {
         /* an unexpected shape must not break the page */
       }
       stats.found += found.length;
       for (const entry of found) {
         const key = `${entry.platform}:${entry.kind}:${entry.id}:${entry.index}`;
-        if (announced.has(key)) {
+        const previous = announced.get(key);
+        if (previous && !(entry.fullSize === true && previous.fullSize === false)) {
           continue;
         }
-        announced.add(key);
+        announced.set(key, entry);
         fresh.push(entry);
       }
     }
