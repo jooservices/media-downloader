@@ -278,8 +278,16 @@ test("startQueue launches the script with `serve`, detached", async () => {
     `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(out)}, JSON.stringify(process.argv.slice(2)));`
   );
   service.startQueue({ executable: process.execPath, script });
+  let args;
   for (let i = 0; i < 100 && !(await exists(out)); i++) {
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  assert.deepEqual(JSON.parse(await readFile(out, "utf8")), ["serve"]);
+  for (let i = 0; i < 100 && args === undefined; i++) {
+    try {
+      args = JSON.parse(await readFile(out, "utf8"));
+    } catch {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
+  assert.deepEqual(args, ["serve"]);
 });
