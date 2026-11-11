@@ -32,7 +32,7 @@ async function skipReason(state, key) {
   if (isPending) {
     return "already-pending";
   }
-  return Number(state.nativeAttempts[key] || 0) >= MAX_ATTEMPTS ? "retry-limit" : null;
+  return Number(state.nativeAttempts[key] || 0) >= state.maxAttempts ? "retry-limit" : null;
 }
 
 // A target the site never answered counts as failed once another video is armed.
@@ -115,7 +115,7 @@ function nativeFilename(item, target) {
   const allowedExtension = VIDEO_EXTENSIONS.includes(extension) ? extension : "mp4";
   const stem = String(target.filename || `video_${item.id}.mp4`).replace(/\.[a-z0-9]+$/i, "");
   const base = cleanPart(stem, `video_${item.id}`);
-  return withResolution(`${base}.${allowedExtension}`, target.width, target.height);
+  return cleanPart(withResolution(`${base}.${allowedExtension}`, target.width, target.height), `video_${item.id}.mp4`);
 }
 
 // Claims the armed target for this download and names the file; null when it is not the one.

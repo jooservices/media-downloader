@@ -69,7 +69,11 @@ async function handleBridgeResponse(message) {
     }
     const response = await chrome.tabs.sendMessage(message.tabId, {
       type: "AUTO_START_CLI",
-      job: { ...message.job, repairTargets: message.job.repairBasenames || [] }
+      job: {
+        ...message.job,
+        repairTargets: message.job.repairBasenames || [],
+        repairExpectedCount: message.job.repairExpectedCount
+      }
     });
     if (!response?.ok) {
       await reportCliStartFailure(
