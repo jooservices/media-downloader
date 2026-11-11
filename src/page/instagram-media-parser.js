@@ -38,6 +38,21 @@
   const pickBestVersion = versions => pickLargest(versions, isDirectVideoUrl);
   const pickBestImage = candidates => pickLargest(candidates, isDirectImageUrl);
 
+  // A grid response can contain only a resized preview. Treat it as complete
+  // only when its dimensions match the post's declared original or reach the
+  // largest rendition Instagram normally exposes for photos.
+  function isFullSizeImage(node, best) {
+    if (!best) {
+      return false;
+    }
+    const width = Number(node?.original_width) || 0;
+    const height = Number(node?.original_height) || 0;
+    if (width > 0 && height > 0) {
+      return best.width >= width && best.height >= height;
+    }
+    return Math.max(best.width, best.height) >= 1080;
+  }
+
   function isPostNode(node) {
     return (
       typeof node.code === "string" &&
@@ -90,7 +105,8 @@
         owner: current.owner,
         width: best.width,
         height: best.height,
-        url: best.url
+        url: best.url,
+        fullSize: isFullSizeImage(node, best)
       });
     };
 
@@ -134,7 +150,8 @@
         durationMs: video ? Math.round((Number(node.video_duration) || 0) * 1000) : undefined,
         width: best.width,
         height: best.height,
-        url: best.url
+        url: best.url,
+        fullSize: Boolean(video || isFullSizeImage(node, best))
       });
     };
 
@@ -195,5 +212,11 @@
   }
 
   global.PageMediaParsers ??= {};
-  global.PageMediaParsers.Instagram = Object.freeze({ extractMedia, pickBestVersion, pickBestImage, isDirectVideoUrl });
+  global.PageMediaParsers.Instagram = Object.freeze({
+    extractMedia,
+    pickBestVersion,
+    pickBestImage,
+    isDirectVideoUrl,
+    isFullSizeImage
+  });
 })(globalThis);

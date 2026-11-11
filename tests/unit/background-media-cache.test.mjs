@@ -141,15 +141,85 @@ test("with post ids from the page, entries of unknown owner are saved into the s
 
 test("the same full-size item reached from grid data and its opened post is saved only once", async () => {
   const env = loadBackground();
-  await found(env, [photo("same001")]);
-  const fromGrid = await saveCached(env, { platform: "Twitter", account: "alice", ids: ["same001"] });
-  const fromPost = await saveCached(env, { platform: "Twitter", account: "alice", ids: ["same001"] });
+  const item = photo("same001", {
+    platform: "Instagram",
+    url: "https://scontent.cdninstagram.com/v/same.jpg",
+    width: 1080,
+    height: 1350,
+    fullSize: true
+  });
+  await found(env, [item]);
+  const fromGrid = await saveCached(env, { platform: "Instagram", account: "alice", ids: ["same001"] });
+  await found(env, [item]);
+  const fromPost = await saveCached(env, { platform: "Instagram", account: "alice", ids: ["same001"] });
 
   assert.equal(fromGrid.started, 1);
   assert.equal(fromPost.started, 0);
   assert.equal(fromPost.skipped, 1);
   assert.equal(env.started.length, 1);
-  assert.equal(env.started[0].filename, "Twitter/Alice/same001_01_1000x500.jpg");
+  assert.equal(env.started[0].filename, "Instagram/Alice/same001_01_1080x1350.jpg");
+});
+
+test("Instagram and Facebook previews do not cover grid ids, but full-size parser entries do", async () => {
+  const env = loadBackground();
+  await found(env, [
+    photo("igpreview", {
+      platform: "Instagram",
+      owner: "alice",
+      url: "https://scontent.cdninstagram.com/v/preview.jpg",
+      width: 320,
+      height: 400,
+      fullSize: false
+    }),
+    photo("fbpreview", {
+      platform: "Facebook",
+      owner: "",
+      url: "https://scontent.fbcdn.net/v/preview.jpg",
+      width: 320,
+      height: 240,
+      fullSize: false
+    }),
+    photo("igfull001", {
+      platform: "Instagram",
+      owner: "alice",
+      url: "https://scontent.cdninstagram.com/v/full.jpg",
+      width: 1440,
+      height: 1800,
+      fullSize: true
+    }),
+    photo("fbfull001", {
+      platform: "Facebook",
+      owner: "",
+      url: "https://scontent.fbcdn.net/v/full.jpg",
+      width: 2048,
+      height: 1536,
+      fullSize: true
+    })
+  ]);
+
+  const previews = await saveCached(env, {
+    platform: "Instagram",
+    account: "alice",
+    ids: ["igpreview"],
+    limit: null
+  });
+  assert.equal(previews.started, 0);
+  assert.deepEqual(plain(previews.coveredIds), []);
+  const facebookPreview = await saveCached(env, {
+    platform: "Facebook",
+    account: "alice",
+    ids: ["fbpreview"],
+    limit: null
+  });
+  assert.equal(facebookPreview.started, 0);
+  assert.deepEqual(plain(facebookPreview.coveredIds), []);
+
+  const instagram = await saveCached(env, { platform: "Instagram", account: "alice", ids: ["igfull001"] });
+  const facebook = await saveCached(env, { platform: "Facebook", account: "alice", ids: ["fbfull001"] });
+  assert.equal(instagram.started, 1);
+  assert.equal(facebook.started, 1);
+  assert.deepEqual(plain(instagram.coveredIds), ["igfull001"]);
+  assert.deepEqual(plain(facebook.coveredIds), ["fbfull001"]);
 });
 
 test("without a scanned account only entries with a known owner are taken", async () => {

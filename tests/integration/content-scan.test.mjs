@@ -101,41 +101,50 @@ test("videos the page data started use up the limit before any photo is taken", 
 });
 
 test("a grid scan reports files saved from page data and from opened posts", async () => {
-  let started = false;
+  let firstGridRead = true;
   const page = scanPage({
     url: "https://www.instagram.com/jasondchen/",
     onSend: message => {
       if (message.type === "DOWNLOAD_CACHED_MEDIA") {
-        const first = !started;
-        started = true;
+        const isGridRead = message.ids?.length > 1;
+        const firstGrid = isGridRead && firstGridRead;
+        if (isGridRead) {
+          firstGridRead = false;
+        }
+        const openedCarousel = !isGridRead && message.ids?.[0] === "DgridCounter2";
+        const started = Number(firstGrid) + (openedCarousel ? 2 : 0);
         return {
           ok: true,
-          started: first ? 1 : 0,
+          started,
           skipped: 0,
-          cached: first ? 1 : 0,
-          coveredIds: ["DgridCounter1"]
+          cached: started,
+          coveredIds: firstGrid ? ["DgridCounter1"] : []
         };
       }
       return { ok: true, pending: 0, failed: 0, retryable: 0 };
     }
   });
-  const gridLink = {
-    href: "https://www.instagram.com/p/DgridCounter1/",
+  const gridLinks = ["DgridCounter1", "DgridCounter2"].map(id => ({
+    href: `https://www.instagram.com/p/${id}/`,
     isConnected: true,
     clicked: 0,
-    getAttribute: () => "/p/DgridCounter1/",
+    getAttribute: () => `/p/${id}/`,
     getClientRects: () => [{}],
     closest: () => null,
     click() {
       this.clicked++;
     }
-  };
+  }));
   page.document.querySelectorAll = selector =>
-    ['a[href*="/reel/"], a[href*="/p/"]', "a[href]"].includes(selector) ? [gridLink] : [];
+    ['a[href*="/reel/"], a[href*="/p/"]', "a[href]"].includes(selector) ? gridLinks : [];
   const state = await start(page, { url: "https://www.instagram.com/jasondchen/" });
   assert.equal(state.gridSaved, 1);
-  assert.equal(state.postOpened, 0);
-  assert.match(state.message, /1 from the grid, 0 opened/);
+  assert.equal(state.postOpened, 1);
+  assert.deepEqual(
+    gridLinks.map(link => link.clicked),
+    [0, 1]
+  );
+  assert.match(state.message, /1 from the grid, 1 opened/);
 });
 
 test("X profile videos from page data are counted while the photo collector still downloads photos", async () => {

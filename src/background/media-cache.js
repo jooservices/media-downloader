@@ -42,6 +42,7 @@ function acceptedEntry(entry) {
     durationMs: Number(entry.durationMs) || 0,
     width: Number(entry.width) || 0,
     height: Number(entry.height) || 0,
+    ...(["Instagram", "Facebook"].includes(platform) && kind === "photo" ? { fullSize: entry.fullSize !== false } : {}),
     url: entry.url
   };
 }
@@ -125,6 +126,13 @@ function cacheDiagnostics(mediaCache, platform, wantedIds, wantedAccount, select
   };
 }
 
+// Old Instagram and Facebook photos lack a completeness marker, so they cannot cover a grid item.
+function isFullSizeEntry(entry, platform) {
+  return entry.kind === "photo" && ["Instagram", "Facebook"].includes(platform)
+    ? entry.fullSize === true
+    : entry.fullSize !== false;
+}
+
 // `ids` (post or media ids read from the page's own links) selects entries on
 // pages where the cached owner is unknown; without them only entries whose
 // cached owner matches `account` are saved, so unrelated feed media never lands
@@ -140,6 +148,7 @@ async function downloadCachedMedia({ platform, account, ids, limit }) {
   const entries = Object.values(mediaCache).filter(
     entry =>
       entry.platform === platform &&
+      isFullSizeEntry(entry, platform) &&
       (wantedIds
         ? wantedIds.has(entry.id) && ownerMatches(entry, wantedAccount)
         : Boolean(entry.owner) && ownerMatches(entry, wantedAccount))

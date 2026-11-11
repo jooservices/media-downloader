@@ -254,10 +254,7 @@ globalThis.PageMediaSaver ??= {};
     );
   };
 
-  const postIdOf = link => {
-    const pattern = pageSite()?.postId;
-    return pattern ? link.getAttribute("href").match(pattern)?.[1] : null;
-  };
+  const postIdOf = link => idsInHref(pageSite()?.name, link.href || link.getAttribute("href"))[0] || null;
 
   // The opened post makes the page request its data; give the hook a few seconds to cache it, then save it.
   async function saveOpenedPost(platform, account, id, remaining) {
@@ -290,14 +287,10 @@ globalThis.PageMediaSaver ??= {};
     await pause(800 + randomBelow(700));
   }
 
-  // An Instagram profile grid only carries thumbnails. Opening a post (a reel or a
-  // photo post) makes the page request that post's own data, which the page-world
-  // hook caches, so open a few unseen posts per pass (like a person clicking
-  // through) and save each one's cached files. `alreadyCovered` are ids the cache
-  // already answered for.
+  /** Opens uncovered posts, keeping file starts separate from the number of posts opened. */
   async function openGridPosts(account, budget, alreadyCovered = []) {
     if (scanState().singlePage || budget <= 0) {
-      return 0;
+      return { started: 0, opened: 0 };
     }
     for (const id of Array.isArray(alreadyCovered) ? alreadyCovered.slice(0, 4000) : []) {
       openedGridPosts.add(id);
@@ -319,13 +312,12 @@ globalThis.PageMediaSaver ??= {};
       started += await saveOpenedPost(pageSite()?.name, account, id, budget - started);
       await leavePost(gridUrl);
     }
-    return started;
+    return { started, opened };
   }
 
-  // Saves the photos and videos the platform already delivered to this page in its own
-  // data responses first; the on-page menu flow only handles videos the cache missed.
   let lastCacheDiag = null;
 
+  /** Saves full-size cached media first, then falls back to opening uncovered grid posts. */
   async function collectPageMedia(platform, account) {
     const budget = limitRemaining();
     const ids = pageVideoIds(platform);
@@ -344,17 +336,17 @@ globalThis.PageMediaSaver ??= {};
     lastCacheDiag = cached ? cached.diag : { asked, ids: ids ? ids.length : null, noReply: true };
     const pageDataStarted = startedCount(cached?.started);
     let cachedStarted = pageDataStarted;
-    let openedStarted = 0;
+    let openedResult = { started: 0, opened: 0 };
     if (siteOf(platform)?.opensGridPosts) {
-      openedStarted = startedCount(await openGridPosts(account, budget - cachedStarted, cached?.coveredIds));
-      cachedStarted += openedStarted;
+      openedResult = await openGridPosts(account, budget - cachedStarted, cached?.coveredIds);
+      cachedStarted += startedCount(openedResult.started);
     }
     const videos = await collectNativeVideoDownloads(platform, account, budget - cachedStarted);
     return {
       ...videos,
       videoDownloadsClicked: videos.videoDownloadsClicked + cachedStarted,
       ...(!scanState().singlePage && pageDataStarted > 0 ? { gridSaved: pageDataStarted } : {}),
-      ...(openedStarted ? { postOpened: openedStarted } : {}),
+      ...(openedResult.opened ? { postOpened: openedResult.opened } : {}),
       // Files the page delivered that were saved earlier count as seen, so a rescan with nothing new is not "empty".
       videoDownloadsSkipped: (videos.videoDownloadsSkipped || 0) + (cached?.skipped || 0)
     };

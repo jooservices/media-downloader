@@ -56,6 +56,7 @@ globalThis.PageMediaSaver ??= {};
   const skippedCount = () => autoState.skipped + autoState.videoSkipped;
   const hasOutstanding = () => Boolean(autoState.pending || autoState.failed);
 
+  /** Builds the progress text, including counts for grid files and opened posts. */
   function updateAutoMessage() {
     const { repairFound, repairTargets, repairExpectedCount, pending, failed, rounds, started, videoStarted } =
       autoState;
@@ -72,7 +73,7 @@ globalThis.PageMediaSaver ??= {};
     publishAutoState();
   }
 
-  // Adds one batch's counters to the scan totals.
+  /** Adds one pass's file, grid, opened-post and outcome counters to the scan totals. */
   function accumulate(batch) {
     autoState.started += batch.started || 0;
     autoState.skipped += batch.skipped || 0;

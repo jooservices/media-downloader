@@ -89,7 +89,10 @@
             owner: null,
             width: best.width,
             height: best.height,
-            url: best.url
+            url: best.url,
+            // Grid edges often contain only `image`; `viewer_image` is the
+            // full rendition returned for an opened photo.
+            fullSize: Boolean(node.viewer_image?.uri && best.url === node.viewer_image.uri)
           });
         }
       }

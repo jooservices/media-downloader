@@ -121,6 +121,22 @@ test("Instagram: only the largest photo rendition is saved, never a smaller cand
   assert.equal(found[0].kind, "photo");
   assert.equal(found[0].url, `${IG}big.jpg`);
   assert.equal(found[0].owner, "someone");
+  assert.equal(found[0].fullSize, true);
+});
+
+test("Instagram: a thumbnail-only candidate stays uncovered until an original rendition is present", () => {
+  const post = {
+    code: "Dpreview001",
+    original_width: 1440,
+    original_height: 1800,
+    image_versions2: { candidates: [igImage("preview", 320, 400)] }
+  };
+  const [preview] = plain(parsers.Instagram.extractMedia({ items: [post] }));
+  assert.equal(preview.fullSize, false);
+  post.image_versions2.candidates.push(igImage("original", 1440, 1800));
+  const [original] = plain(parsers.Instagram.extractMedia({ items: [post] }));
+  assert.equal(original.url, `${IG}original.jpg`);
+  assert.equal(original.fullSize, true);
 });
 
 test("Instagram: no usable rendition means no photo and no thumbnail fallback", () => {
@@ -296,6 +312,16 @@ test("Facebook: a photo keeps the largest listed rendition, not a thumbnail", ()
   const [saved] = plain(parsers.Facebook.extractMedia({ node: photo }));
   assert.equal(saved.url, `${FB}l.jpg`);
   assert.equal(saved.width, 2048);
+  assert.equal(saved.fullSize, true);
+});
+
+test("Facebook: a grid thumbnail without viewer_image is not treated as full-size", () => {
+  const [preview] = plain(
+    parsers.Facebook.extractMedia({
+      node: { __typename: "Photo", id: "1086989087485348", image: { uri: `${FB}preview.jpg`, width: 320, height: 240 } }
+    })
+  );
+  assert.equal(preview.fullSize, false);
 });
 
 test("Facebook: a photo with no usable image, or a bad id, is skipped", () => {
