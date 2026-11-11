@@ -40,6 +40,20 @@ test("progress counters, message and status are copied from the page's report", 
   );
 });
 
+test("progress preserves a classified empty-page reason and non-retryable login result", () => {
+  const job = applyProgress(
+    {},
+    {
+      type: "JOB_DONE",
+      state: { status: "incomplete", reason: "login_required", noRetry: true, message: "Sign in first." }
+    }
+  );
+  assert.deepEqual(
+    [job.status, job.reason, job.noRetry, job.message],
+    ["incomplete", "login_required", true, "Sign in first."]
+  );
+});
+
 test("progress keeps a collision-renamed output identity when the page reports its original name later", () => {
   const job = { outputRenames: { "a.jpg": "a (1).jpg" } };
   applyProgress(job, {

@@ -42,6 +42,7 @@ export function jobView(job) {
     account: job.account || "",
     url: job.url,
     message: job.message || "",
+    reason: ["login_required", "empty_or_private", "unknown"].includes(job.reason) ? job.reason : null,
     counts: {
       started: Number(job.started || 0),
       videoStarted: Number(job.videoStarted || 0),
@@ -360,9 +361,26 @@ const ID = "([0-9a-f-]{36})";
 const SEGMENT = "([^/]+)";
 const startedAt = Date.now();
 
+function failuresByReason(jobs) {
+  const counts = { login_required: 0, empty_or_private: 0, unknown: 0 };
+  for (const job of jobs) {
+    if (!["error", "incomplete"].includes(job.status)) {
+      continue;
+    }
+    const reason = Object.hasOwn(counts, job.reason) ? job.reason : "unknown";
+    counts[reason]++;
+  }
+  return counts;
+}
+
 async function statusRoute({ response, deps }) {
   const state = deps.status ? await deps.status() : {};
-  send(response, 200, { uptimeSeconds: Math.round((Date.now() - startedAt) / 1000), ...state });
+  const failureCounts = state.failuresByReason ?? failuresByReason((await deps.listJobs?.()) ?? []);
+  send(response, 200, {
+    uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
+    ...state,
+    failuresByReason: failureCounts
+  });
 }
 
 async function configRoute({ response, deps }) {
@@ -423,6 +441,11 @@ async function metricsRoute({ response, deps }) {
   for (const [status, count] of Object.entries(state.jobs ?? {})) {
     lines.push(`pms_jobs{status="${status}"} ${count}`);
   }
+  lines.push("# HELP pms_job_failures Jobs ending in error or incomplete by reason.", "# TYPE pms_job_failures gauge");
+  const failureCounts = state.failuresByReason ?? failuresByReason((await deps.listJobs?.()) ?? []);
+  for (const [reason, count] of Object.entries(failureCounts)) {
+    lines.push(`pms_job_failures{reason="${reason}"} ${Number(count) || 0}`);
+  }
   appendPlatformMetrics(lines, state.platforms ?? {});
   const health = deps.platformHealth ? await deps.platformHealth() : assessPlatforms(await deps.listJobs());
   lines.push(
@@ -459,7 +482,11 @@ const ROUTES = [
     path: "/v1/health",
     pattern: new RegExp(`^${API_BASE}/health$`),
     open: true,
-    GET: ({ response }) => send(response, 200, { status: "ok" })
+    GET: async ({ response, deps }) => {
+      const state = deps.status ? await deps.status() : {};
+      const failureCounts = state.failuresByReason ?? failuresByReason((await deps.listJobs?.()) ?? []);
+      send(response, 200, { status: "ok", failuresByReason: failureCounts });
+    }
   },
   { path: "/v1/jobs", pattern: new RegExp(`^${API_BASE}/jobs$`), GET: listJobsRoute, POST: createJobRoute },
   {

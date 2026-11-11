@@ -42,15 +42,100 @@ async function start(page, job = {}, limit = null, turns = 2000) {
   return page.finish(turns);
 }
 
-test("an empty grid ends after four end checks, with nothing pending", async () => {
-  const page = scanPage();
+test("a loaded profile with no media is classified as empty or private", async () => {
+  const page = scanPage({
+    tweak: sandbox => {
+      Object.defineProperty(sandbox.document, "body", {
+        get: () => ({ scrollHeight: 800, innerText: "Profile posts" })
+      });
+    }
+  });
   const state = await start(page);
   assert.equal(state.running, false);
   assert.equal(state.status, "incomplete", "a page with nothing on it is not a success");
+  assert.equal(state.reason, "empty_or_private");
   assert.match(state.message, /No photos or videos were found on this page/);
   assert.ok(state.rounds >= 4);
   assert.equal(page.storage.autoDownloadStatus.status, "incomplete", "the final state is saved for the popup");
   assert.ok(page.sent.some(message => message.type === "AUTO_DONE"));
+});
+
+test("an empty scan detects a login wall from the page DOM and marks it non-retryable", async () => {
+  const page = scanPage({
+    url: "https://x.com/NASA/",
+    tweak: sandbox => {
+      sandbox.document.querySelector = selector => (selector === 'input[type="password"]' ? {} : null);
+    }
+  });
+  const state = await start(page);
+  assert.equal(state.reason, "login_required");
+  assert.equal(state.noRetry, true);
+  assert.match(state.message, /asking for a sign-in/);
+});
+
+test("a private or unavailable notice is classified from visible page text", async () => {
+  const page = scanPage({
+    tweak: sandbox => {
+      Object.defineProperty(sandbox.document, "body", {
+        get: () => ({ scrollHeight: 800, innerText: "This account is private" })
+      });
+    }
+  });
+  const state = await start(page);
+  assert.equal(state.reason, "empty_or_private");
+});
+
+test("an empty DOM without login or page evidence reports unknown", async () => {
+  const page = scanPage({
+    url: "https://x.com/NASA/",
+    tweak: sandbox => {
+      Object.defineProperty(sandbox.document, "body", { get: () => null });
+    }
+  });
+  const state = await start(page);
+  assert.equal(state.reason, "unknown");
+});
+
+test("an unrecognized nonempty page is not mislabeled as an empty or private profile", async () => {
+  const page = scanPage({
+    url: "https://x.com/NASA/",
+    tweak: sandbox => {
+      Object.defineProperty(sandbox.document, "body", {
+        get: () => ({ scrollHeight: 800, innerText: "Something went wrong. Please try again." })
+      });
+    }
+  });
+  const state = await start(page);
+  assert.equal(state.reason, "unknown");
+});
+
+test("an empty single-post scan gets an unknown outcome for the supervisor retry", async () => {
+  const page = scanPage({
+    url: "https://x.com/NASA/status/100",
+    tweak: sandbox => {
+      Object.defineProperty(sandbox.document, "body", {
+        get: () => ({ scrollHeight: 800, innerText: "Something went wrong. Please try again." })
+      });
+    }
+  });
+  const state = await start(page, { url: "https://x.com/NASA/status/100" });
+  assert.equal(state.status, "incomplete");
+  assert.equal(state.reason, "unknown");
+  assert.equal(state.noRetry, false);
+  assert.match(state.message, /page state could not be classified/);
+});
+
+test("a login wall on a single-post scan stays visible without retry", async () => {
+  const page = scanPage({
+    url: "https://x.com/NASA/status/100",
+    tweak: sandbox => {
+      sandbox.document.querySelector = selector => (selector === 'input[type="password"]' ? {} : null);
+    }
+  });
+  const state = await start(page, { url: "https://x.com/NASA/status/100" });
+  assert.equal(state.status, "incomplete");
+  assert.equal(state.reason, "login_required");
+  assert.equal(state.noRetry, true);
 });
 
 test("photos are sized, sent to the background once each pass, and counted", async () => {
@@ -68,6 +153,71 @@ test("photos are sized, sent to the background once each pass, and counted", asy
   assert.equal(state.started, 2);
   assert.equal(state.status, "complete");
   assert.match(state.message, /2 photo request\(s\)/);
+});
+
+test("an active scan sends independent heartbeats while progress is unchanged", async () => {
+  const page = scanPage({ articles: photos(2) });
+  await page.request({ type: "AUTO_START_CLI", job: { ...JOB, jobId: "heartbeat-1" } });
+  const heartbeat = page.intervals.find(interval => interval.ms === 30_000);
+  assert.ok(heartbeat, "the scanner installs a liveness timer");
+  heartbeat.fn();
+  await Promise.resolve();
+  assert.ok(page.sent.some(message => message.type === "AUTO_HEARTBEAT" && message.jobId === "heartbeat-1"));
+  await page.finish();
+});
+
+test("a scan awaiting a background operation cannot heartbeat forever", async () => {
+  const page = scanPage({
+    articles: photos(1),
+    onSend: message => {
+      if (message.type === "DOWNLOAD_ITEMS") {
+        return new Promise(() => {});
+      }
+      return settled()(message);
+    }
+  });
+  await page.request({ type: "AUTO_START_CLI", job: { ...JOB, jobId: "hung-download" } });
+  for (let i = 0; i < 100; i++) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  const heartbeat = page.intervals.find(interval => interval.ms === 30_000);
+  heartbeat.fn();
+  await Promise.resolve();
+  assert.equal(
+    page.sent.some(message => message.type === "AUTO_HEARTBEAT"),
+    false
+  );
+  assert.equal(page.ns.scan.state.running, true, "the supervisor's silence watchdog ends this pending operation");
+});
+
+test("a stuck verified-output request cannot keep the supervisor watchdog alive", async () => {
+  const article = photos(1)[0];
+  const querySelector = article.querySelector;
+  article.querySelector = selector => (selector === "video" ? {} : querySelector(selector));
+  const page = scanPage({
+    url: "https://x.com/NASA/status/100",
+    articles: [article],
+    onSend: message => {
+      if (message.type === "GET_VERIFIED_OUTPUTS") {
+        return new Promise(() => {});
+      }
+      return settled()(message);
+    }
+  });
+  await page.request({
+    type: "AUTO_START_CLI",
+    job: { ...JOB, url: "https://x.com/NASA/status/100", jobId: "hung-verified-outputs" }
+  });
+  await page.finish(100);
+  const heartbeat = page.intervals.find(interval => interval.ms === 30_000);
+  heartbeat.fn();
+  await Promise.resolve();
+  assert.ok(page.sent.some(message => message.type === "GET_VERIFIED_OUTPUTS"));
+  assert.equal(
+    page.sent.some(message => message.type === "AUTO_HEARTBEAT"),
+    false
+  );
+  assert.equal(page.ns.scan.state.running, true, "the silence watchdog can now expire this stalled request");
 });
 
 test("the limit stops the scan as soon as it is reached and only asks for what fits", async () => {

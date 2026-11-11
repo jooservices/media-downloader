@@ -32,6 +32,8 @@ const BOB = "https://x.com/Bob/";
 const FINISHED = "00000000-0000-4000-8000-000000000077";
 const RUNNING = "00000000-0000-4000-8000-000000000078";
 const LIMITED = "00000000-0000-4000-8000-000000000079";
+const FAILURE = "00000000-0000-4000-8000-000000000080";
+const LEGACY_FAILURE = "00000000-0000-4000-8000-000000000081";
 const serveWithoutBrowser = options =>
   serve({
     ...options,
@@ -165,6 +167,27 @@ test("the running serve answers the REST API: create, read, watch and cancel", a
       status: "complete",
       createdAt: new Date().toISOString()
     });
+    await store.writeJob({
+      jobId: FAILURE,
+      url: "https://x.com/failure/",
+      platform: "Twitter",
+      account: "failure",
+      status: "incomplete",
+      reason: "login_required",
+      message: "Sign in to continue.",
+      createdAt: new Date().toISOString()
+    });
+    await store.writeJob({
+      jobId: LEGACY_FAILURE,
+      url: "https://x.com/legacy-failure/",
+      platform: "Twitter",
+      account: "legacy-failure",
+      status: "error",
+      noRetry: true,
+      message: "An older failure without a reason.",
+      createdAt: new Date().toISOString()
+    });
+    assert.equal((await (await call("GET", `/v1/jobs/${FAILURE}`)).json()).reason, "login_required");
     assert.equal((await call("DELETE", `/v1/jobs/${FINISHED}`)).status, 204);
     assert.equal(await store.readJob(FINISHED), null, "a finished job is removed");
     assert.equal((await call("DELETE", `/v1/jobs/${FINISHED}`)).status, 404);
@@ -173,8 +196,15 @@ test("the running serve answers the REST API: create, read, watch and cancel", a
     assert.equal(status.pid, process.pid);
     assert.equal(typeof status.jobs, "object");
     assert.equal(status.platforms.twitter.configuredWorkers, 1);
+    assert.equal(status.failuresByReason.login_required, 1);
+    assert.ok(status.failuresByReason.unknown >= 1, "unclassified failures are counted as unknown");
     assert.ok(status.jobs.paused >= 1, "the cancelled job is counted");
-    assert.ok((await (await call("GET", "/v1/metrics")).text()).includes('pms_jobs{status="paused"}'));
+    const metrics = await (await call("GET", "/v1/metrics")).text();
+    assert.ok(metrics.includes('pms_jobs{status="paused"}'));
+    assert.ok(metrics.includes('pms_job_failures{reason="login_required"} 1'));
+    const health = await (await call("GET", "/v1/health")).json();
+    assert.equal(health.failuresByReason.login_required, 1);
+    assert.ok(Number.isInteger(health.failuresByReason.unknown));
 
     const watching = await call("POST", "/v1/watches", { url: ALICE });
     assert.equal(watching.status, 201);

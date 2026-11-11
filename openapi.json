@@ -1008,11 +1008,24 @@
       },
       "Health": {
         "type": "object",
-        "required": ["status"],
+        "required": ["status", "failuresByReason"],
         "properties": {
           "status": {
             "const": "ok"
+          },
+          "failuresByReason": {
+            "$ref": "#/components/schemas/FailureCountsByReason"
           }
+        },
+        "additionalProperties": false
+      },
+      "FailureCountsByReason": {
+        "type": "object",
+        "required": ["login_required", "empty_or_private", "unknown"],
+        "properties": {
+          "login_required": { "type": "integer", "minimum": 0 },
+          "empty_or_private": { "type": "integer", "minimum": 0 },
+          "unknown": { "type": "integer", "minimum": 0 }
         },
         "additionalProperties": false
       },
@@ -1144,13 +1157,16 @@
       },
       "Status": {
         "type": "object",
-        "required": ["uptimeSeconds"],
+        "required": ["uptimeSeconds", "failuresByReason"],
         "properties": {
           "uptimeSeconds": {
             "type": "number"
           },
           "jobs": {
             "type": "object"
+          },
+          "failuresByReason": {
+            "$ref": "#/components/schemas/FailureCountsByReason"
           },
           "extension": {
             "type": "object"
@@ -1194,6 +1210,7 @@
           "account",
           "url",
           "message",
+          "reason",
           "counts",
           "createdAt",
           "updatedAt",
@@ -1220,6 +1237,10 @@
           },
           "message": {
             "type": "string"
+          },
+          "reason": {
+            "type": ["string", "null"],
+            "enum": ["login_required", "empty_or_private", "unknown", null]
           },
           "counts": {
             "$ref": "#/components/schemas/Counts"

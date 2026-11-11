@@ -419,17 +419,17 @@ test("announcing: a CLI tab announces itself even on a page that is not a profil
 
 test("announcing: a running job repeats its announcement every 15 seconds", async () => {
   const page = loadPage({ url: "https://x.com/NASA/", onSend: () => Promise.reject(new Error("worker asleep")) });
-  assert.equal(page.intervals.length, 1);
-  assert.equal(page.intervals[0].ms, 15000);
+  const announcementTimer = page.intervals.find(interval => interval.ms === 15000);
+  assert.ok(announcementTimer);
   const announcements = () => page.sent.filter(message => message.type === "CLI_PAGE_READY").length;
   assert.equal(announcements(), 1, "a rejected announcement is swallowed");
-  page.intervals[0].fn();
+  announcementTimer.fn();
   assert.equal(announcements(), 1, "idle: nothing repeats");
   const started = await page.request({
     type: "AUTO_START_CLI",
     job: { jobId: "j9", url: "https://x.com/NASA/", limit: 1 }
   });
   assert.equal(started.ok, true);
-  page.intervals[0].fn();
+  announcementTimer.fn();
   assert.equal(announcements(), 2);
 });

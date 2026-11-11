@@ -119,6 +119,19 @@ function createQueueEngine({ store, settings, login, tabs, now, random, log }) {
     return true;
   }
 
+  async function heartbeat(jobId) {
+    const job = (await store.listJobs()).find(item => item.jobId === jobId);
+    if (!job) {
+      return false;
+    }
+    await store.updateJob(jobId, current => {
+      if (current.status === "running") {
+        current.lastHeartbeatAt = new Date(now()).toISOString();
+      }
+    });
+    return true;
+  }
+
   // The address of a tab we opened changed: a sign-in page ends the job and holds the site.
   async function tabNavigated(tabId, url) {
     const job = await findByTab(tabId);
@@ -128,7 +141,13 @@ function createQueueEngine({ store, settings, login, tabs, now, random, log }) {
       const message = securityCheck
         ? "The site showed a checkpoint or security challenge. Sign in to continue."
         : "The site asked to sign in.";
-      await failJob(job.jobId, message, { needsLogin: true });
+      await store.updateJob(job.jobId, current => {
+        current.status = "incomplete";
+        current.reason = "login_required";
+        current.noRetry = true;
+        current.needsLogin = true;
+        current.message = message;
+      });
       tick().catch(() => undefined);
     }
   }
@@ -195,6 +214,7 @@ function createQueueEngine({ store, settings, login, tabs, now, random, log }) {
     tick,
     pageReady,
     progress,
+    heartbeat,
     tabNavigated,
     tabClosed,
     rateLimitSignal,

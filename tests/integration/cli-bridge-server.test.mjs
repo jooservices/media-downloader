@@ -78,6 +78,21 @@ test("a page with no waiting job gets NO_JOB, and one with a running job reconne
   assert.equal((await read(1)).status, "running");
 });
 
+test("a heartbeat updates liveness without replacing the job's progress message", async () => {
+  await putJob(1, {
+    status: "running",
+    message: "Scanning the profile.",
+    started: 4,
+    updatedAt: "2026-01-01T00:00:00.000Z"
+  });
+  const result = await handleBridgeMessage({ type: "JOB_HEARTBEAT", jobId: id(1) }, new Set());
+  const job = await read(1);
+  assert.equal(result.type, "ACK");
+  assert.ok(Date.parse(job.lastHeartbeatAt) > Date.parse("2026-01-01T00:00:00.000Z"));
+  assert.equal(job.message, "Scanning the profile.");
+  assert.equal(job.started, 4);
+});
+
 test("the oldest waiting job for the page starts and is claimed so a second tab cannot take it", async () => {
   const claimed = new Set();
   await putJob(2); // newer
@@ -152,7 +167,7 @@ test("a tagged tab of a finished or unknown job is told to close", async () => {
   assert.deepEqual(await handleBridgeMessage(ready({ cliJobId: id(1) }), claimed), close);
 });
 
-test("a tagged tab on a sign-in page marks the job as needing login and closes", async () => {
+test("a tagged tab on a sign-in page records a non-retryable login outcome and closes", async () => {
   await putJob(1);
   const result = await handleBridgeMessage(
     ready({ cliJobId: id(1), pageUrl: "https://www.instagram.com/accounts/login/" }),
@@ -160,9 +175,39 @@ test("a tagged tab on a sign-in page marks the job as needing login and closes",
   );
   assert.deepEqual(result, { ok: true, type: "NO_JOB", close: true });
   const job = await read(1);
-  assert.equal(job.status, "error");
+  assert.equal(job.status, "incomplete");
+  assert.equal(job.reason, "login_required");
+  assert.equal(job.noRetry, true);
   assert.equal(job.needsLogin, true);
   assert.match(job.message, /Instagram asked to sign in/);
+});
+
+test("a real tab-close error report is retried through the supervisor until maxAttempts", async () => {
+  let now = Date.parse("2026-01-01T00:00:00.000Z");
+  await putJob(1, { status: "running", attempts: 1, openedAt: new Date(now).toISOString(), tabId: 7 });
+  const supervisor = createSupervisor({
+    now: () => now,
+    random: () => 0,
+    log: () => {},
+    loadConfig: async () => parseConfig({ maxAttempts: 2, delaySeconds: { min: 0, max: 0 } }),
+    listJobs: store.listJobs,
+    updateJob: store.updateJob,
+    openJob: async () => {},
+    moveFiles: async () => ({ moved: 0, failed: 0 })
+  });
+  const closedTabError = "The Edge profile tab was closed before the scan finished.";
+  await handleBridgeMessage({ type: "JOB_ERROR", jobId: id(1), error: closedTabError }, new Set());
+  assert.equal((await supervisor.tick()).requeued, 1);
+  assert.equal((await read(1)).attempts, 1);
+  now += 60_001;
+  await supervisor.tick();
+  assert.equal((await read(1)).attempts, 2);
+  await handleBridgeMessage({ type: "JOB_ERROR", jobId: id(1), error: closedTabError }, new Set());
+  await supervisor.tick();
+  const job = await read(1);
+  assert.equal(job.status, "error");
+  assert.equal(job.attempts, 2);
+  assert.match(job.message, /2 attempt\(s\) made/);
 });
 
 test("a sign-in redirect reaches platform status and starts back-off", async () => {
@@ -182,6 +227,7 @@ test("a sign-in redirect reaches platform status and starts back-off", async () 
     moveFiles: async () => ({ moved: 0, failed: 0 })
   });
   await supervisor.tick();
+  assert.equal((await read(1)).status, "incomplete", "a login redirect stays visible and is not retried");
   assert.deepEqual(supervisor.platformStatus().instagram, {
     configuredWorkers: 3,
     effectiveWorkers: 1,
@@ -339,6 +385,9 @@ test("a tagged tab on a checkpoint page records a detectable challenge outcome",
     new Set()
   );
   const job = await read(1);
+  assert.equal(job.status, "incomplete");
+  assert.equal(job.reason, "login_required");
+  assert.equal(job.noRetry, true);
   assert.equal(job.needsLogin, true);
   assert.match(job.message, /checkpoint or security challenge/i);
 });
