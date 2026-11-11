@@ -414,10 +414,10 @@ test("at most eight downloads run at once; a later scan uses the next free slot"
   assert.equal(env.started.length, 8);
   const ninth = download(env, [photo(9)]);
   const result = plain(await ninth);
-  assert.deepEqual([result.started, result.pending], [0, 8]);
+  assert.deepEqual([result.started, result.pending, result.queued], [0, 9, 1]);
   assert.equal(env.started.length, 8);
   finish(env, 1);
-  assert.equal(plain(await download(env, [photo(9)])).started, 1);
+  await download(env, [photo(9)]);
   assert.equal(env.started.length, 9);
 });
 
@@ -437,8 +437,9 @@ test("a full download batch returns without holding the queue for a slot", async
   ]);
   const result = plain(await queued);
   assert.equal(returnedQuickly, true);
-  assert.deepEqual([result.started, result.pending], [0, 8]);
+  assert.deepEqual([result.started, result.pending, result.queued], [0, 28, 20]);
   assert.equal(env.started.length, 8);
+  assert.equal(env.storage.deferredDownloads.length, 20);
 });
 
 test("an item already saved while all slots are busy is skipped", async () => {

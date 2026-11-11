@@ -35,6 +35,7 @@ const handlers = {
   PLATFORM_RATE_LIMIT: handlePlatformRateLimit,
   MEDIA_FOUND: message => cacheMedia(message.media),
   DOWNLOAD_CACHED_MEDIA: message => downloadCachedMedia(message),
+  CACHED_MEDIA_RESULT: message => getCachedMediaResult(message.requestId),
   SET_NATIVE_VIDEO_TARGET: message => queueBatch(() => setNativeVideoTarget(message.target)),
   DOWNLOAD_ITEMS: message => queueBatch(() => downloadBatch(message.items)),
   RETRY_FAILED_DOWNLOADS: message => queueBatch(() => retryFailedDownloads(message.platform, message.account)),

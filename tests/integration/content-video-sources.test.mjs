@@ -324,33 +324,70 @@ test("Facebook and TikTok cache requests start at most eight page-data files per
   }
 });
 
-test("a deferred Facebook or TikTok cache pass does not start a competing native download", async () => {
+test("cached coverage suppresses only the matching Facebook or TikTok native download", async () => {
   for (const [platform, url, account] of [
     ["Facebook", "https://www.facebook.com/someone/", "someone"],
     ["TikTok", "https://www.tiktok.com/@someone", "someone"]
   ]) {
     const page = menuPage({
       url,
-      onSend: settled({ DOWNLOAD_CACHED_MEDIA: () => ({ ok: true, deferred: true, diag: { deferred: true } }) })
+      onSend: settled({
+        DOWNLOAD_CACHED_MEDIA: () => ({ ok: true, deferred: true, coveredIds: ["123"], diag: { deferred: true } })
+      })
     });
-    page.document.querySelectorAll = selector => {
-      if (selector === "video") {
-        return [{ src: "https://example.com/video.mp4" }];
-      }
-      if (platform === "Facebook" && selector === "a[href]") {
-        return [{ href: "https://www.facebook.com/reel/123" }];
-      }
-      return [];
-    };
+    const postUrl =
+      platform === "Facebook" ? "https://www.facebook.com/reel/123" : "https://www.tiktok.com/@someone/video/123";
+    const post = videoPost({ links: [{ href: postUrl }], buttons: [postButton(page)] });
+    page.menu.entries.push(downloadEntry());
+    page.document.querySelectorAll = selector => (selector === "a[href]" ? [{ href: postUrl }] : []);
+    showPosts(page, [{ container: post, video: { src: "https://example.com/video.mp4" } }]);
     const result = await page.ns.videoSources.collectPageMedia(platform, account);
     assert.equal(result.videoDownloadsClicked, 0, platform);
-    assert.equal(
-      page.sent.some(message => message.type === "DOWNLOAD_ITEMS"),
-      false,
-      platform
-    );
+    assert.equal(targetMessages(page).length, 0, platform);
     assert.deepEqual(plain(page.ns.videoSources.cacheDiagnostics()), { deferred: true }, platform);
   }
+});
+
+test("a deferred cache miss keeps the native video fallback", async () => {
+  const page = menuPage({
+    url: "https://www.facebook.com/someone/",
+    onSend: settled({ DOWNLOAD_CACHED_MEDIA: () => ({ ok: true, deferred: true, coveredIds: [] }) })
+  });
+  const entry = downloadEntry();
+  page.menu.entries.push(entry);
+  showPosts(page, [
+    {
+      container: videoPost({ links: [{ href: "https://www.facebook.com/reel/456" }], buttons: [postButton(page)] }),
+      video: { src: "https://example.com/video.mp4" }
+    }
+  ]);
+
+  const result = await page.ns.videoSources.collectPageMedia("Facebook", "someone");
+  assert.equal(result.videoDownloadsClicked, 1);
+  assert.equal(entry.clicked, 1);
+  assert.equal(targetMessages(page).length, 1);
+});
+
+test("queued page-data downloads reserve the scan limit", async () => {
+  const postUrl = "https://www.facebook.com/reel/789";
+  const page = menuPage({
+    url: "https://www.facebook.com/someone/",
+    onSend: settled({
+      DOWNLOAD_CACHED_MEDIA: () => ({ ok: true, started: 1, queued: 2, coveredIds: [] })
+    })
+  });
+  page.ns.scan.state.limit = 3;
+  page.document.querySelectorAll = selector => (selector === "a[href]" ? [{ href: postUrl }] : []);
+  showPosts(page, [
+    {
+      container: videoPost({ links: [{ href: postUrl }], buttons: [postButton(page)] }),
+      video: { src: "https://example.com/video.mp4" }
+    }
+  ]);
+
+  const result = await page.ns.videoSources.collectPageMedia("Facebook", "someone");
+  assert.equal(result.videoDownloadsClicked, 3);
+  assert.equal(targetMessages(page).length, 0);
 });
 
 test("other platforms keep the unlimited page-data request when the scan has no limit", async () => {

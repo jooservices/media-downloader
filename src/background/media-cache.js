@@ -130,43 +130,71 @@ function cacheDiagnostics(mediaCache, platform, wantedIds, wantedAccount, select
 // cached owner matches `account` are saved, so unrelated feed media never lands
 // in the wrong folder.
 const queuedCachedKeys = new Set();
-const pendingCachedRequests = new Set();
+const pendingCachedRequests = new Map();
+const cachedMediaRequests = new Map();
+let nextCachedMediaRequestId = 1;
 
 function downloadCachedMedia(request) {
   if (["Facebook", "TikTok"].includes(request.platform)) {
-    const requestKey = `${request.platform}|${String(request.account || "").toLowerCase()}`;
-    if (pendingCachedRequests.has(requestKey)) {
-      return deferredCachedMediaReply();
+    const ids = Array.isArray(request.ids) ? [...new Set(request.ids.map(String))].sort() : null;
+    const requestKey = `${request.platform}|${String(request.account || "").toLowerCase()}|${JSON.stringify(ids)}|${JSON.stringify(request.limit ?? null)}`;
+    const pending = pendingCachedRequests.get(requestKey);
+    if (pending) {
+      return deferredCachedMediaReply(pending.requestId);
     }
-    pendingCachedRequests.add(requestKey);
+    const requestId = `cached-${nextCachedMediaRequestId++}`;
     const work = queueBatch(() => downloadCachedMediaNow(request, { inQueue: true }));
-    const releaseRequest = () => pendingCachedRequests.delete(requestKey);
-    void work.then(releaseRequest, releaseRequest);
-    return deferredCachedMediaReply();
+    pendingCachedRequests.set(requestKey, { requestId, work });
+    cachedMediaRequests.set(requestId, { requestKey, work });
+    const cleanup = setTimeout(() => releaseCachedMediaRequest(requestId), 120_000);
+    cleanup.unref?.();
+    return deferredCachedMediaReply(requestId);
   }
   return downloadCachedMediaNow(request);
 }
 
-function deferredCachedMediaReply() {
+function deferredCachedMediaReply(requestId) {
   return {
     ok: true,
     deferred: true,
+    requestId,
     started: 0,
-    queued: true,
+    queued: 0,
     skipped: 0,
     failed: 0,
     pending: 0,
-    errors: [],
-    cached: 0,
-    coveredIds: [],
     diag: { deferred: true }
   };
+}
+
+function releaseCachedMediaRequest(requestId) {
+  const request = cachedMediaRequests.get(requestId);
+  if (!request) {
+    return;
+  }
+  cachedMediaRequests.delete(requestId);
+  if (pendingCachedRequests.get(request.requestKey)?.requestId === requestId) {
+    pendingCachedRequests.delete(request.requestKey);
+  }
+}
+
+async function getCachedMediaResult(requestId) {
+  const request = cachedMediaRequests.get(requestId);
+  if (!request) {
+    return { ok: false, error: "The cached-media request is no longer available." };
+  }
+  try {
+    return await request.work;
+  } finally {
+    releaseCachedMediaRequest(requestId);
+  }
 }
 
 async function downloadCachedMediaNow({ platform, account, ids, limit }, { inQueue = false } = {}) {
   if (!platforms.PLATFORMS.includes(platform)) {
     return { ok: false, error: "Unsupported platform for cached media." };
   }
+  await mediaCacheQueue;
   const { mediaCache = {} } = await chrome.storage.local.get({ mediaCache: {} });
   const wantedIds = Array.isArray(ids) ? new Set(ids.map(String)) : null;
   const wantedAccount = account ? cleanPart(account).toLowerCase() : null;
@@ -185,13 +213,14 @@ async function downloadCachedMediaNow({ platform, account, ids, limit }, { inQue
   // close while a different tab is draining downloads. Read the persisted pending
   // set directly; the scan's drain step reconciles completed downloads before retrying.
   const { pendingDownloads = {} } = await chrome.storage.local.get({ pendingDownloads: {} });
-  const availableSlots = Math.max(0, MAX_ACTIVE_DOWNLOADS - Object.keys(pendingDownloads).length);
+  const { deferredDownloads = [] } = await chrome.storage.local.get({ deferredDownloads: [] });
+  const queuedKeys = new Set([...queuedCachedKeys, ...deferredDownloads.map(item => item.key)]);
   const hasLimit = Number.isInteger(limit) && limit >= 0;
-  const freshLimit = hasLimit ? Math.min(limit, availableSlots) : availableSlots;
-  const selected = await selectCachedItems(items, pendingDownloads, hasLimit, freshLimit, queuedCachedKeys);
+  const freshLimit = hasLimit ? limit : MAX_BATCH_ITEMS;
+  const { selected, skipped, pending } = await selectCachedItems(items, pendingDownloads, freshLimit, queuedKeys);
   items.splice(0, items.length, ...selected);
   if (!items.length) {
-    return { ok: true, started: 0, skipped: 0, failed: 0, pending: 0, errors: [], cached: 0, coveredIds, diag };
+    return { ok: true, started: 0, skipped, failed: 0, pending, errors: [], cached: 0, coveredIds, diag };
   }
   const reservedKeys = items.map(item => item.key);
   for (const key of reservedKeys) {
@@ -207,7 +236,12 @@ async function downloadCachedMediaNow({ platform, account, ids, limit }, { inQue
   };
   const operation = () => downloadBatch(items, { reconcile: false });
   if (inQueue) {
-    return { ...(await operation()), cached: items.length, coveredIds, diag };
+    try {
+      const result = await operation();
+      return { ...result, skipped: result.skipped + skipped, cached: items.length, coveredIds, diag };
+    } finally {
+      releaseReservations();
+    }
   }
   const queued = queueBatch(operation);
   let timeoutId;
@@ -220,16 +254,17 @@ async function downloadCachedMediaNow({ platform, account, ids, limit }, { inQue
   clearTimeout(timeoutId);
   if (result) {
     releaseReservations();
-    return { ...result, cached: items.length, coveredIds, diag };
+    return { ...result, skipped: result.skipped + skipped, cached: items.length, coveredIds, diag };
   }
   void queued.then(releaseReservations, releaseReservations);
   return {
     ok: true,
-    started: items.length,
+    deferred: true,
+    started: 0,
     queued: items.length,
-    skipped: 0,
+    skipped,
     failed: 0,
-    pending: 0,
+    pending: items.length,
     errors: [],
     cached: items.length,
     coveredIds,
@@ -237,27 +272,27 @@ async function downloadCachedMediaNow({ platform, account, ids, limit }, { inQue
   };
 }
 
-async function selectCachedItems(items, pendingDownloads, hasLimit, freshLimit, queuedKeys = new Set()) {
+async function selectCachedItems(items, pendingDownloads, freshLimit, queuedKeys = new Set()) {
   const selected = [];
+  let skipped = 0;
+  let pending = 0;
   let freshCount = 0;
   for (let offset = 0; offset < items.length; offset += 100) {
     const batch = items.slice(offset, offset + 100);
     const savedKeys = await ledgerHasAny(batch.map(item => item.key));
     for (const item of batch) {
-      const alreadyStarted =
-        Object.hasOwn(pendingDownloads, item.key) || savedKeys.has(item.key) || queuedKeys.has(item.key);
-      if (alreadyStarted) {
-        if (!hasLimit) {
-          selected.push(item);
-        }
+      if (savedKeys.has(item.key)) {
+        skipped++;
+      } else if (Object.hasOwn(pendingDownloads, item.key) || queuedKeys.has(item.key)) {
+        pending++;
       } else if (freshCount < freshLimit) {
         selected.push(item);
         freshCount++;
       }
     }
-    if (hasLimit && freshCount >= freshLimit) {
+    if (freshCount >= freshLimit) {
       break;
     }
   }
-  return selected;
+  return { selected, skipped, pending };
 }

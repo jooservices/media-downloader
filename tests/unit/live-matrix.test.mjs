@@ -45,6 +45,8 @@ test("summarize adds up the pages of one account and keeps the reasons it did no
 test("the report is a table with a notes section only when something needs explaining", () => {
   const rows = summarize([job("1", "Instagram", "a", "complete", { skipped: 4 })]);
   const plain = renderReport(rows, { startedAt: "s", finishedAt: "f", extensionVersion: "0.5.1" });
+  assert.match(plain, /\| Site \| Account \| Pages \| New files \| Skipped \| Failed \| Result \|/);
+  assert.doesNotMatch(plain, /Already saved/);
   assert.match(plain, /\| Instagram \| a \| 1 \| 0 \| 4 \| 0 \| complete \|/);
   assert.match(plain, /reported version 0\.5\.1/);
   assert.doesNotMatch(plain, /## Notes/);

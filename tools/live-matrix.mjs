@@ -42,7 +42,7 @@ export function renderReport(rows, { startedAt, finishedAt, extensionVersion }) 
     "",
     `Started ${startedAt}, finished ${finishedAt}. Extension in the browser reported version ${extensionVersion ?? "unknown"}.`,
     "",
-    "| Site | Account | Pages | New files | Already saved | Failed | Result |",
+    "| Site | Account | Pages | New files | Skipped | Failed | Result |",
     "| --- | --- | ---: | ---: | ---: | ---: | --- |"
   ];
   for (const row of rows) {
