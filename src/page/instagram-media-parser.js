@@ -53,6 +53,12 @@
     return false;
   }
 
+  function imageFullSizeStatus(node, best) {
+    const width = Number(node?.original_width) || 0;
+    const height = Number(node?.original_height) || 0;
+    return width > 0 && height > 0 ? isFullSizeImage(node, best) : null;
+  }
+
   function isPostNode(node) {
     return (
       typeof node.code === "string" &&
@@ -106,7 +112,7 @@
         width: best.width,
         height: best.height,
         url: best.url,
-        fullSize: isFullSizeImage(node, best),
+        fullSize: imageFullSizeStatus(node, best),
         expectedItems
       });
     };
@@ -152,7 +158,7 @@
         width: best.width,
         height: best.height,
         url: best.url,
-        fullSize: Boolean(video || isFullSizeImage(node, best))
+        fullSize: video ? true : imageFullSizeStatus(node, best)
       });
     };
 

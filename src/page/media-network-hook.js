@@ -18,6 +18,27 @@
   const CHANNEL = "page-media-saver:media";
   const announced = new Map();
 
+  function requestPageContext() {
+    try {
+      const url = new URL(
+        global.location.href || `https://${global.location.hostname}${global.location.pathname || "/"}`
+      );
+      const segments = url.pathname.split("/").filter(Boolean);
+      const page = site.classify?.(segments, url);
+      let postId = null;
+      if (platform === "Instagram" && page?.mediaPage) {
+        if (page.kind === "post") {
+          postId = segments[1];
+        } else if (page.kind === "story" && segments.length === 3) {
+          postId = segments[2];
+        }
+      }
+      return { instagramPostId: postId || null };
+    } catch {
+      return { instagramPostId: null };
+    }
+  }
+
   // The scan runs in another world but shares the page's DOM, so the hook leaves its counters on the root
   // element. When a scan finds nothing, they tell whether the hook ran and what it could read.
   const stats = { documents: 0, found: 0 };
@@ -51,26 +72,22 @@
     }
   }
 
-  function publishDocuments(documents) {
+  function publishDocuments(documents, context = requestPageContext()) {
     const fresh = [];
     stats.documents += documents.length;
-    let mediaPage = false;
-    try {
-      const currentSite = global.PageMediaLib.sites.forHost(global.location.hostname);
-      const url = new URL(
-        global.location.href || `https://${global.location.hostname}${global.location.pathname || "/"}`
-      );
-      const page = currentSite?.classify?.(url.pathname.split("/").filter(Boolean), url);
-      mediaPage = Boolean(page?.mediaPage);
-    } catch {
-      /* an unclassifiable address must not break the page */
-    }
     for (const document of documents) {
       let found = [];
       try {
         found = parser
           .extractMedia(document)
-          .map(entry => (mediaPage && entry.kind === "photo" ? { ...entry, fullSize: true } : entry));
+          .map(entry =>
+            entry.kind === "photo" &&
+            entry.platform === "Instagram" &&
+            entry.id === context.instagramPostId &&
+            entry.fullSize === null
+              ? { ...entry, fullSize: true }
+              : entry
+          );
       } catch {
         /* an unexpected shape must not break the page */
       }
@@ -97,10 +114,11 @@
     }
   }
 
-  const publishText = text => publishDocuments(parseJsonLoose(text));
+  const publishText = (text, context) => publishDocuments(parseJsonLoose(text), context);
 
   const nativeFetch = global.fetch;
   global.fetch = async function pageMediaSaverFetch(input, init) {
+    const context = requestPageContext();
     const response = await nativeFetch.call(this, input, init);
     try {
       const url = typeof input === "string" ? input : input?.url || String(input);
@@ -109,7 +127,7 @@
         response
           .clone()
           .text()
-          .then(publishText)
+          .then(text => publishText(text, context))
           .catch(() => {});
       }
     } catch {
@@ -121,11 +139,12 @@
   const nativeOpen = global.XMLHttpRequest.prototype.open;
   global.XMLHttpRequest.prototype.open = function pageMediaSaverOpen(method, url, ...rest) {
     if (DATA_URL.test(String(url))) {
+      const context = requestPageContext();
       this.addEventListener("load", () => {
         try {
           publishRateLimit(this.status);
           if (this.responseType === "" || this.responseType === "text") {
-            publishText(this.responseText);
+            publishText(this.responseText, context);
           }
         } catch {
           /* ignore unreadable responses */

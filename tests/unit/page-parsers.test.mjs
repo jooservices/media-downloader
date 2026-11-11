@@ -121,7 +121,7 @@ test("Instagram: only the largest photo rendition is saved, never a smaller cand
   assert.equal(found[0].kind, "photo");
   assert.equal(found[0].url, `${IG}big.jpg`);
   assert.equal(found[0].owner, "someone");
-  assert.equal(found[0].fullSize, false, "a 1080 candidate may still be a resized preview");
+  assert.equal(found[0].fullSize, null, "the response does not identify the original dimensions");
 });
 
 test("Instagram: declared smaller originals are complete, while a larger listed candidate wins", () => {
@@ -143,7 +143,7 @@ test("Instagram: candidate lists without declared dimensions stay uncovered even
   };
   const [largest] = plain(parsers.Instagram.extractMedia({ items: [post] }));
   assert.equal(largest.url, `${IG}largest.jpg`);
-  assert.equal(largest.fullSize, false, "the page did not identify the original dimensions");
+  assert.equal(largest.fullSize, null, "the page did not identify the original dimensions");
 });
 
 test("Instagram: a thumbnail-only candidate stays uncovered until an original rendition is present", () => {

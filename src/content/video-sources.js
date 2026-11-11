@@ -282,17 +282,15 @@ globalThis.PageMediaSaver ??= {};
   async function saveOpenedPost(platform, account, id, remaining) {
     for (let attempt = 0; attempt < POST_DATA_ATTEMPTS; attempt++) {
       await pause(900);
-      const response = await chrome.runtime
-        .sendMessage({
-          type: "DOWNLOAD_CACHED_MEDIA",
-          platform,
-          account,
-          ids: [id],
-          limit: Number.isFinite(remaining) ? remaining : null
-        })
-        .catch(() => null);
+      const response = await requestCachedMedia({
+        type: "DOWNLOAD_CACHED_MEDIA",
+        platform,
+        account,
+        ids: [id],
+        limit: Number.isFinite(remaining) ? remaining : null
+      });
       if (response?.cached) {
-        return (response.started || 0) + (response.queued || 0);
+        return startedCount(response.started) + startedCount(response.queued);
       }
     }
     return 0;

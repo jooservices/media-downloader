@@ -165,6 +165,71 @@ test("hook: a full-size photo replaces an earlier preview announcement with the 
   assert.equal(posted.length, 2, "a later preview never replaces or re-announces the original");
 });
 
+test("hook: only an unknown-size photo for the requested post is promoted after SPA navigation", async () => {
+  let resolveResponse;
+  const { page, posted } = loadHook({
+    fetchImpl: () =>
+      new Promise(resolve => {
+        resolveResponse = resolve;
+      })
+  });
+  page.location.pathname = "/p/Drequested001/";
+  const request = page.fetch("https://www.instagram.com/api/v1/feed/");
+  page.location.pathname = "/p/Dother000001/";
+  resolveResponse(
+    textResponse(
+      JSON.stringify({
+        items: [
+          {
+            code: "Drequested001",
+            image_versions2: { candidates: [{ url: `${IG}requested.jpg`, width: 700, height: 900 }] }
+          },
+          {
+            code: "Dother000001",
+            original_width: 1440,
+            original_height: 1800,
+            image_versions2: { candidates: [{ url: `${IG}other-preview.jpg`, width: 320, height: 400 }] }
+          }
+        ]
+      })
+    )
+  );
+  await request;
+  await tick();
+
+  const media = posted.flatMap(item => item.message.media);
+  assert.equal(media.find(entry => entry.id === "Drequested001").fullSize, true);
+  assert.equal(media.find(entry => entry.id === "Dother000001").fullSize, false);
+});
+
+test("hook: a feed response parsed after navigation keeps its photos uncovered", async () => {
+  let resolveResponse;
+  const { page, posted } = loadHook({
+    fetchImpl: () =>
+      new Promise(resolve => {
+        resolveResponse = resolve;
+      })
+  });
+  const request = page.fetch("https://www.instagram.com/api/v1/feed/");
+  page.location.pathname = "/p/Dlatepost001/";
+  resolveResponse(
+    textResponse(
+      JSON.stringify({
+        items: [
+          {
+            code: "Dlatepost001",
+            image_versions2: { candidates: [{ url: `${IG}late.jpg`, width: 700, height: 900 }] }
+          }
+        ]
+      })
+    )
+  );
+  await request;
+  await tick();
+
+  assert.equal(posted[0].message.media[0].fullSize, null);
+});
+
 test("hook: a response that cannot be read never breaks the page's own request", async () => {
   const unreadable = { clone: () => ({ text: () => Promise.reject(new Error("body used")) }) };
   const { page, posted } = loadHook({ fetchImpl: async () => unreadable });

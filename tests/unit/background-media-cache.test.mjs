@@ -273,6 +273,37 @@ test("a partially cached Instagram carousel saves eligible items but remains unc
   assert.equal(env.started.length, 2);
 });
 
+test("a later preview cannot replace a cached original or shrink carousel coverage metadata", async () => {
+  const env = loadBackground();
+  await found(env, [
+    photo("upgrade01", {
+      platform: "Instagram",
+      index: 1,
+      expectedItems: 1,
+      fullSize: true,
+      url: "https://scontent.cdninstagram.com/v/original.jpg"
+    })
+  ]);
+  await found(env, [
+    photo("upgrade01", {
+      platform: "Instagram",
+      index: 1,
+      expectedItems: 2,
+      fullSize: false,
+      url: "https://scontent.cdninstagram.com/v/preview.jpg"
+    })
+  ]);
+
+  const cached = env.storage.mediaCache["Instagram:photo:upgrade01:1"];
+  assert.equal(cached.url, "https://scontent.cdninstagram.com/v/original.jpg");
+  assert.equal(cached.fullSize, true);
+  assert.equal(cached.expectedItems, 2);
+
+  const result = await saveCached(env, { platform: "Instagram", account: "alice", ids: ["upgrade01"] });
+  assert.deepEqual(plain(result.coveredIds), [], "the newly reported carousel sibling remains uncovered");
+  assert.equal(env.started[0].url, "https://scontent.cdninstagram.com/v/original.jpg");
+});
+
 test("without a scanned account only entries with a known owner are taken", async () => {
   const env = loadBackground();
   await found(env, [photo("aye1"), photo("bee1", { owner: "" })]);

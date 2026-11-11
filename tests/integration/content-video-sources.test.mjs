@@ -521,6 +521,46 @@ test("malformed cache coverage metadata does not stop the grid fallback", async 
   assert.equal(page.links[0].clicked, 1);
 });
 
+test("Facebook opened-post fallback waits for the deferred result before spending its budget", async () => {
+  const messages = [];
+  const page = loadPage({
+    url: "https://www.facebook.com/example/photos/",
+    onSend: message => {
+      messages.push(message);
+      if (message.type === "DOWNLOAD_CACHED_MEDIA") {
+        return { ok: true, requestId: "facebook-open-1", started: 0, cached: 0 };
+      }
+      if (message.type === "CACHED_MEDIA_RESULT") {
+        return { ok: true, cached: 1, started: 1, queued: 0 };
+      }
+      return { ok: true };
+    }
+  });
+  const links = ["100000000000000001", "100000000000000002"].map(id => ({
+    href: `https://www.facebook.com/photo/?fbid=${id}`,
+    isConnected: true,
+    getAttribute: () => `/photo/?fbid=${id}`,
+    getClientRects: () => [{}],
+    closest: () => null,
+    click() {
+      this.clicked = (this.clicked || 0) + 1;
+    }
+  }));
+  page.document.querySelectorAll = selector => (selector === "a[href]" || selector.includes("/photo/") ? links : []);
+
+  const result = await page.ns.videoSources.openGridPosts("example", 1);
+  assert.deepEqual(plain(result), { started: 1, opened: 1 });
+  assert.deepEqual(plain(links.map(link => link.clicked || 0)), [1, 0]);
+  assert.deepEqual(
+    plain(messages.filter(message => message.type !== "CLI_PAGE_READY").map(message => message.type)),
+    ["DOWNLOAD_CACHED_MEDIA", "CACHED_MEDIA_RESULT"],
+    "the actual started count is resolved before the next post consumes the limit"
+  );
+  const requests = messages.filter(message => message.type !== "CLI_PAGE_READY");
+  assert.equal(requests[0].limit, 1);
+  assert.equal(requests[1].requestId, "facebook-open-1");
+});
+
 function cachedGridPage({ coveredIds, started = 0, skipped = 0, openedStarted = 1 } = {}) {
   let gridRequest = true;
   const page = loadPage({

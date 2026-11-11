@@ -64,8 +64,23 @@ async function storeMedia(media) {
       continue;
     }
     const cacheKey = `${entry.platform}:${entry.kind}:${entry.id}:${entry.index}`;
+    const previous = mediaCache[cacheKey];
     if (!Object.hasOwn(mediaCache, cacheKey)) {
       added++;
+    }
+    if (
+      previous?.fullSize === true &&
+      entry.fullSize === false &&
+      ["Instagram", "Facebook"].includes(entry.platform) &&
+      entry.kind === "photo"
+    ) {
+      entry.url = previous.url;
+      entry.width = previous.width;
+      entry.height = previous.height;
+      entry.fullSize = true;
+      entry.expectedItems = Math.max(previous.expectedItems, entry.expectedItems);
+    } else if (previous?.expectedItems) {
+      entry.expectedItems = Math.max(previous.expectedItems, entry.expectedItems);
     }
     delete mediaCache[cacheKey]; // re-added at the end, so the oldest entries are the ones dropped
     mediaCache[cacheKey] = entry;
