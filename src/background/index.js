@@ -35,11 +35,15 @@ const handlers = {
   AUTO_HEARTBEAT: handleAutoHeartbeat,
   PLATFORM_RATE_LIMIT: handlePlatformRateLimit,
   MEDIA_FOUND: message => cacheMedia(message.media),
-  DOWNLOAD_CACHED_MEDIA: message => queueBatch(() => downloadCachedMedia(message)),
+  DOWNLOAD_CACHED_MEDIA: message => downloadCachedMedia(message),
+  CACHED_MEDIA_RESULT: message => getCachedMediaResult(message.requestId),
   SET_NATIVE_VIDEO_TARGET: message => queueBatch(() => setNativeVideoTarget(message.target)),
   DOWNLOAD_ITEMS: message => queueBatch(() => downloadBatch(message.items)),
   RETRY_FAILED_DOWNLOADS: message => queueBatch(() => retryFailedDownloads(message.platform, message.account)),
-  DRAIN_DOWNLOADS: message => queueBatch(() => drainDownloads(message.platform, message.account, message.timeoutMs)),
+  DRAIN_DOWNLOADS: message =>
+    drainDownloads(message.platform, message.account, message.timeoutMs, (platform, account) =>
+      queueBatch(() => getDownloadStatus(platform, account))
+    ),
   DOWNLOAD_STATUS: message => queueBatch(() => getDownloadStatus(message.platform, message.account)),
   GET_VERIFIED_OUTPUTS: message => getVerifiedOutputs(message.platform, message.account, message.jobId)
 };
@@ -48,6 +52,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const handler = Object.hasOwn(handlers, message?.type) ? handlers[message.type] : null;
   const pending = handler?.(message, sender);
   if (!pending) {
+    return false;
+  }
+  if (typeof pending.then !== "function") {
+    sendResponse(pending);
     return false;
   }
   pending.then(sendResponse).catch(error => sendResponse({ ok: false, error: error?.message || String(error) }));

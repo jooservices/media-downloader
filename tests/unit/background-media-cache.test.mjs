@@ -26,7 +26,10 @@ const video = (id, overrides = {}) => ({
   ...overrides
 });
 const found = (env, media) => env.send({ type: "MEDIA_FOUND", media }).then(plain);
-const saveCached = (env, request) => env.send({ type: "DOWNLOAD_CACHED_MEDIA", ...request }).then(plain);
+const saveCached = async (env, request) => {
+  const reply = await env.send({ type: "DOWNLOAD_CACHED_MEDIA", ...request });
+  return plain(reply?.requestId ? await env.send({ type: "CACHED_MEDIA_RESULT", requestId: reply.requestId }) : reply);
+};
 
 test("media must be a list", async () => {
   const env = loadBackground();
@@ -160,9 +163,9 @@ test("the limit counts only items that are not already saved or pending", async 
   assert.deepEqual(plain(zero), {
     ok: true,
     started: 0,
-    skipped: 0,
+    skipped: 1,
     failed: 0,
-    pending: 0,
+    pending: 2,
     errors: [],
     cached: 0,
     coveredIds: ["lim001", "lim002", "lim003", "lim004"],
@@ -170,11 +173,293 @@ test("the limit counts only items that are not already saved or pending", async 
   });
 });
 
-test("a limit that is not a whole number is ignored", async () => {
+test("bulk ledger lookups return saved canonical keys", async () => {
   const env = loadBackground();
-  await found(env, [photo("nl001"), photo("nl002")]);
-  assert.equal((await saveCached(env, { platform: "Twitter", account: "alice", limit: 1.5 })).cached, 2);
-  assert.equal((await saveCached(env, { platform: "Twitter", account: "alice", limit: "1" })).cached, 2);
+  await env.ledger.add("Twitter|image|saved01|1");
+  await env.ledger.add("Twitter:alice:video:legacy01");
+  env.inContext("transactionDone = () => new Promise(() => {})");
+
+  const result = await Promise.race([
+    env.ledger
+      .hasAny(["Twitter|image|saved01|1", "Twitter|video|missing1|1", "Twitter|video|legacy01|1"])
+      .then(keys => [...keys]),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("lookup waited for the read-only transaction")), 100))
+  ]);
+  assert.deepEqual(result, ["Twitter|image|saved01|1", "Twitter|video|legacy01|1"]);
+});
+
+test("a limited cache request checks saved entries in bounded batches", async () => {
+  const env = loadBackground();
+  const oldItems = Array.from({ length: 100 }, (_, index) => photo(`old${String(index).padStart(3, "0")}`));
+  const newItems = Array.from({ length: 10 }, (_, index) => photo(`new${String(index).padStart(3, "0")}`));
+  await found(env, oldItems);
+  await found(env, newItems);
+  for (const item of oldItems) {
+    await env.ledger.add(item.platform + "|image|" + item.id + "|" + item.index);
+  }
+
+  const result = await saveCached(env, { platform: "Twitter", account: "alice", limit: 1 });
+  assert.equal(result.started, 1);
+  assert.equal(env.started[0].url, newItems[0].url);
+});
+
+test("a cached-media request returns promptly when all download slots are busy", async () => {
+  let clock = 1_000_000;
+  const env = loadBackground({ now: () => clock });
+  await found(env, [photo("free001"), photo("free002")]);
+  await env.send({
+    type: "DOWNLOAD_ITEMS",
+    items: Array.from({ length: 8 }, (_, index) => ({
+      platform: "Twitter",
+      account: "alice",
+      key: `Twitter|image|pending${index}|1`,
+      url: `https://pbs.twimg.com/media/pending${index}.jpg`
+    }))
+  });
+  env.inContext("chrome.downloads.search = async () => new Promise(() => {})");
+
+  const request = saveCached(env, { platform: "Twitter", account: "alice", limit: 8 });
+  const returnedQuickly = await Promise.race([
+    request.then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 100))
+  ]);
+  clock += 61_000;
+  const result = await request;
+  assert.equal(returnedQuickly, true);
+  assert.equal(result.started, 0);
+  assert.equal(env.started.length, 8);
+
+  env.setGlobal("__downloads", env.downloads);
+  env.inContext(
+    "chrome.downloads.search = async query => (__downloads.has(query.id) ? [__downloads.get(query.id)] : [])"
+  );
+  env.downloads.set(1, { id: 1, state: "complete" });
+  await env.send({ type: "DOWNLOAD_STATUS", platform: "Twitter", account: "alice" });
+  const queued = await saveCached(env, { platform: "Twitter", account: "alice", limit: 8 });
+  assert.equal(queued.started, 0);
+  assert.equal(queued.pending, 2, "one cached item started and one remains queued");
+  assert.equal(env.started.length, 9);
+});
+
+test("a full image batch preserves queued media behind it", async () => {
+  const env = loadBackground();
+  await found(env, [video("afterfull")]);
+  await env.send({
+    type: "DOWNLOAD_ITEMS",
+    items: Array.from({ length: 8 }, (_, index) => ({
+      platform: "Twitter",
+      account: "alice",
+      key: `Twitter|image|busy${index}|1`,
+      url: `https://pbs.twimg.com/media/busy${index}.jpg`
+    }))
+  });
+
+  const fullBatch = env.send({
+    type: "DOWNLOAD_ITEMS",
+    items: Array.from({ length: 20 }, (_, index) => ({
+      platform: "Twitter",
+      account: "alice",
+      key: `Twitter|image|later${index}|1`,
+      url: `https://pbs.twimg.com/media/later${index}.jpg`
+    }))
+  });
+  const cachedRequest = saveCached(env, { platform: "Twitter", account: "alice", limit: 1 });
+  const returnedQuickly = await Promise.race([
+    cachedRequest.then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 100))
+  ]);
+  const [batchResult, result] = await Promise.all([fullBatch, cachedRequest]);
+  assert.equal(returnedQuickly, true);
+  assert.equal(result.started, 0);
+  assert.equal(batchResult.pending, 28);
+  assert.equal(batchResult.queued, 20);
+  assert.equal(env.started.length, 8);
+});
+
+test("a cached-media request includes an overlapping page-data write", async () => {
+  const env = loadBackground();
+  const write = found(env, [video("queued01")]);
+  const result = await saveCached(env, { platform: "Twitter", account: "alice" });
+  await write;
+  assert.equal(result.started, 1);
+  assert.equal(env.started[0].filename, "Twitter/Alice/video_queued01_1280x720.mp4");
+});
+
+test("a cached-media read responds when the download queue is busy", async () => {
+  const env = loadBackground();
+  await found(env, [video("busy001")]);
+  await env.ledger.add("Twitter|video|busy001|1");
+  env.inContext("batchQueue = new Promise(() => {})");
+
+  const request = saveCached(env, { platform: "Twitter", account: "alice", limit: 8 });
+  const returnedQuickly = await Promise.race([
+    request.then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 100))
+  ]);
+  const result = await request;
+  assert.equal(returnedQuickly, true);
+  assert.equal(result.started, 0);
+  assert.deepEqual(result.coveredIds, ["busy001"]);
+});
+
+test("a cache download does not wait for an unrelated queue and reserves its items", async () => {
+  const env = loadBackground();
+  await found(env, [video("queued02")]);
+  env.inContext("batchQueue = new Promise(() => {})");
+
+  const request = saveCached(env, { platform: "Twitter", account: "alice", limit: 8 });
+  const returnedQuickly = await Promise.race([
+    request.then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 250))
+  ]);
+  const result = await request;
+  assert.equal(returnedQuickly, true);
+  assert.equal(result.started, 0);
+  assert.equal(result.queued, 1);
+  assert.equal(result.deferred, true);
+  assert.deepEqual(env.started, []);
+
+  const repeated = await saveCached(env, { platform: "Twitter", account: "alice", limit: 8 });
+  assert.equal(repeated.started, 0);
+  assert.deepEqual(repeated.coveredIds, ["queued02"]);
+});
+
+test("Facebook and TikTok cache acknowledgements preserve distinct media-id requests", async () => {
+  for (const platform of ["Facebook", "TikTok"]) {
+    const env = loadBackground();
+    const item = video("delayed01", {
+      platform,
+      url:
+        platform === "TikTok"
+          ? "https://v16-webapp.tiktokcdn.com/play/delayed01.mp4"
+          : "https://scontent.fbcdn.net/video/delayed01.mp4"
+    });
+    await found(env, [item]);
+    env.inContext("batchQueue = new Promise(() => {})");
+
+    const message = {
+      type: "DOWNLOAD_CACHED_MEDIA",
+      platform,
+      account: "alice",
+      ids: ["delayed01"],
+      limit: 8
+    };
+    let result;
+    const keepsMessageOpen = env.listeners.message[0](message, {}, value => {
+      result = value;
+    });
+    assert.equal(keepsMessageOpen, false, platform);
+    assert.equal(result.deferred, true, platform);
+    assert.equal(result.diag.deferred, true, platform);
+    assert.deepEqual(env.started, [], platform);
+
+    const repeatedSameIds = await env.send({
+      type: "DOWNLOAD_CACHED_MEDIA",
+      platform,
+      account: "alice",
+      ids: ["delayed01"],
+      limit: 8
+    });
+    assert.equal(repeatedSameIds.requestId, result.requestId, platform);
+    const differentIds = await env.send({
+      type: "DOWNLOAD_CACHED_MEDIA",
+      platform,
+      account: "alice",
+      ids: ["page002"],
+      limit: 8
+    });
+    assert.equal(differentIds.deferred, true, platform);
+    assert.notEqual(differentIds.requestId, result.requestId, platform);
+  }
+});
+
+test("Facebook and TikTok cache reads still start fresh videos when the queue is ready", async () => {
+  for (const platform of ["Facebook", "TikTok"]) {
+    const env = loadBackground();
+    const item = video("fresh001", {
+      platform,
+      url:
+        platform === "TikTok"
+          ? "https://v16-webapp.tiktokcdn.com/play/fresh001.mp4"
+          : "https://scontent.fbcdn.net/video/fresh001.mp4"
+    });
+    await found(env, [item]);
+    const result = await saveCached(env, { platform, account: "alice", limit: 8 });
+    assert.equal(result.started, 1, platform);
+    assert.equal(env.started.length, 1, platform);
+    assert.match(env.started[0].filename, new RegExp(`^${platform}/Alice/`), platform);
+  }
+});
+
+test("a failed queued cache operation releases its item reservations", async () => {
+  const env = loadBackground();
+  await found(env, [
+    video("failure01", {
+      platform: "Facebook",
+      url: "https://scontent.fbcdn.net/video/failure01.mp4"
+    })
+  ]);
+  env.inContext('downloadBatch = async () => { throw new Error("batch failed"); }');
+
+  const reply = await env.send({
+    type: "DOWNLOAD_CACHED_MEDIA",
+    platform: "Facebook",
+    account: "alice",
+    ids: ["failure01"]
+  });
+  const result = await env.send({ type: "CACHED_MEDIA_RESULT", requestId: reply.requestId });
+  assert.equal(result.ok, false);
+  assert.equal(env.inContext("queuedCachedKeys.size"), 0);
+});
+
+test("cached downloads do not wait for searches of unrelated pending files", async () => {
+  const env = loadBackground();
+  await found(env, [video("fresh01")]);
+  await env.send({
+    type: "DOWNLOAD_ITEMS",
+    items: Array.from({ length: 7 }, (_, index) => ({
+      platform: "Twitter",
+      account: "other",
+      key: `Twitter|image|unrelated${index}|1`,
+      url: `https://pbs.twimg.com/media/unrelated${index}.jpg`
+    }))
+  });
+  env.inContext("chrome.downloads.search = async () => new Promise(() => {})");
+
+  const request = saveCached(env, { platform: "Twitter", account: "alice", limit: 1 });
+  const returnedQuickly = await Promise.race([
+    request.then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 100))
+  ]);
+  const result = await request;
+  assert.equal(returnedQuickly, true);
+  assert.equal(result.started, 1);
+  assert.equal(env.started.length, 8);
+  assert.equal(env.started.at(-1).url, video("fresh01").url);
+});
+
+test("a limit that is not a whole number is ignored", async () => {
+  for (const limit of [1.5, "1"]) {
+    const env = loadBackground();
+    await found(env, [photo("nl001"), photo("nl002")]);
+    assert.equal((await saveCached(env, { platform: "Twitter", account: "alice", limit })).cached, 2);
+  }
+});
+
+test("saved entries do not displace fresh entries in an unlimited cache batch", async () => {
+  const env = loadBackground();
+  const saved = Array.from({ length: 300 }, (_, index) => photo(`saved${String(index).padStart(3, "0")}`));
+  for (let offset = 0; offset < saved.length; offset += 100) {
+    await found(env, saved.slice(offset, offset + 100));
+  }
+  await found(env, [photo("fresh999")]);
+  for (const item of saved) {
+    await env.ledger.add(`${item.platform}|image|${item.id}|${item.index}`);
+  }
+
+  const result = await saveCached(env, { platform: "Twitter", account: "alice" });
+  assert.equal(result.started, 1);
+  assert.equal(env.started[0].url, "https://pbs.twimg.com/media/fresh999.jpg");
 });
 
 test("nothing cached means nothing started, and an unsupported platform is refused", async () => {

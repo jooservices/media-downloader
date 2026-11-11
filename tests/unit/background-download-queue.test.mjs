@@ -62,6 +62,22 @@ test("a photo starts into its platform and account folder, with its size in the 
   assert.deepEqual(plain(env.storage.pendingDownloads), { "Twitter|image|1|1": 1 });
 });
 
+test("a download batch replies without searching for downloads it just started", async () => {
+  const env = loadBackground();
+  env.inContext(
+    "chrome.downloads.search = async () => new Promise(resolve => { globalThis.__resolveDownloadSearch = resolve })"
+  );
+  const request = download(env, [photo(1)]);
+  const returnedQuickly = await Promise.race([
+    request.then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 100))
+  ]);
+  env.inContext("globalThis.__resolveDownloadSearch?.([])");
+  const result = plain(await request);
+  assert.equal(returnedQuickly, true);
+  assert.deepEqual([result.started, result.pending], [1, 1]);
+});
+
 test("a photo with no file name is named after its type, and overwrite is honoured", async () => {
   const env = loadBackground();
   await download(env, [photo(1, { filename: "", overwrite: true, url: "https://pbs.twimg.com/media/x.png" })]);
@@ -347,6 +363,25 @@ test("draining waits for pending downloads to finish and returns the final statu
   assert.equal(await env.ledger.has("Twitter|image|1|1"), true);
 });
 
+test("draining does not hold the batch queue while it waits for downloads", async () => {
+  const env = loadBackground();
+  await download(env, [photo(1)]);
+
+  const draining = env.send({ type: "DRAIN_DOWNLOADS", platform: "Twitter", account: "alice", timeoutMs: 5000 });
+  await settle();
+  const next = env.send({ type: "DOWNLOAD_ITEMS", items: [photo(2)] });
+  const returnedQuickly = await Promise.race([
+    next.then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 200))
+  ]);
+  assert.equal(returnedQuickly, true);
+  assert.equal(plain(await next).started, 1);
+
+  finish(env, 1);
+  finish(env, 2);
+  assert.equal(plain(await draining).pending, 0);
+});
+
 test("draining gives up at its deadline, clamped to between one and two minutes", async () => {
   let clock = 1_000_000;
   const env = loadBackground({ now: () => clock });
@@ -370,7 +405,7 @@ test("draining gives up at its deadline, clamped to between one and two minutes"
   assert.equal(plain(await third).pending, 1, "long asks are capped at two minutes");
 });
 
-test("at most eight downloads run at once; a ninth waits for a free slot", async () => {
+test("at most eight downloads run at once; a later scan uses the next free slot", async () => {
   const env = loadBackground();
   await download(
     env,
@@ -378,41 +413,43 @@ test("at most eight downloads run at once; a ninth waits for a free slot", async
   );
   assert.equal(env.started.length, 8);
   const ninth = download(env, [photo(9)]);
-  await new Promise(resolve => setTimeout(resolve, 100));
-  assert.equal(env.started.length, 8, "still waiting");
-  finish(env, 1);
   const result = plain(await ninth);
-  assert.equal(result.started, 1);
+  assert.deepEqual([result.started, result.pending, result.queued], [0, 9, 1]);
+  assert.equal(env.started.length, 8);
+  finish(env, 1);
+  await download(env, [photo(9)]);
   assert.equal(env.started.length, 9);
 });
 
-test("if no slot frees within a minute the item is left for the next scan", async () => {
-  let clock = 1_000_000;
-  const env = loadBackground({ now: () => clock });
+test("a full download batch returns without holding the queue for a slot", async () => {
+  const env = loadBackground();
   await download(
     env,
     Array.from({ length: 8 }, (_, index) => photo(index + 1))
   );
-  env.inContext("chrome.downloads.search = async () => []");
-  const waiting = download(env, [photo(9)]);
-  await new Promise(resolve => setTimeout(resolve, 700));
-  clock += 61_000;
-  const result = plain(await waiting);
-  assert.deepEqual([result.started, result.failed], [0, 1]);
-  assert.match(result.errors[0], /Too many downloads are still pending/);
+  const queued = download(
+    env,
+    Array.from({ length: 20 }, (_, index) => photo(index + 9))
+  );
+  const returnedQuickly = await Promise.race([
+    queued.then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 100))
+  ]);
+  const result = plain(await queued);
+  assert.equal(returnedQuickly, true);
+  assert.deepEqual([result.started, result.pending, result.queued], [0, 28, 20]);
+  assert.equal(env.started.length, 8);
+  assert.equal(env.storage.deferredDownloads.length, 20);
 });
 
-test("an item that gets saved elsewhere while it waits for a slot is skipped, not downloaded twice", async () => {
+test("an item already saved while all slots are busy is skipped", async () => {
   const env = loadBackground();
   await download(
     env,
     Array.from({ length: 8 }, (_, index) => photo(index + 1))
   );
   const key = photo(9).key;
-  env.inContext(`
-    const realSearch = chrome.downloads.search;
-    chrome.downloads.search = async query => { await ledgerAdd(${JSON.stringify(key)}); return realSearch(query); };
-  `);
+  await env.ledger.add(key);
   const result = plain(await download(env, [photo(9)]));
   assert.deepEqual([result.started, result.skipped], [0, 1]);
   assert.equal(env.started.length, 8);

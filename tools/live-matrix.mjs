@@ -24,8 +24,8 @@ export function summarize(jobs) {
       notes: new Set()
     };
     row.pages++;
-    row.started += job.counts?.started ?? 0;
-    row.skipped += job.counts?.skipped ?? 0;
+    row.started += (job.counts?.started ?? 0) + (job.counts?.videoStarted ?? 0);
+    row.skipped += (job.counts?.skipped ?? 0) + (job.counts?.videoSkipped ?? 0);
     row.failed += job.counts?.failed ?? 0;
     row.statuses.add(job.status);
     if (job.status !== "complete" && job.message) {
@@ -42,7 +42,7 @@ export function renderReport(rows, { startedAt, finishedAt, extensionVersion }) 
     "",
     `Started ${startedAt}, finished ${finishedAt}. Extension in the browser reported version ${extensionVersion ?? "unknown"}.`,
     "",
-    "| Site | Account | Pages | New files | Already saved | Failed | Result |",
+    "| Site | Account | Pages | New files | Skipped | Failed | Result |",
     "| --- | --- | ---: | ---: | ---: | ---: | --- |"
   ];
   for (const row of rows) {

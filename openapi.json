@@ -1178,9 +1178,12 @@
       },
       "Counts": {
         "type": "object",
-        "required": ["started", "pending", "failed", "skipped"],
+        "required": ["started", "videoStarted", "pending", "failed", "skipped", "videoSkipped"],
         "properties": {
           "started": {
+            "type": "integer"
+          },
+          "videoStarted": {
             "type": "integer"
           },
           "pending": {
@@ -1190,6 +1193,9 @@
             "type": "integer"
           },
           "skipped": {
+            "type": "integer"
+          },
+          "videoSkipped": {
             "type": "integer"
           }
         },

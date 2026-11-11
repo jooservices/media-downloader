@@ -45,9 +45,11 @@ export function jobView(job) {
     reason: ["login_required", "empty_or_private", "unknown"].includes(job.reason) ? job.reason : null,
     counts: {
       started: Number(job.started || 0),
+      videoStarted: Number(job.videoStarted || 0),
       pending: Number(job.pending || 0),
       failed: Number(job.failed || 0),
-      skipped: Number(job.skipped || 0)
+      skipped: Number(job.skipped || 0),
+      videoSkipped: Number(job.videoSkipped || 0)
     },
     createdAt: job.createdAt || null,
     updatedAt: job.updatedAt || null,
