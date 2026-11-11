@@ -146,6 +146,70 @@ export async function loginManagedBrowser({ spawnProcess = spawn } = {}) {
   return { pages };
 }
 
+export async function stopManagedBrowser({
+  fetchImpl = fetch,
+  webSocketFactory = address => new WebSocket(address)
+} = {}) {
+  const saved = await readJson(EDGE_PROFILE_FILE);
+  if (!saved?.debugPort) {
+    throw new Error("Run `browser setup` first.");
+  }
+  const endpoint = `http://127.0.0.1:${saved.debugPort}/json/version`;
+  let version;
+  try {
+    const response = await fetchImpl(endpoint);
+    if (!response.ok) {
+      return false;
+    }
+    version = await response.json();
+  } catch {
+    return false;
+  }
+
+  await new Promise((resolve, reject) => {
+    const socket = webSocketFactory(version.webSocketDebuggerUrl);
+    let settled = false;
+    const timer = setTimeout(() => finish(new Error("The managed browser did not close.")), 10_000);
+    const finish = error => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      socket.close();
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    };
+    socket.addEventListener("error", () => finish(new Error("Could not talk to the managed browser.")));
+    socket.addEventListener("close", () => finish());
+    socket.addEventListener("message", event => {
+      const reply = JSON.parse(String(event.data));
+      if (reply.id === 1) {
+        finish(reply.error ? new Error(`The managed browser refused to close: ${reply.error.message}`) : null);
+      }
+    });
+    socket.addEventListener("open", () => {
+      socket.send(JSON.stringify({ id: 1, method: "Browser.close" }));
+    });
+  });
+
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    try {
+      if (!(await fetchImpl(endpoint)).ok) {
+        return true;
+      }
+    } catch {
+      return true;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error("The managed browser did not release its profile.");
+}
+
 export async function managedStatus({ fetchImpl = fetch } = {}) {
   const saved = await readJson(EDGE_PROFILE_FILE);
   if (!saved?.debugPort) {
@@ -170,7 +234,12 @@ export async function browserCommand(args) {
     process.stdout.write(`Opened the managed browser. Sign in to the sites, then close it:\n  ${pages.join("\n  ")}\n`);
   } else if (action === "status") {
     process.stdout.write(`${JSON.stringify(await managedStatus(), null, 2)}\n`);
+  } else if (action === "stop") {
+    const stopped = await stopManagedBrowser();
+    process.stdout.write(
+      stopped ? "Managed browser stopped; profile released.\n" : "Managed browser is not running.\n"
+    );
   } else {
-    throw new Error("Use: browser setup [--headed]   |   browser login   |   browser status");
+    throw new Error("Use: browser setup [--headed]   |   browser login   |   browser status   |   browser stop");
   }
 }

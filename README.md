@@ -1,6 +1,6 @@
 # jooservices/media-downloader
 
-[![CI](https://github.com/jooservices/media-downloader/actions/workflows/ci-post-merge.yml/badge.svg?branch=develop)](https://github.com/jooservices/media-downloader/actions/workflows/ci-post-merge.yml)
+[![CI](https://github.com/jooservices/media-downloader/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/jooservices/media-downloader/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/jooservices/media-downloader/actions/workflows/codeql.yml/badge.svg?branch=develop)](https://github.com/jooservices/media-downloader/actions/workflows/codeql.yml)
 [![Coverage (develop)](https://codecov.io/gh/jooservices/media-downloader/branch/develop/graph/badge.svg)](https://codecov.io/gh/jooservices/media-downloader/branch/develop)
 [![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=jooservices_media-downloader&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=jooservices_media-downloader)
@@ -97,6 +97,8 @@ node .\cli\mediasaver.mjs add <url> [<url>...]  # from another window, at any ti
 
 Each job is retried a few times when Edge does not answer or the page is closed (`maxAttempts`). Jobs left running by a crashed or stopped `serve` are recovered when it starts again. While `serve` is running, `download <url>` hands its URL to the queue instead of competing for the bridge. `status` shows every job and its state. Logs are written to `%LOCALAPPDATA%\PageMediaSaver\logs\`.
 
+Use `node cli/mediasaver.mjs verify <profile-url>` to compare an account's saved media with completed jobs. Newer job records include each verified output's name and byte size; older records are checked against their account-level totals. The command checks media signatures and reports missing, corrupt and partial files without changing anything. Add `--repair` to requeue only affected scans and redownload the named missing or damaged media over its saved copy. Copies moved to a configured download folder use an owned `.pms-mover-<id>.part` file, are checked, then renamed into place. At startup, `serve` removes only stale partials with that mover-owned name; unrelated `.tmp`, `.part` and browser-download files are preserved. A missing network share pauses new scans until it returns, and a full destination leaves the source download in place for a later mover pass.
+
 `serve` keeps going only while the computer is awake, the browser is available and you are still signed in to the sites.
 
 `service install` registers that queue to start when you sign in (the Windows Startup folder, a systemd user service, or a macOS launch agent) and starts it now. Run it from the project folder, or pass the full path to `mediasaver.mjs`. `service remove` unregisters it. It is not a Session 0 Windows service: the download has to open the signed-in browser on the desktop.
@@ -125,13 +127,21 @@ While `serve` runs it offers a REST API on `http://127.0.0.1:38542/v1`. It liste
 
 | Resource                           | Methods                                                                                                                  |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `/v1/health/platforms`             | `GET` → 200, per-platform canary state, reason, counts, and error classes                                                |
 | `/v1/health`                       | `GET` → 200                                                                                                              |
+| `/v1/config`                       | `GET` → 200, active queue settings                                                                                       |
+| `/v1/status`                       | `GET` → 200, queue and extension state                                                                                   |
+| `/v1/metrics`                      | `GET` → 200, Prometheus text                                                                                             |
 | `/v1/jobs`                         | `GET` → 200, a page of jobs (`?status=&limit=&offset=`, `Link: rel="next"`); `POST {"url", "again"?}` → 201 + `Location` |
 | `/v1/jobs/{id}`                    | `GET` → 200 · `DELETE` → 204 (cancels an active job, removes a finished one)                                             |
 | `/v1/watches`                      | `GET` → 200 · `POST {"url"}` → 201 + `Location`                                                                          |
 | `/v1/watches/{platform}/{account}` | `GET` → 200 · `DELETE` → 204                                                                                             |
 
 Other answers: 400 malformed JSON or query, 401 no/wrong token, 404 unknown resource, 405 wrong method (with `Allow`), 409 the account is already queued, done or watched (send `"again": true` to run it anew), 413 body too large, 415 not JSON, 422 a link that is not a supported profile.
+
+The `/v1/config` response redacts notification webhook URLs and returns only whether notifications are enabled, their format, and selected events. The complete request, response, status-code, and schema contract is in [openapi.json](openapi.json). Contract tests compare its operations to the server route registry.
+
+`GET /v1/status` includes `platforms`, keyed by `instagram`, `facebook`, `twitter`, and `tiktok`. Each entry reports configured and effective worker counts, the back-off end time, and the back-off level. A detected rate limit or challenge pauses new jobs for that platform for 15 minutes, doubling up to two hours on repeated signals. Other platforms continue normally. `GET /v1/metrics` exposes the same values as `pms_platform_configured_workers`, `pms_platform_effective_workers`, `pms_platform_backoff_until_timestamp_seconds`, and `pms_platform_backoff_level` gauges.
 
 ```powershell
 $token = (Get-Content "$env:LOCALAPPDATAPageMediaSaverapi-token").Trim()
@@ -140,17 +150,27 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:38542/v1/jobs -Headers @{ A
 
 A Facebook profile still adds Photos, Reels and Videos, so `items` can hold several jobs.
 
+`GET /v1/health/platforms` returns one entry per supported platform with `state` (`ok`, `degraded`, or `broken`), a reason, finished job and media counts, and error classes. It needs the API token. `/v1/metrics` exports `pms_platform_health{platform="..."}` as 0 for ok, 1 for degraded, or 2 for broken.
+
 ## MCP (for AI assistants)
 
-`node cli/mediasaver.mjs mcp` is an MCP server on stdin/stdout. It only calls the REST API above, so the queue (`serve`, or `service install`) must be running. Tools: `download_account`, `list_jobs`, `get_job`, `cancel_job`, `watch_account`, `list_watched`, `unwatch_account`, `queue_health`. In an MCP client's configuration:
+`node cli/mediasaver.mjs mcp` is an MCP server on stdin/stdout. It only calls the REST API above, so the queue (`serve`, or `service install`) must be running. Its tools cover every REST operation: `download_account`, `list_jobs`, `get_job`, `cancel_job`, `get_config`, `get_status`, `queue_status`, `get_metrics`, `watch_account`, `list_watched`, `get_watched`, `unwatch_account`, `queue_health`, and `platform_health`. MCP validates argument types, required fields, enumerated values, bounds, HTTPS links, and unknown properties before making a request. REST problem responses are returned to the agent with their HTTP status, title, and detail. In an MCP client's configuration:
 
 ```json
 {
   "mcpServers": {
-    "media-downloader": { "command": "node", "args": ["C:\path\to\media-downloader\cli\mediasaver.mjs", "mcp"] }
+    "media-downloader": { "command": "node", "args": ["C:\\path\\to\\media-downloader\\cli\\mediasaver.mjs", "mcp"] }
   }
 }
 ```
+
+### AI-agent quickstart
+
+1. Start the queue with `node cli/mediasaver.mjs serve` (or install its user service), and add the MCP server configuration above to the agent's MCP settings.
+2. Ask the agent to download a profile, for example: “Queue a download of `https://www.instagram.com/name/` and tell me the job id.” The agent calls `download_account` with the profile URL.
+3. The agent can call `get_job` with the returned id to check progress, or `list_jobs` with `status: "running"` to inspect active jobs. Files are saved by the queue using the configured download location.
+
+The agent can also call `watch_account` to enable recurring scans, `get_config` to inspect active settings, `get_status` to inspect queue health details, and `get_metrics` for Prometheus text. These tools use the same authenticated local API and validation as REST.
 
 `watch` is `serve` for a fixed list of accounts (`watch add <url>` writes them to `%LOCALAPPDATA%\PageMediaSaver\watch.txt`). About every 6 hours (each account waits up to 20% longer, by a fixed amount of its own, so they do not all wake together; an account whose last scans ended in trouble is visited at half, then a quarter, of that pace) an account whose last scan has finished is queued again, so new stories, highlights, reels and photos are picked up. Anything already saved is skipped. A Facebook profile link is queued as the profile plus its Photos, Reels and Videos tabs. An Instagram profile scan also opens the current story tray and highlight reels. When a job ends, the CLI prints the account folder and how many files were new versus already saved.
 
@@ -165,7 +185,8 @@ On this machine the unpacked extension lives in `C:\Claude\PageMediaSaver`. `npm
   "workers": { "x": 1, "instagram": 1, "facebook": 1 },
   "delaySeconds": { "min": 15, "max": 60 },
   "maxAttempts": 3,
-  "downloadDir": "D:\\Media"
+  "downloadDir": "D:\\Media",
+  "canary": { "accounts": ["https://www.instagram.com/example/"], "intervalMinutes": 360 }
 }
 ```
 
@@ -175,8 +196,9 @@ On this machine the unpacked extension lives in `C:\Claude\PageMediaSaver`. `npm
 | `delaySeconds` | A random pause (between `min` and `max`) before the next account on the same site is opened.                                                                                                                   |
 | `maxAttempts`  | How many times a job that failed for a transient reason is tried (1 to 20).                                                                                                                                    |
 | `downloadDir`  | Where finished files go, as `<downloadDir>\<Site>\<account>\`. A full path, local or a network share. Leave it out to keep files in the browser's Downloads folder. Cannot be a drive root or a system folder. |
+| `canary`       | Optional probes through the normal job queue. `accounts` is a non-empty list of supported profile URLs; `intervalMinutes` is 15–10080 (default 360).                                                           |
 
-**Notifications.** Add `"notify": { "url": "https://ntfy.sh/your-topic" }` to `config.json` and the queue posts a message when a scan saves new files (`new-content`) or stops short, for example because a sign-in has expired or a site changed (`problem`). `format` is `json` (the default; a document with the event, account, counts and time) or `text` (a plain message with a `Title` header, which ntfy shows as is); `events` can list just one of the two kinds. The address must be https, or http on this computer. A job is announced once, and trouble on one site is repeated at most every 6 hours.
+**Notifications.** Add `"notify": { "url": "https://ntfy.sh/your-topic" }` to `config.json` and the queue posts a message when a scan saves new files (`new-content`) or stops short, for example because a sign-in has expired or a site changed (`problem`). It also reports platform back-off start and end (`backoff-start`, `backoff-end`) and stable platform health transitions after a one-minute debounce, including recovery to `ok`. `format` is `json` (the default; a document with the event, account, counts and time) or `text` (a plain message with a `Title` header, which ntfy shows as is); `events` can select which kinds to send. The address must be https, or http on this computer. A job is announced once, and trouble on one site is repeated at most every 6 hours.
 
 **Download location.** A browser extension can only save inside the browser's own Downloads folder, so the CLI moves finished files afterwards (in the background while `serve` runs, or once with `node .\cli\mediasaver.mjs move`). A file is copied, checked against the original's size and only then removed. An existing file is never overwritten: an identical one is treated as a duplicate and a different one gets a `(1)` suffix. Files still being written, and anything outside the `Instagram`, `Facebook` and `Twitter` folders, are not touched. If a site folder in Downloads is a link to another location, it is left as it is. `downloadDir` must not be, contain or sit inside the Downloads folder.
 

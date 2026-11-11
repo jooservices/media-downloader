@@ -56,9 +56,6 @@ function backend() {
       watch: {
         list: async () => state.watched,
         add: async url => {
-          if (url.includes("bad")) {
-            throw new Error("Use an Instagram/Facebook/X profile URL.");
-          }
           const known = state.watched.includes(url);
           if (!known) {
             state.watched.push(url);
@@ -129,6 +126,15 @@ test("health needs no token; everything else answers 401 with WWW-Authenticate",
     assert.equal(wrong.status, 401);
     const short = await call("GET", "/v1/jobs", { headers: { authorization: "x" } });
     assert.equal(short.status, 401);
+  }));
+
+test("rate limiting returns a documented 429 problem with a specific title", () =>
+  withServer({ rateLimit: 0 }, async ({ call }) => {
+    const limited = await call("GET", "/v1/jobs");
+    assert.equal(limited.status, 429);
+    assert.equal(limited.body.title, "Too Many Requests");
+    assert.equal(limited.body.status, 429);
+    assert.equal(limited.headers["retry-after"], "60");
   }));
 
 test("a request for another host is refused, and unknown resources are 404 problems", () =>
@@ -206,10 +212,15 @@ test("POST validates the body: 400 for bad JSON, 413 for a huge one, 415 for ano
     assert.equal((await call("POST", "/v1/jobs", { body: {} })).status, 422);
     assert.equal((await call("POST", "/v1/jobs", { body: { url: "http://x.com/a" } })).status, 422);
     assert.equal((await call("POST", "/v1/jobs", { body: { url: 5 } })).status, 422);
+    assert.equal((await call("POST", "/v1/jobs", { body: { url: "https://x.com/a", extra: true } })).status, 422);
+    assert.equal((await call("POST", "/v1/jobs", { body: { url: "https://x.com/a", again: "yes" } })).status, 422);
+    assert.equal((await call("POST", "/v1/watches", { body: { url: ALICE, extra: true } })).status, 422);
     const huge = await call("POST", "/v1/jobs", {
       body: JSON.stringify({ url: `https://x.com/${"a".repeat(9000)}` })
-    }).catch(error => ({ status: error.code }));
-    assert.ok(huge.status === 413 || huge.status === "ECONNRESET" || huge.status === "EPIPE", `got ${huge.status}`);
+    });
+    assert.equal(huge.status, 413);
+    assert.equal(huge.body.status, 413);
+    assert.match(huge.headers["content-type"], /^application\/problem\+json/);
     const text = await call("POST", "/v1/jobs", {
       body: '{"url":"https://x.com/a"}',
       headers: { "content-type": "text/plain" }
@@ -252,7 +263,7 @@ test("watches: create (201 + Location), conflict, list, get, delete", () =>
     assert.equal(created.headers.location, "/v1/watches/instagram/alice");
     assert.deepEqual(created.body.pages, [ALICE]);
     assert.equal((await call("POST", "/v1/watches", { body: { url: ALICE } })).status, 409);
-    assert.equal((await call("POST", "/v1/watches", { body: { url: "https://x.com/bad" } })).status, 422);
+    assert.equal((await call("POST", "/v1/watches", { body: { url: "https://x.com/" } })).status, 422);
     assert.equal((await call("POST", "/v1/watches", { body: "nope" })).status, 400);
     assert.equal((await call("POST", "/v1/watches", { body: {} })).status, 422);
 
@@ -273,6 +284,25 @@ test("watches: create (201 + Location), conflict, list, get, delete", () =>
     assert.equal((await call("PUT", "/v1/watches/instagram/alice", { body: {} })).status, 405);
   }));
 
+test("watch storage errors return a generic 500 without exposing backend details", () =>
+  withServer(
+    {
+      watch: {
+        list: async () => [],
+        add: async () => {
+          throw new Error("EACCES /private/watch-store.json");
+        },
+        remove: async () => {}
+      }
+    },
+    async ({ call }) => {
+      const response = await call("POST", "/v1/watches", { body: { url: ALICE } });
+      assert.equal(response.status, 500);
+      assert.equal(response.body.detail, "The request failed.");
+      assert.doesNotMatch(JSON.stringify(response.body), /private|EACCES/);
+    }
+  ));
+
 test("an account with several pages is one watch, removed in one call", () =>
   withServer({}, async ({ call, state }) => {
     state.watched.push(BOB_FB, `${BOB_FB}photos/`, `${BOB_FB}reels/`);
@@ -280,6 +310,13 @@ test("an account with several pages is one watch, removed in one call", () =>
     assert.equal(one.body.pages.length, 3);
     assert.equal((await call("DELETE", "/v1/watches/facebook/bob")).status, 204);
     assert.deepEqual(state.watched, []);
+  }));
+
+test("malformed percent-encoding in a watch path returns a not-found problem", () =>
+  withServer({}, async ({ call }) => {
+    const response = await call("GET", "/v1/watches/instagram/%E0%A4%A");
+    assert.equal(response.status, 404);
+    assert.equal(response.body.title, "Not Found");
   }));
 
 test("without a watch list the watch resources do not exist", () =>
@@ -337,6 +374,14 @@ test("GET /v1/status reports uptime and what the queue tells it; /v1/metrics spe
     {
       status: async () => ({
         jobs: { queued: 2, complete: 5 },
+        platforms: {
+          instagram: {
+            configuredWorkers: 3,
+            effectiveWorkers: 2,
+            backoffUntil: "2026-01-01T00:00:00.000Z",
+            backoffLevel: 1
+          }
+        },
         extension: { version: "0.5.9", at: "2026-01-01T00:00:00.000Z" },
         pid: 42
       })
@@ -354,6 +399,10 @@ test("GET /v1/status reports uptime and what the queue tells it; /v1/metrics spe
       assert.match(metrics.headers["content-type"], /^text\/plain; version=0\.0\.4/);
       assert.match(metrics.text, /^pms_jobs\{status="queued"\} 2$/m);
       assert.match(metrics.text, /^pms_jobs\{status="complete"\} 5$/m);
+      assert.match(metrics.text, /^pms_platform_configured_workers\{platform="instagram"\} 3$/m);
+      assert.match(metrics.text, /^pms_platform_effective_workers\{platform="instagram"\} 2$/m);
+      assert.match(metrics.text, /^pms_platform_backoff_until_timestamp_seconds\{platform="instagram"\} 1767225600$/m);
+      assert.match(metrics.text, /^pms_platform_backoff_level\{platform="instagram"\} 1$/m);
       assert.match(metrics.text, /^pms_extension_seen_timestamp_seconds 1767225600$/m);
       assert.match(metrics.text, /^pms_uptime_seconds \d+$/m);
       assert.equal((await call("POST", "/v1/metrics", { body: {} })).status, 405);
@@ -368,6 +417,81 @@ test("status and metrics still answer when the queue offers no details", () =>
     assert.doesNotMatch(metrics.text, /pms_jobs\{/);
   }));
 
+test("GET /v1/health/platforms reports per-platform canary state and metrics export gauges", () =>
+  withServer({}, async ({ call }) => {
+    const health = await call("GET", "/v1/health/platforms");
+    assert.equal(health.status, 200);
+    assert.equal(health.body.items.length, 4);
+    assert.equal(health.body.items.find(item => item.platform === "Instagram").state, "ok");
+    assert.equal(health.body.summary.total, 4);
+    assert.equal((await call("GET", "/v1/health/platforms", { auth: false })).status, 401);
+    assert.equal((await call("POST", "/v1/health/platforms", { body: {} })).status, 405);
+    const metrics = await call("GET", "/v1/metrics", { json: false });
+    assert.match(metrics.text, /^pms_platform_health\{platform="instagram"\} 0$/m);
+  }));
+
+test("the API limits request bursts with a problem response", () =>
+  withServer({ rateLimit: 2 }, async ({ call }) => {
+    assert.equal((await call("GET", "/v1/health", { auth: false })).status, 200);
+    assert.equal((await call("GET", "/v1/health", { auth: false })).status, 200);
+    const limited = await call("GET", "/v1/health", { auth: false });
+    assert.equal(limited.status, 429);
+    assert.equal(limited.headers["retry-after"], "60");
+    assert.match(limited.headers["content-type"], /problem\+json/);
+    assert.equal(limited.body.title, "Too Many Requests");
+    assert.equal(limited.body.status, 429);
+  }));
+
+test("rejected and unauthenticated bursts cannot exhaust the authenticated request quota", () =>
+  withServer({ rateLimit: 2 }, async ({ call }) => {
+    for (let index = 0; index < 3; index++) {
+      const rejected = await call("GET", "/v1/jobs?unsupported=1", {
+        headers: { origin: "https://attacker.example" }
+      });
+      assert.equal(rejected.status, index < 2 ? 403 : 429);
+    }
+    for (let index = 0; index < 2; index++) {
+      const rejected = await call("GET", "/v1/jobs", { auth: false });
+      assert.equal(rejected.status, 401);
+    }
+    assert.equal((await call("GET", "/v1/jobs")).status, 200);
+    assert.equal((await call("GET", "/v1/jobs")).status, 200);
+    const limited = await call("GET", "/v1/jobs");
+    assert.equal(limited.status, 429);
+    assert.equal(limited.body.title, "Too Many Requests");
+  }));
+
+test("failed authentication limits also block a valid token after the failure threshold", () =>
+  withServer({ rateLimit: 2 }, async ({ call }) => {
+    for (let index = 0; index < 3; index++) {
+      const invalid = await call("GET", "/v1/jobs", { headers: { authorization: `Bearer wrong-${index}` } });
+      assert.equal(invalid.status, index < 2 ? 401 : 429);
+    }
+
+    const valid = await call("GET", "/v1/jobs");
+    assert.equal(valid.status, 429);
+    assert.equal(valid.body.title, "Too Many Requests");
+    assert.equal(valid.body.detail, "Too many failed authentication attempts. Try again later.");
+    assert.equal(valid.headers["retry-after"], "60");
+  }));
+
+test("unknown routes still enforce Host, Origin, authentication, and rate limits", () =>
+  withServer({ rateLimit: 1 }, async ({ call }) => {
+    const hostile = await call("GET", "/v1/unknown", {
+      headers: { origin: "https://attacker.example" }
+    });
+    assert.equal(hostile.status, 403);
+    const hostileLimited = await call("GET", "/v1/another-unknown", {
+      headers: { origin: "https://attacker.example" }
+    });
+    assert.equal(hostileLimited.status, 429);
+
+    const unknown = await call("GET", "/v1/unknown");
+    assert.equal(unknown.status, 404);
+    const unknownLimited = await call("GET", "/v1/another-unknown");
+    assert.equal(unknownLimited.status, 429);
+  }));
+
 test("beyond this computer the API needs a token, and only the hosts it was told about", async () => {
   const deps = { addUrls: async () => ({}), listJobs: async () => [] };
   await assert.rejects(startApiServer({ port: 0, bind: "0.0.0.0", ...deps }), /only with an API token/);
@@ -375,7 +499,7 @@ test("beyond this computer the API needs a token, and only the hosts it was told
     port: 0,
     bind: "0.0.0.0",
     token: TOKEN,
-    extraHosts: ["api.internal:38542"],
+    extraHosts: ["api.internal:41742"],
     ...deps
   });
   const { port } = server.address();
@@ -389,8 +513,8 @@ test("beyond this computer the API needs a token, and only the hosts it was told
         req.on("error", reject);
         req.end();
       });
-    assert.equal(await ask(`127.0.0.1:${port}`), 200);
-    assert.equal(await ask("api.internal:38542"), 200);
+    assert.equal(await ask(`127.0.0.1:${port}`), 403, "a remote bind does not implicitly trust loopback Host values");
+    assert.equal(await ask("api.internal:41742"), 200);
     assert.equal(await ask("evil.example"), 403);
   } finally {
     await new Promise(resolve => server.close(() => resolve()));

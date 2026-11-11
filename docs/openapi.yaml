@@ -1,0 +1,121 @@
+openapi: 3.1.0
+info:
+  title: Page Media Saver API
+  version: 1.0.0
+servers:
+  - url: http://127.0.0.1:38542/v1
+paths:
+  /health/platforms:
+    get:
+      summary: Read platform canary health
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: State and recent job health for each supported platform.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlatformHealth"
+  /status:
+    get:
+      summary: Read queue and platform worker status
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Queue status, including worker back-off for every platform.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  uptimeSeconds:
+                    type: number
+                  platforms:
+                    type: object
+                    additionalProperties:
+                      $ref: "#/components/schemas/PlatformStatus"
+  /metrics:
+    get:
+      summary: Read Prometheus metrics
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Prometheus text exposition format.
+          content:
+            text/plain:
+              schema:
+                type: string
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    PlatformHealth:
+      type: object
+      required: [items, summary]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlatformHealthItem"
+        summary:
+          type: object
+          required: [total, ok, degraded, broken]
+          properties:
+            total:
+              type: integer
+            ok:
+              type: integer
+            degraded:
+              type: integer
+            broken:
+              type: integer
+    PlatformHealthItem:
+      type: object
+      required: [platform, state, reason, jobs, successes, mediaFound, mediaJobs, zeroMedia, consecutiveZeros, errors]
+      properties:
+        platform:
+          type: string
+        state:
+          type: string
+          enum: [ok, degraded, broken]
+        reason:
+          type: string
+        jobs:
+          type: integer
+        successes:
+          type: integer
+        mediaFound:
+          type: integer
+        mediaJobs:
+          type: integer
+        zeroMedia:
+          type: integer
+        consecutiveZeros:
+          type: integer
+        errors:
+          type: object
+          additionalProperties:
+            type: integer
+    PlatformStatus:
+      type: object
+      required: [configuredWorkers, effectiveWorkers, backoffUntil, backoffLevel]
+      properties:
+        configuredWorkers:
+          type: integer
+          minimum: 1
+          maximum: 8
+        effectiveWorkers:
+          type: integer
+          minimum: 1
+          maximum: 8
+        backoffUntil:
+          type: [string, "null"]
+          format: date-time
+        backoffLevel:
+          type: integer
+          minimum: 0

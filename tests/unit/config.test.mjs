@@ -76,6 +76,26 @@ test("maxAttempts is a whole number from 1 to 20", () => {
   }
 });
 
+test("canary accounts are normalized supported profiles with a bounded probe interval", () => {
+  assert.deepEqual(parseConfig({ canary: { accounts: ["https://x.com/Name"], intervalMinutes: 60 } }).canary, {
+    accounts: ["https://x.com/Name/"],
+    intervalMinutes: 60
+  });
+  assert.equal(parseConfig({}).canary, null);
+  for (const canary of [
+    "x",
+    [],
+    {},
+    { accounts: [] },
+    { accounts: ["https://example.com/a"] },
+    { accounts: ["https://www.instagram.com/p/ABC123/"] },
+    { accounts: ["https://instagram.com/a"], intervalMinutes: 14 },
+    { accounts: ["https://instagram.com/a"], intervalMinutes: 1.5 }
+  ]) {
+    assert.throws(() => parseConfig({ canary }), /canary/);
+  }
+});
+
 test("downloadDir accepts a drive folder or a network share and normalises it", () => {
   assert.equal(parseConfig({ downloadDir: "D:\\Media\\" }).downloadDir, "D:\\Media");
   assert.equal(parseConfig({ downloadDir: "D:/Media/Social" }).downloadDir, "D:\\Media\\Social");
@@ -94,6 +114,8 @@ test("downloadDir refuses a relative path, a drive root and system folders", () 
     "D:\\",
     "C:\\Windows",
     "C:\\Windows\\System32",
+    "D:\\Media\\..\\Windows",
+    "/home/me/../etc",
     "C:\\Program Files\\x",
     42,
     "D:\\a\0b"

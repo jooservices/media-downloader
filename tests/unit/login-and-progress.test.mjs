@@ -40,6 +40,15 @@ test("progress counters, message and status are copied from the page's report", 
   );
 });
 
+test("progress keeps a collision-renamed output identity when the page reports its original name later", () => {
+  const job = { outputRenames: { "a.jpg": "a (1).jpg" } };
+  applyProgress(job, {
+    type: "JOB_PROGRESS",
+    state: { outputFiles: [{ filename: "a.jpg", size: 13 }] }
+  });
+  assert.deepEqual(job.outputFiles, [{ filename: "a (1).jpg", size: 13 }]);
+});
+
 test("a finished report sets the status it carries, or incomplete when it carries none", () => {
   assert.equal(applyProgress({}, { type: "JOB_DONE", state: { status: "complete" } }).status, "complete");
   assert.equal(applyProgress({}, { type: "JOB_DONE", state: { status: "paused" } }).status, "paused");

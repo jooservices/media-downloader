@@ -37,7 +37,14 @@ globalThis.PageMediaSaver ??= {};
         return false;
       }
       // The CLI decides the limit itself: a number, or null for no limit.
-      sendResponse(scan.startAutoScan(message.job.jobId, message.job.repairTargets || [], message.job.limit));
+      sendResponse(
+        scan.startAutoScan(
+          message.job.jobId,
+          message.job.repairTargets || [],
+          message.job.limit,
+          message.job.repairExpectedCount
+        )
+      );
       return false;
     }
     if (message?.type !== "COLLECT_VISIBLE_MEDIA") {

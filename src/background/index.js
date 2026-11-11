@@ -8,6 +8,7 @@ importScripts(
   "../../lib/keys.js",
   "../../lib/config.js",
   "../../lib/scheduler.js",
+  "../../lib/rate-limit.js",
   "../../lib/supervisor.js",
   "../../lib/login.js",
   "../../lib/job-progress.js",
@@ -31,6 +32,7 @@ const handlers = {
   CLI_PAGE_READY: handleCliPageReady,
   AUTO_PROGRESS: handleAutoProgress,
   AUTO_DONE: handleAutoProgress,
+  PLATFORM_RATE_LIMIT: handlePlatformRateLimit,
   MEDIA_FOUND: message => cacheMedia(message.media),
   DOWNLOAD_CACHED_MEDIA: message => downloadCachedMedia(message),
   SET_NATIVE_VIDEO_TARGET: message => queueBatch(() => setNativeVideoTarget(message.target)),
@@ -40,7 +42,8 @@ const handlers = {
     drainDownloads(message.platform, message.account, message.timeoutMs, (platform, account) =>
       queueBatch(() => getDownloadStatus(platform, account))
     ),
-  DOWNLOAD_STATUS: message => queueBatch(() => getDownloadStatus(message.platform, message.account))
+  DOWNLOAD_STATUS: message => queueBatch(() => getDownloadStatus(message.platform, message.account)),
+  GET_VERIFIED_OUTPUTS: message => getVerifiedOutputs(message.platform, message.account, message.jobId)
 };
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

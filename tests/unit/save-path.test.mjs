@@ -55,6 +55,26 @@ test("cleanPart removes characters Windows rejects and trailing dots", () => {
   assert.equal(cleanPart(""), "account");
   assert.equal(cleanPart("", "folder"), "folder");
   assert.equal(cleanPart("a".repeat(200)).length, 80);
+  assert.equal(cleanPart("CON"), "_CON");
+  assert.equal(cleanPart("nul.jpg"), "_nul.jpg");
+  assert.equal(cleanPart("LPT9.txt"), "_LPT9.txt");
+  assert.equal(cleanPart("CONIN$"), "_CONIN$");
+});
+
+test("saved filenames stay within the Windows segment limit and avoid device names", async () => {
+  const { send, started } = loadBackground();
+  await send({
+    type: "DOWNLOAD_ITEMS",
+    items: [
+      photo({ account: "AUX", filename: "CON.jpg" }),
+      photo({ key: "long", account: "alice", filename: `${"x".repeat(200)}.jpg`, width: 1200, height: 800 })
+    ]
+  });
+  assert.equal(started[0].filename, "Instagram/_AUX/_CON.jpg");
+  const savedName = started[1].filename.split("/").at(-1);
+  assert.equal(savedName.length, 80);
+  assert.equal(savedName.startsWith("x"), true);
+  assert.equal(savedName.endsWith(".jpg"), true);
 });
 
 test("imageExtension reads the extension and falls back to jpg", () => {

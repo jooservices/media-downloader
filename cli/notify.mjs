@@ -18,6 +18,15 @@ export function classify(job) {
 
 export function describe(kind, job) {
   const who = `${job.platform}/${job.account}`;
+  if (kind === "backoff-start") {
+    return {
+      title: `Back-off started for ${job.platform}`,
+      text: `New jobs are paused until ${job.backoffUntil} (back-off level ${job.backoffLevel}).`
+    };
+  }
+  if (kind === "backoff-end") {
+    return { title: `Back-off ended for ${job.platform}`, text: "The configured worker count has been restored." };
+  }
   if (kind === "new-content") {
     return { title: `New from ${who}`, text: `${filesOf(job)} new file(s) saved.` };
   }
@@ -42,6 +51,8 @@ export async function sendNotification(notify, kind, job, { fetchImpl = fetch, n
             url: job.url,
             files: filesOf(job),
             jobId: job.jobId,
+            backoffUntil: job.backoffUntil,
+            backoffLevel: job.backoffLevel,
             at: now().toISOString()
           })
         };
@@ -53,14 +64,13 @@ export async function sendNotification(notify, kind, job, { fetchImpl = fetch, n
 
 export function createNotifier({
   loadConfig,
-  changedSince,
+  pendingNotifications,
   markNotified,
   fetchImpl = fetch,
   now = () => new Date(),
   log = () => {},
   cooldownMs = COOLDOWN_MS
 }) {
-  const since = now().toISOString();
   const lastProblem = new Map();
 
   async function announce(notify, job) {
@@ -82,18 +92,107 @@ export function createNotifier({
     }
   }
 
+  async function announceBackoff(event) {
+    const config = await loadConfig().catch(() => null);
+    const notify = config?.notify;
+    if (!notify?.events.includes(event.kind)) {
+      return;
+    }
+    try {
+      await sendNotification(
+        notify,
+        event.kind,
+        {
+          platform: event.platform,
+          backoffUntil: event.until,
+          backoffLevel: event.level
+        },
+        { fetchImpl, now }
+      );
+    } catch (error) {
+      log(`Could not send a notification: ${error?.message || error}`);
+    }
+  }
+
   return {
+    backoff: announceBackoff,
     async tick() {
       const config = await loadConfig().catch(() => null);
       if (!config?.notify) {
         return;
       }
-      for (const job of changedSince(since)) {
+      for (const job of pendingNotifications(100)) {
         if (job.notifiedAt || !["complete", "incomplete", "error"].includes(job.status)) {
           continue;
         }
-        await markNotified(job.jobId);
+        try {
+          await markNotified(job.jobId);
+        } catch {
+          continue;
+        }
         await announce(config.notify, job);
+      }
+    }
+  };
+}
+
+export function createPlatformHealthNotifier({
+  loadConfig,
+  getHealth,
+  fetchImpl = fetch,
+  now = () => Date.now(),
+  debounceMs = 60_000,
+  log = () => {}
+}) {
+  const observed = new Map();
+
+  return {
+    async tick() {
+      const notify = (await loadConfig().catch(() => null))?.notify;
+      if (!notify) {
+        return;
+      }
+      const at = now();
+      for (const item of await getHealth()) {
+        const previous = observed.get(item.platform) || { state: "ok", candidate: null, since: at };
+        if (item.state === previous.state) {
+          observed.set(item.platform, { state: item.state, candidate: null, since: at });
+          continue;
+        }
+        if (previous.candidate !== item.state) {
+          observed.set(item.platform, { ...previous, candidate: item.state, since: at });
+          continue;
+        }
+        if (at - previous.since < debounceMs) {
+          continue;
+        }
+        observed.set(item.platform, { state: item.state, candidate: null, since: at });
+        const title = `${item.platform} download health ${item.state}`;
+        const text = item.reason.slice(0, 300);
+        try {
+          const response = await fetchImpl(
+            notify.url,
+            notify.format === "text"
+              ? { method: "POST", headers: { "Content-Type": "text/plain; charset=utf-8", Title: title }, body: text }
+              : {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    event: "platform-health",
+                    title,
+                    text,
+                    platform: item.platform,
+                    state: item.state,
+                    at: new Date(at).toISOString()
+                  })
+                }
+          );
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+        } catch (error) {
+          log(`Could not send a platform health notification: ${error?.message || error}`);
+        }
       }
     }
   };

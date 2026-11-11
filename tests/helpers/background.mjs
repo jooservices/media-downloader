@@ -97,6 +97,7 @@ export function loadBackground({
   let nextTabId = 100;
   const storage = structuredClone(initialStorage);
   const downloads = new Map();
+  const removedDownloads = [];
   const started = [];
   const tabMessages = [];
   const tabRemoves = [];
@@ -129,6 +130,7 @@ export function loadBackground({
       onChanged: { addListener: listener => listeners.changed.push(listener) },
       onDeterminingFilename: { addListener: listener => listeners.determining.push(listener) },
       search: async query => (downloads.has(query.id) ? [downloads.get(query.id)] : []),
+      removeFile: async id => removedDownloads.push(id),
       download: async options => {
         started.push(options);
         return started.length;
@@ -203,6 +205,7 @@ export function loadBackground({
     indexedDB,
     ledger,
     downloads,
+    removedDownloads,
     started,
     tabMessages,
     tabRemoves,

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { execFileSync, spawn } from "node:child_process";
+import { createRequire } from "node:module";
+import { once } from "node:events";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -31,16 +34,32 @@ const store = await import("../../cli/store.mjs");
 const serveModule = await import("../../cli/serve.mjs");
 const watchModule = await import("../../cli/watch.mjs");
 const { addUrls, addCommand, moveCommand, readUrlFile, runningServer, serve } = serveModule;
+const { platformHealth } = createRequire(import.meta.url)("../../lib/platform-health.js");
 
 const ORIGIN = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
 const ALICE = "https://www.instagram.com/alice/";
 const BOB = "https://x.com/Bob/";
+const CANARY = "https://www.instagram.com/canary/";
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const DAY = 24 * 60 * 60 * 1000;
 const INBOX = path.join(home, "inbox.txt");
 const PROFILE = path.join(home, "browser-profile");
 const SOURCE = path.join(home, "browser-downloads");
 const MEDIA = path.join(home, "Media");
+
+function runSqlite(sql) {
+  execFileSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      "import { DatabaseSync } from 'node:sqlite'; const db = new DatabaseSync(process.argv[1]); db.exec(process.argv[2]); db.close();",
+      store.JOBS_DB_FILE,
+      sql
+    ],
+    { stdio: "ignore" }
+  );
+}
 
 after(() => {
   store.closeJobStore();
@@ -92,11 +111,11 @@ async function putJob(n, url, status, daysAgo = 0, extra = {}) {
 }
 
 // SIGINT handlers added by the code under test; calling one is what Ctrl+C does, without signalling anyone.
-function interrupter() {
-  const before = new Set(process.listeners("SIGINT"));
+function interrupterFor(signal) {
+  const before = new Set(process.listeners(signal));
   return async () => {
     for (;;) {
-      const added = process.listeners("SIGINT").find(listener => !before.has(listener));
+      const added = process.listeners(signal).find(listener => !before.has(listener));
       if (added) {
         return added;
       }
@@ -259,6 +278,21 @@ test("serve opens the bridge and API, logs, and leaves a stopped daemon file whe
   }
 });
 
+test("serve rotates an oversized daily log and keeps a bounded active log", async t => {
+  await installBridge();
+  await noBrowser();
+  const today = new Date().toISOString().slice(0, 10);
+  const activeLog = path.join(store.LOGS_DIR, `serve-${today}.log`);
+  await mkdir(store.LOGS_DIR, { recursive: true });
+  await writeFile(activeLog, "x".repeat(2 * 1024 * 1024));
+  capture(t);
+  await serve({ inbox: INBOX, once: true });
+  const logs = await readdir(store.LOGS_DIR);
+  assert.equal(logs.filter(name => name.startsWith(`serve-${today}.log.`) && name.endsWith(".bak")).length, 1);
+  assert.ok((await stat(activeLog)).size < 2 * 1024 * 1024);
+  assert.match(await readFile(activeLog, "utf8"), /Serving\./);
+});
+
 test("serve queues the inbox URLs with the configured limit, and a job that cannot be opened ends as an error", async t => {
   await installBridge();
   await noBrowser();
@@ -308,7 +342,121 @@ test("serve recovers interrupted jobs and removes old ones", async t => {
   const left = (await store.listJobs()).map(job => job.jobId).sort();
   assert.ok(left.includes(id(2)) && left.includes(id(3)));
   assert.ok(!left.includes(id(1)), "the older of two finished jobs of a URL was pruned");
+  const recovered = await store.readJob(id(3));
+  assert.equal(recovered.status, "incomplete");
+  assert.equal(recovered.noRetry, true, "a possibly active browser scan is held for explicit review");
 });
+
+test(
+  "child-process chaos restart recovers a bridge-acknowledged in-flight job without replay",
+  { timeout: 90_000 },
+  async t => {
+    const jobId = id(77);
+    const marker = path.join(home, "fake-extension-runs.txt");
+    await installBridge();
+    await store.writeJob({
+      jobId,
+      url: ALICE,
+      platform: "Instagram",
+      account: "alice",
+      mediaPage: false,
+      status: "queued",
+      createdAt: new Date().toISOString(),
+      attempts: 0
+    });
+    store.closeJobStore();
+
+    const serveUrl = new URL("../../cli/serve.mjs", import.meta.url).href;
+    const children = [];
+    const childSource = `
+    import { appendFile } from "node:fs/promises";
+    import { serve } from ${JSON.stringify(serveUrl)};
+    const jobId = ${JSON.stringify(jobId)};
+    const marker = ${JSON.stringify(marker)};
+    const bridgePort = ${BRIDGE_PORT};
+    const fakeExtension = async job => {
+      await appendFile(marker, job.jobId + "\\n");
+      const response = await fetch("http://127.0.0.1:" + bridgePort + "/message", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: ${JSON.stringify(ORIGIN)}
+        },
+        body: JSON.stringify({ type: "PAGE_READY", tabId: 77, pageUrl: job.url, platform: job.platform, account: job.account })
+      });
+      const result = await response.json();
+      if (!response.ok || result.type !== "START_JOB" || result.job.jobId !== jobId) {
+        throw new Error("Fake extension did not start the queued job: " + JSON.stringify(result));
+      }
+      await new Promise(() => {});
+    };
+    await serve({ inbox: ${JSON.stringify(INBOX)}, dueUrls: null, openJob: fakeExtension });
+  `;
+    const start = () => {
+      const child = spawn(process.execPath, ["--input-type=module", "--eval", childSource], {
+        env: {
+          ...process.env,
+          PMS_DATA_DIR: store.APP_DIR,
+          PMS_BRIDGE_PORT: String(BRIDGE_PORT),
+          PMS_API_PORT: String(API_PORT)
+        },
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+      let output = "";
+      child.stdout.setEncoding("utf8").on("data", chunk => (output += chunk));
+      child.stderr.setEncoding("utf8").on("data", chunk => (output += chunk));
+      children.push(child);
+      return { child, output: () => output };
+    };
+    const waitFor = async (condition, description, details = () => "") => {
+      const until = Date.now() + 30_000;
+      while (Date.now() < until) {
+        if (await condition()) {
+          return;
+        }
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      assert.fail(`Timed out waiting for ${description}.${details()}`);
+    };
+    const first = start();
+    t.after(async () => {
+      const live = children.filter(child => child.exitCode === null && child.signalCode === null);
+      for (const child of live) {
+        child.kill("SIGKILL");
+      }
+      await Promise.all(live.map(child => once(child, "exit")));
+      await rm(marker, { force: true });
+    });
+    const childDetails = () => `\nserve output:\n${first.output()}`;
+    await waitFor(
+      async () => (await store.readJob(jobId))?.status === "running",
+      "fake extension acknowledgement",
+      childDetails
+    );
+    await waitFor(
+      async () => (await readFile(marker, "utf8").catch(() => "")).trim() === jobId,
+      "extension run marker",
+      childDetails
+    );
+    assert.equal((await readFile(marker, "utf8")).trim().split(/\r?\n/).length, 1);
+
+    first.child.kill("SIGKILL");
+    await once(first.child, "exit");
+    store.closeJobStore();
+    assert.equal((await store.readJob(jobId)).status, "running", "the abrupt exit leaves durable in-flight state");
+
+    const second = start();
+    await waitFor(async () => (await store.readJob(jobId))?.status === "incomplete", "restart recovery");
+    const recovered = await store.readJob(jobId);
+    assert.equal(recovered.noRetry, true);
+    assert.match(recovered.message, /previous run was interrupted/);
+    assert.equal((await readFile(marker, "utf8")).trim().split(/\r?\n/).length, 1, "the fake extension ran once total");
+    await waitFor(() => second.output().includes("Serving."), "restarted serve startup log");
+    second.child.kill("SIGTERM");
+    await once(second.child, "exit");
+    assert.match(second.output(), /Serving\./);
+  }
+);
 
 test("serve refuses to start while another serve is running", async () => {
   await installBridge();
@@ -404,13 +552,75 @@ test("Ctrl+C stops serve after the current pass", async t => {
   await installBridge();
   await noBrowser();
   const lines = capture(t);
-  const nextHandler = interrupter();
+  const nextHandler = interrupterFor("SIGINT");
   const done = serve({ inbox: INBOX });
   const stop = await nextHandler();
   stop();
   await done;
   assert.match(lines.join(""), /Stopped\./);
   assert.equal((await store.readJson(store.DAEMON_FILE)).pid, null);
+});
+
+test("SIGTERM stops accepting work, closes the database, and records a clean stop", async t => {
+  await installBridge();
+  await noBrowser();
+  capture(t);
+  const nextHandler = interrupterFor("SIGTERM");
+  const done = serve({ inbox: INBOX });
+  const stop = await nextHandler();
+  stop();
+  await done;
+  assert.equal((await store.readJson(store.DAEMON_FILE)).pid, null);
+  assert.equal(store.jobs().integrityCheck()[0], "ok", "the SQLite store reopens cleanly after shutdown");
+});
+
+test("shutdown parks more than one bounded page of running jobs", async t => {
+  await installBridge();
+  await noBrowser();
+  capture(t);
+  const nextHandler = interrupterFor("SIGTERM");
+  const done = serve({ inbox: INBOX });
+  const stop = await nextHandler();
+  const now = new Date().toISOString();
+  for (let n = 1; n <= 501; n++) {
+    await store.writeJob({
+      jobId: id(n),
+      url: ALICE,
+      platform: "Instagram",
+      account: "alice",
+      status: "running",
+      createdAt: now,
+      updatedAt: now
+    });
+  }
+  stop();
+  await done;
+
+  assert.equal(store.jobs().runningJobs().length, 0);
+  const parked = (await store.listJobs({ status: "incomplete", limit: 600 })).filter(job => job.noRetry);
+  assert.equal(parked.length, 501);
+  assert.ok(parked.every(job => /queue stopped/.test(job.message)));
+  assert.equal(store.jobs().integrityCheck()[0], "ok");
+});
+
+test("shutdown reports a failed job update and does not claim a clean stop", async t => {
+  await installBridge();
+  await noBrowser();
+  const lines = capture(t);
+  const nextHandler = interrupterFor("SIGTERM");
+  const done = serve({ inbox: INBOX });
+  const stop = await nextHandler();
+  await putJob(1, ALICE, "running");
+  runSqlite(
+    "CREATE TRIGGER fail_job_update BEFORE UPDATE ON jobs BEGIN SELECT RAISE(ABORT, 'forced shutdown write failure'); END;"
+  );
+
+  stop();
+  await assert.rejects(done, /forced shutdown write failure/);
+  assert.match(lines.join(""), /Could not park running jobs during shutdown/);
+  assert.match(lines.join(""), /Stopped with shutdown errors/);
+  runSqlite("DROP TRIGGER fail_job_update");
+  assert.equal((await store.readJob(id(1))).status, "running");
 });
 
 test("watch add needs URLs, appends the profile pages and lists them", async t => {
@@ -432,9 +642,9 @@ test("watch scans the listed pages that are due and leaves recently scanned ones
   await noBrowser();
   await mkdir(store.APP_DIR, { recursive: true });
   await writeFile(watchModule.DEFAULT_WATCH, `${ALICE}\n${BOB}\n`);
-  await putJob(1, BOB, "complete", 0); // scanned a moment ago: not due for hours
+  await putJob(1, BOB, "incomplete", 1, { noRetry: true }); // a crash or stale scan stays parked for review
   const lines = capture(t);
-  const nextHandler = interrupter();
+  const nextHandler = interrupterFor("SIGINT");
   const done = watchModule.watch();
   const stop = await nextHandler();
   while ((await store.listJobs()).filter(job => job.url === ALICE).length === 0) {
@@ -444,7 +654,8 @@ test("watch scans the listed pages that are due and leaves recently scanned ones
   await done;
   const jobs = await store.listJobs();
   assert.equal(jobs.filter(job => job.url === ALICE).length, 1, "the page that was never scanned is queued");
-  assert.equal(jobs.filter(job => job.url === BOB).length, 1, "the recently scanned page is not queued again");
+  assert.equal(jobs.filter(job => job.url === BOB).length, 1, "the parked watch page is not queued again");
+  assert.equal(jobs.find(job => job.url === BOB).noRetry, true, "the explicit review hold is preserved");
   assert.match(lines.join(""), /Queued 1 URL\(s\) from the inbox\./);
   assert.ok((await stat(store.DAEMON_FILE)).isFile());
 });
@@ -482,3 +693,125 @@ test("serve tells the notification address about a job that ends in trouble", as
   const [saved] = await store.listJobs();
   assert.ok(saved.notifiedAt, "the job is marked, so it is announced only once");
 });
+
+test(
+  "serve queues configured canaries on their interval and notifies debounced health recovery",
+  { timeout: 20_000 },
+  async t => {
+    await installBridge();
+    await putJob(101, ALICE, "error", 31, { message: "selector failed", started: 0 });
+
+    const events = [];
+    let resolveBroken;
+    let resolveRecovered;
+    const brokenNotification = new Promise(resolve => (resolveBroken = resolve));
+    const recoveredNotification = new Promise(resolve => (resolveRecovered = resolve));
+    const hook = createServer(async (request, response) => {
+      const chunks = [];
+      for await (const chunk of request) {
+        chunks.push(chunk);
+      }
+      const event = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      events.push(event);
+      response.writeHead(204).end();
+      if (event.state === "broken") {
+        await store.writeJob({
+          jobId: id(102),
+          url: ALICE,
+          platform: "Instagram",
+          account: "alice",
+          status: "complete",
+          started: 1,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
+        resolveBroken();
+      } else if (event.state === "ok") {
+        resolveRecovered();
+      }
+    });
+    hook.listen(0, "127.0.0.1");
+    await once(hook, "listening");
+    const { port } = hook.address();
+    await store.writeJsonAtomic(store.CONFIG_FILE, {
+      canary: { accounts: [CANARY], intervalMinutes: 15 },
+      notify: { url: `http://127.0.0.1:${port}/health`, format: "json", events: ["backoff-start"] }
+    });
+
+    const lines = capture(t);
+    const clock = { value: Date.now() };
+    let resolveFirstProbe;
+    const firstProbeAttempted = new Promise(resolve => {
+      resolveFirstProbe = resolve;
+    });
+    const controller = new AbortController();
+    const stop = () => controller.abort();
+    const serving = serve({
+      inbox: INBOX,
+      dueUrls: null,
+      signal: controller.signal,
+      now: () => clock.value,
+      healthDebounceMs: 10,
+      tickMs: 20,
+      openJob: async job => {
+        resolveFirstProbe(job);
+        throw new Error("test browser is unavailable");
+      }
+    });
+    try {
+      const firstProbe = await Promise.race([
+        firstProbeAttempted,
+        new Promise(resolve => setTimeout(() => resolve(null), 8000))
+      ]);
+      assert.ok(firstProbe, `serve did not open the configured probe: ${lines.join("")}`);
+      assert.equal(firstProbe.url, CANARY);
+      assert.equal(
+        platformHealth(await store.listJobs(), ["Instagram"])[0].state,
+        "broken",
+        "the retained diagnostic makes the first health observation broken"
+      );
+      await new Promise(resolve => setTimeout(resolve, 50));
+      clock.value += 11;
+      assert.equal(
+        await Promise.race([
+          brokenNotification.then(() => true),
+          new Promise(resolve => setTimeout(() => resolve(false), 6000))
+        ]),
+        true,
+        `serve did not send the broken transition: ${lines.join("")} ${JSON.stringify(events)}`
+      );
+      await new Promise(resolve => setTimeout(resolve, 50));
+      clock.value += 11;
+      await new Promise(resolve => setTimeout(resolve, 50));
+      clock.value += 11;
+      assert.equal(
+        await Promise.race([
+          recoveredNotification.then(() => true),
+          new Promise(resolve => setTimeout(() => resolve(false), 6000))
+        ]),
+        true,
+        `serve did not send the recovery transition: ${lines.join("")}`
+      );
+      stop();
+      await serving;
+
+      const jobs = await store.listJobs();
+      assert.equal(
+        jobs.filter(job => job.url === CANARY).length,
+        1,
+        "the 15 minute interval prevents duplicate probes"
+      );
+      assert.deepEqual(
+        events.map(event => [event.event, event.state]),
+        [
+          ["platform-health", "broken"],
+          ["platform-health", "ok"]
+        ]
+      );
+    } finally {
+      stop();
+      await serving.catch(() => {});
+      await new Promise(resolve => hook.close(resolve));
+    }
+  }
+);

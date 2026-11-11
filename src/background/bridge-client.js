@@ -58,36 +58,39 @@ async function handleBridgeResponse(message) {
   if (message?.type !== "START_JOB" || !message.job || !Number.isInteger(message.tabId)) {
     return;
   }
+  // Associate the tab before starting the scan: a 420/429 buffered before page readiness must
+  // still reach this job if the content script refuses or cannot start the scan.
   try {
+    await rememberCliJob(message.tabId, message.job.jobId);
     const tab = await chrome.tabs.get(message.tabId);
     if (!samePage(tab.url, message.job.url)) {
-      await postBridgeMessage({
-        type: "JOB_ERROR",
-        jobId: message.job.jobId,
-        error: "The tab URL changed before the download started."
-      });
+      await reportCliStartFailure(message.tabId, message.job.jobId, "The tab URL changed before the download started.");
       return;
     }
     const response = await chrome.tabs.sendMessage(message.tabId, {
       type: "AUTO_START_CLI",
-      job: { ...message.job, repairTargets: message.job.repairBasenames || [] }
+      job: {
+        ...message.job,
+        repairTargets: message.job.repairBasenames || [],
+        repairExpectedCount: message.job.repairExpectedCount
+      }
     });
     if (!response?.ok) {
-      await postBridgeMessage({
-        type: "JOB_ERROR",
-        jobId: message.job.jobId,
-        error: response?.error || "The page could not start the automatic scan."
-      });
-    } else if (response.state?.running) {
-      await rememberCliJob(message.tabId, message.job.jobId);
+      await reportCliStartFailure(
+        message.tabId,
+        message.job.jobId,
+        response?.error || "The page could not start the automatic scan."
+      );
     }
   } catch (error) {
-    await postBridgeMessage({
-      type: "JOB_ERROR",
-      jobId: message.job.jobId,
-      error: error?.message || String(error)
-    }).catch(() => {});
+    await reportCliStartFailure(message.tabId, message.job.jobId, error?.message || String(error));
   }
+}
+
+async function reportCliStartFailure(tabId, jobId, error) {
+  await postBridgeMessage({ type: "JOB_ERROR", jobId, error }).catch(() => {});
+  await rememberRecentlyCompletedCliJob(tabId, jobId).catch(() => {});
+  await takeCliJob(tabId).catch(() => {});
 }
 
 // The CLI was closed: let `resume` reconnect for a while, then stop the scan so an
@@ -129,8 +132,14 @@ async function readCliJobs() {
   return activeCliJobs && typeof activeCliJobs === "object" ? activeCliJobs : {};
 }
 
+async function readRecentlyCompletedCliJobs() {
+  const { recentlyCompletedCliJobs } = await chrome.storage.local.get({ recentlyCompletedCliJobs: {} });
+  return recentlyCompletedCliJobs && typeof recentlyCompletedCliJobs === "object" ? recentlyCompletedCliJobs : {};
+}
+
 // Read-modify-write on the map runs one at a time: two tabs starting together must not overwrite each other.
 let cliJobsChain = Promise.resolve();
+let cliRateLimitChain = Promise.resolve();
 function updateCliJobs(change) {
   const run = cliJobsChain.then(async () => {
     const jobs = await readCliJobs();
@@ -142,9 +151,66 @@ function updateCliJobs(change) {
   return run;
 }
 
+function serializeCliRateLimit(operation) {
+  const result = cliRateLimitChain.then(operation);
+  cliRateLimitChain = result.catch(() => {});
+  return result;
+}
+
 function rememberCliJob(tabId, jobId) {
-  return updateCliJobs(jobs => {
-    jobs[String(tabId)] = jobId;
+  return serializeCliRateLimit(async () => {
+    await updateCliJobs(jobs => {
+      jobs[String(tabId)] = jobId;
+    });
+    await flushPendingCliRateLimit(tabId, jobId);
+  });
+}
+
+async function savePendingCliRateLimit(tabId, status) {
+  const { pendingCliRateLimits = {} } = await chrome.storage.local.get({ pendingCliRateLimits: {} });
+  for (const [id, entry] of Object.entries(pendingCliRateLimits)) {
+    if (!isFreshPendingRateLimit(entry)) {
+      delete pendingCliRateLimits[id];
+    }
+  }
+  pendingCliRateLimits[String(tabId)] = { status, at: Date.now() };
+  await chrome.storage.local.set({ pendingCliRateLimits });
+}
+
+function isFreshPendingRateLimit(entry) {
+  const age = Date.now() - Number(entry?.at);
+  return [420, 429].includes(Number(entry?.status)) && Number.isFinite(age) && age >= 0 && age <= 60_000;
+}
+
+async function takePendingCliRateLimit(tabId) {
+  const { pendingCliRateLimits = {} } = await chrome.storage.local.get({ pendingCliRateLimits: {} });
+  const entry = pendingCliRateLimits[String(tabId)];
+  for (const [id, pending] of Object.entries(pendingCliRateLimits)) {
+    if (id === String(tabId) || !isFreshPendingRateLimit(pending)) {
+      delete pendingCliRateLimits[id];
+    }
+  }
+  if (entry) {
+    await chrome.storage.local.set({ pendingCliRateLimits });
+  }
+  return isFreshPendingRateLimit(entry) ? Number(entry.status) : undefined;
+}
+
+async function flushPendingCliRateLimit(tabId, jobId) {
+  const status = await takePendingCliRateLimit(tabId);
+  if (status) {
+    await postBridgeMessage({ type: "JOB_RATE_LIMIT", jobId, status }).catch(() =>
+      savePendingCliRateLimit(tabId, status)
+    );
+  }
+}
+
+function flushPendingQueueRateLimit(tabId) {
+  return serializeCliRateLimit(async () => {
+    const status = await takePendingCliRateLimit(tabId);
+    if (status) {
+      await queueEngine.rateLimitSignal(tabId, status);
+    }
   });
 }
 
@@ -210,16 +276,42 @@ async function handleAutoProgress(message, sender) {
   return handleBridgeProgress(message, sender);
 }
 
+function handlePlatformRateLimit(message, sender) {
+  const status = Number(message?.status);
+  const tabId = sender?.tab?.id;
+  if (![420, 429].includes(status) || !Number.isInteger(tabId)) {
+    return null;
+  }
+  return serializeCliRateLimit(async () => {
+    if (await queueEngine.rateLimitSignal(tabId, status)) {
+      return { ok: true };
+    }
+    const jobId = (await readCliJobs())[String(tabId)];
+    if (!jobId) {
+      const completion = (await readRecentlyCompletedCliJobs())[String(tabId)];
+      if (completion && Date.now() - completion.at <= 60_000) {
+        await postBridgeMessage({ type: "JOB_RATE_LIMIT", jobId: completion.jobId, status });
+        return { ok: true };
+      }
+      await savePendingCliRateLimit(tabId, status);
+      return { ok: true };
+    }
+    return postBridgeMessage({ type: "JOB_RATE_LIMIT", jobId, status });
+  });
+}
+
 function handleBridgeProgress(message, sender) {
   const finished = message.type === "AUTO_DONE";
-  if (finished) {
-    takeCliJob(sender?.tab?.id).catch(() => {});
-  }
-  return postBridgeMessage({
-    type: finished ? "JOB_DONE" : "JOB_PROGRESS",
-    jobId: message.state.jobId,
-    state: message.state
-  })
+  const remember = finished ? rememberRecentlyCompletedCliJob(sender?.tab?.id, message.state.jobId) : Promise.resolve();
+  return remember
+    .then(() => (finished ? takeCliJob(sender?.tab?.id) : null))
+    .then(() =>
+      postBridgeMessage({
+        type: finished ? "JOB_DONE" : "JOB_PROGRESS",
+        jobId: message.state.jobId,
+        state: message.state
+      })
+    )
     .then(async result => {
       bridgeLostSince = null;
       const tabId = sender?.tab?.id;
@@ -237,6 +329,20 @@ function handleBridgeProgress(message, sender) {
       noteBridgeFailure(sender?.tab?.id, !finished);
       return failureResponse(error);
     });
+}
+
+async function rememberRecentlyCompletedCliJob(tabId, jobId) {
+  if (!Number.isInteger(tabId) || !jobId) {
+    return;
+  }
+  const recent = await readRecentlyCompletedCliJobs();
+  recent[String(tabId)] = { jobId, at: Date.now() };
+  for (const [id, entry] of Object.entries(recent)) {
+    if (Date.now() - Number(entry?.at || 0) > 60_000) {
+      delete recent[id];
+    }
+  }
+  await chrome.storage.local.set({ recentlyCompletedCliJobs: recent });
 }
 
 chrome.tabs.onRemoved.addListener(async tabId => {

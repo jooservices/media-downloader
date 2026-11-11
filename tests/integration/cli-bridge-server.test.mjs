@@ -5,6 +5,8 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test, { after, beforeEach } from "node:test";
+import { createRequire } from "node:module";
+import { loadBackground } from "../helpers/background.mjs";
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -24,6 +26,9 @@ process.env.LOCALAPPDATA = home;
 process.env.PMS_BRIDGE_PORT = String(PORT);
 const store = await import("../../cli/store.mjs");
 const { handleBridgeMessage, startBridgeServer } = await import("../../cli/bridge-server.mjs");
+const require = createRequire(import.meta.url);
+const { createSupervisor } = require("../../lib/supervisor.js");
+const { parseConfig } = await import("../../cli/config.mjs");
 
 const ORIGIN = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
 const PAGE = "https://www.instagram.com/alice/";
@@ -84,12 +89,36 @@ test("the oldest waiting job for the page starts and is claimed so a second tab 
   assert.equal(first.job.status, "running");
   assert.equal(first.job.tabId, 7);
   assert.match(first.job.message, /profile page/);
+  assert.equal(claimed.size, 1, "the current attempt remains guarded against duplicate claims");
   assert.equal((await read(2)).status, "queued");
 
   const second = await handleBridgeMessage(ready({ tabId: 8 }), claimed);
   assert.equal(second.job.jobId, id(2), "the next tab gets the next job");
   const third = await handleBridgeMessage(ready({ tabId: 9 }), claimed);
   assert.equal(third.type, "JOB_CONNECTED", "both jobs are taken");
+});
+
+test("bridge claim history stays bounded across repeated attempts", async () => {
+  const claimed = new Set();
+  await putJob(42, { openedAt: "2026-01-01T00:00:00.000Z" });
+  for (let attempt = 0; attempt < 501; attempt++) {
+    await store.updateJob(id(42), job => {
+      job.status = "queued";
+      job.openedAt = new Date(Date.UTC(2026, 0, 1, 0, attempt)).toISOString();
+    });
+    assert.equal((await handleBridgeMessage(ready({ tabId: attempt + 1 }), claimed)).type, "START_JOB");
+  }
+  assert.equal(claimed.size, 500);
+});
+
+test("PAGE_READY finds a later tagged page after hundreds of older jobs for other URLs", async () => {
+  for (let n = 1; n <= 501; n++) {
+    await putJob(n, { url: `https://www.instagram.com/other-${n}/` });
+  }
+  await putJob(502, { openedAt: "2026-01-01T00:00:00.000Z" });
+  const result = await handleBridgeMessage(ready({ cliJobId: id(502) }), new Set());
+  assert.equal(result.type, "START_JOB");
+  assert.equal(result.job.jobId, id(502));
 });
 
 test("a page for another site, account or address does not match the job", async () => {
@@ -134,6 +163,184 @@ test("a tagged tab on a sign-in page marks the job as needing login and closes",
   assert.equal(job.status, "error");
   assert.equal(job.needsLogin, true);
   assert.match(job.message, /Instagram asked to sign in/);
+});
+
+test("a sign-in redirect reaches platform status and starts back-off", async () => {
+  await putJob(1);
+  await handleBridgeMessage(
+    ready({ cliJobId: id(1), pageUrl: "https://www.instagram.com/accounts/login/" }),
+    new Set()
+  );
+  const supervisor = createSupervisor({
+    now: () => Date.parse("2026-01-01T00:00:00Z"),
+    random: () => 0,
+    log: () => {},
+    loadConfig: async () => parseConfig({ workers: { instagram: 3 }, delaySeconds: { min: 0, max: 0 } }),
+    listJobs: store.listJobs,
+    updateJob: store.updateJob,
+    openJob: async () => {},
+    moveFiles: async () => ({ moved: 0, failed: 0 })
+  });
+  await supervisor.tick();
+  assert.deepEqual(supervisor.platformStatus().instagram, {
+    configuredWorkers: 3,
+    effectiveWorkers: 1,
+    backoffUntil: "2026-01-01T00:15:00.000Z",
+    backoffLevel: 1
+  });
+});
+
+test("a platform HTTP rate-limit signal from the extension reaches the CLI job outcome", async () => {
+  await putJob(1, { status: "running", tabId: 7, attempts: 1 });
+  await handleBridgeMessage({ type: "JOB_RATE_LIMIT", jobId: id(1), status: 429 }, new Set());
+  await handleBridgeMessage(
+    { type: "JOB_DONE", jobId: id(1), state: { status: "complete", message: "Scan complete." } },
+    new Set()
+  );
+  const job = await read(1);
+  assert.equal(job.status, "incomplete");
+  assert.equal(job.rateLimitStatus, 429);
+  assert.match(job.message, /HTTP 429/);
+});
+
+test("a late rate-limit signal resolves a completed CLI tab by tab id", async () => {
+  await putJob(1, { status: "running", tabId: 7, attempts: 1, openedAt: "2026-01-01T00:00:00.000Z" });
+  await handleBridgeMessage(
+    { type: "JOB_DONE", jobId: id(1), state: { status: "complete", message: "Scan complete." } },
+    new Set()
+  );
+  const completed = await read(1);
+  assert.equal(completed.status, "complete");
+
+  await handleBridgeMessage({ type: "JOB_RATE_LIMIT", tabId: 7, status: 429 }, new Set());
+  const job = await read(1);
+  assert.equal(job.status, "incomplete");
+  assert.equal(job.rateLimitStatus, 429);
+});
+
+test("a late rate-limit signal after an incomplete CLI attempt was requeued pauses its platform", async () => {
+  await putJob(1, {
+    status: "running",
+    tabId: 7,
+    attempts: 1,
+    openingId: "opening-1",
+    openedAt: "2026-01-01T00:00:00.000Z",
+    started: 1
+  });
+  await handleBridgeMessage(
+    { type: "JOB_DONE", jobId: id(1), state: { status: "incomplete", started: 1, message: "Scan interrupted." } },
+    new Set()
+  );
+  const supervisor = createSupervisor({
+    now: () => Date.parse("2026-01-01T00:01:00Z"),
+    random: () => 0,
+    log: () => {},
+    loadConfig: async () => parseConfig({ workers: { instagram: 2 }, delaySeconds: { min: 0, max: 0 } }),
+    loadBackoffState: async () => null,
+    saveBackoffState: async () => {},
+    listJobs: store.listJobs,
+    updateJob: store.updateJob,
+    openJob: async () => {}
+  });
+  await supervisor.tick();
+  assert.equal((await read(1)).status, "queued");
+
+  await handleBridgeMessage({ type: "JOB_RATE_LIMIT", jobId: id(1), status: 429 }, new Set());
+  await supervisor.tick();
+  assert.equal(supervisor.platformStatus().instagram.backoffLevel, 1);
+});
+
+test("a late signal does not count the same CLI opening twice after supervisor restart", async () => {
+  await putJob(1, {
+    status: "error",
+    tabId: 7,
+    attempts: 1,
+    openingId: "opening-1",
+    openedAt: "2026-01-01T00:00:00.000Z",
+    message: "HTTP 429 Too Many Requests"
+  });
+  let saved = null;
+  const makeSupervisor = () =>
+    createSupervisor({
+      now: () => Date.parse("2026-01-01T00:01:00Z"),
+      random: () => 0,
+      log: () => {},
+      loadConfig: async () => parseConfig({ workers: { instagram: 2 }, delaySeconds: { min: 0, max: 0 } }),
+      loadBackoffState: async () => saved,
+      saveBackoffState: async state => {
+        saved = structuredClone(state);
+      },
+      listJobs: store.listJobs,
+      updateJob: store.updateJob,
+      openJob: async () => {}
+    });
+
+  const first = makeSupervisor();
+  await first.tick();
+  assert.equal(first.platformStatus().instagram.backoffLevel, 1);
+  assert.equal((await read(1)).status, "queued");
+
+  await handleBridgeMessage({ type: "JOB_RATE_LIMIT", jobId: id(1), status: 429 }, new Set());
+  assert.equal((await read(1)).rateLimitOutcomeId, "opening-1:rate-limit:429");
+
+  const restarted = makeSupervisor();
+  await restarted.tick();
+  assert.equal(restarted.platformStatus().instagram.backoffLevel, 1);
+  assert.equal(restarted.platformStatus().instagram.backoffUntil, "2026-01-01T00:16:00.000Z");
+});
+
+test("a buffered rate limit still reaches supervisor status when CLI scan startup fails", async () => {
+  await putJob(1, { attempts: 1, openedAt: "2026-01-01T00:00:00.000Z" });
+  const claimed = new Set();
+  const env = loadBackground({
+    fetchImpl: async (_url, init) => {
+      const message = JSON.parse(init.body);
+      const result = await handleBridgeMessage(message, claimed);
+      return { ok: true, status: 200, json: async () => result };
+    }
+  });
+  env.inContext(`
+    chrome.tabs.get = async id => ({ id, url: ${JSON.stringify(PAGE)} });
+    chrome.tabs.sendMessage = async () => ({ ok: false, error: "The page refused to start." });
+  `);
+  const sender = { tab: { id: 7, url: PAGE } };
+
+  await env.send({ type: "PLATFORM_RATE_LIMIT", status: 429 }, sender);
+  await env.send({ type: "CLI_PAGE_READY", pageUrl: PAGE, platform: "Instagram", account: "alice" }, sender);
+
+  const job = await read(1);
+  assert.equal(job.status, "error");
+  assert.equal(job.rateLimitStatus, 429);
+  assert.match(job.message, /refused to start/);
+
+  const supervisor = createSupervisor({
+    now: () => Date.parse("2026-01-01T00:00:00Z"),
+    random: () => 0,
+    log: () => {},
+    loadConfig: async () => parseConfig({ workers: { instagram: 3 }, delaySeconds: { min: 0, max: 0 } }),
+    listJobs: store.listJobs,
+    updateJob: store.updateJob,
+    openJob: async () => {},
+    moveFiles: async () => ({ moved: 0, failed: 0 })
+  });
+  await supervisor.tick();
+  assert.deepEqual(supervisor.platformStatus().instagram, {
+    configuredWorkers: 3,
+    effectiveWorkers: 1,
+    backoffUntil: "2026-01-01T00:15:00.000Z",
+    backoffLevel: 1
+  });
+});
+
+test("a tagged tab on a checkpoint page records a detectable challenge outcome", async () => {
+  await putJob(1);
+  await handleBridgeMessage(
+    ready({ cliJobId: id(1), pageUrl: "https://www.facebook.com/checkpoint/1234/" }),
+    new Set()
+  );
+  const job = await read(1);
+  assert.equal(job.needsLogin, true);
+  assert.match(job.message, /checkpoint or security challenge/i);
 });
 
 test("a tagged tab is kept when it runs the job, closed when another tab already does or the page is wrong", async () => {

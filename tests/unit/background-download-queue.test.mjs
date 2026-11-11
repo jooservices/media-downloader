@@ -13,7 +13,17 @@ const photo = (n, overrides = {}) => ({
 });
 const download = (env, items) => env.send({ type: "DOWNLOAD_ITEMS", items });
 const status = (env, platform, account) => env.send({ type: "DOWNLOAD_STATUS", platform, account }).then(plain);
-const finish = (env, id, extra = {}) => env.downloads.set(id, { id, state: "complete", ...extra });
+const finish = (env, id, extra = {}) =>
+  env.downloads.set(id, {
+    id,
+    state: "complete",
+    bytesReceived: 10,
+    totalBytes: 10,
+    fileSize: 10,
+    filename: id > 10 ? "video.mp4" : "photo.jpg",
+    mime: id > 10 ? "video/mp4" : "image/jpeg",
+    ...extra
+  });
 
 test("a batch must be a list", async () => {
   const env = loadBackground();
@@ -110,6 +120,17 @@ test("an item that keeps failing stops being retried after three attempts", asyn
   assert.equal(retry.failed, 1);
 });
 
+test("download retries respect the configured maxAttempts value", async () => {
+  const env = loadBackground({ storage: { queueSettings: { maxAttempts: 1 } } });
+  await download(env, [photo(1)]);
+  finish(env, 1, { state: "interrupted", error: "NETWORK_FAILED" });
+  const current = await status(env);
+  assert.deepEqual([current.failed, current.retryable], [1, 0]);
+  const retry = plain(await env.send({ type: "RETRY_FAILED_DOWNLOADS" }));
+  assert.equal(retry.started ?? 0, 0);
+  assert.equal(env.started.length, 1);
+});
+
 test("already saved or already pending items are skipped, and so are items in the official-video flow", async () => {
   const env = loadBackground({
     storage: { nativeVideoPending: { 9: { key: "Twitter|video|9|1", platform: "Twitter", account: "alice" } } }
@@ -151,6 +172,71 @@ test("finished downloads are reconciled: complete is remembered, interrupted is 
   assert.equal((await status(env, "Twitter", "bob")).failed, 0);
 });
 
+test("empty, size-mismatched and non-image completions stay retryable instead of entering the ledger", async () => {
+  const env = loadBackground();
+  await download(env, [photo(1), photo(2), photo(3), photo(4)]);
+  finish(env, 1, { bytesReceived: 0, totalBytes: 10, fileSize: 0 });
+  finish(env, 2, { bytesReceived: 8, totalBytes: 10, fileSize: 8 });
+  finish(env, 3, { filename: "photo.mp4", mime: "video/mp4" });
+  finish(env, 4, { fileSize: 0 });
+  const result = await status(env);
+  assert.equal(result.failed, 4);
+  assert.equal(result.retryable, 4);
+  assert.equal(await env.ledger.has("Twitter|image|1|1"), false);
+  assert.deepEqual(
+    env.removedDownloads,
+    [1, 2, 3, 4],
+    "rejected completed files are removed before the mover can publish them"
+  );
+  assert.match(env.storage.failedDownloads["Twitter|image|2|1"].error, /size did not match/);
+  assert.match(env.storage.failedDownloads["Twitter|image|3|1"].error, /expected image/);
+});
+
+test("a rejected file that cannot be deleted is reported so the mover can keep it unpublished", async () => {
+  const env = loadBackground();
+  env.inContext(`chrome.downloads.removeFile = async () => { throw new Error("file is locked"); }`);
+  await download(env, [photo(1)]);
+  finish(env, 1, {
+    filename: "C:\\Users\\test\\Downloads\\rejected.jpg",
+    bytesReceived: 8,
+    totalBytes: 10,
+    fileSize: 8
+  });
+
+  const result = await status(env);
+  assert.deepEqual(result.rejectedFiles, ["rejected.jpg"]);
+  assert.equal(await env.ledger.has("Twitter|image|1|1"), false);
+});
+
+test("a corrupt completion can be retried and only the verified retry enters the ledger", async () => {
+  const env = loadBackground();
+  await download(env, [photo(1)]);
+  finish(env, 1, { bytesReceived: 4, totalBytes: 10, fileSize: 4 });
+  assert.equal((await status(env)).retryable, 1);
+  await env.send({ type: "RETRY_FAILED_DOWNLOADS" });
+  assert.equal(env.started.length, 2);
+  finish(env, 2, { filename: "photo.jpg", mime: "image/jpeg" });
+  const result = await status(env);
+  assert.equal(result.failed, 0);
+  assert.equal(await env.ledger.has("Twitter|image|1|1"), true);
+});
+
+test("verified outputs keep their filename and size, and repair keys can replace ledgered media", async () => {
+  const env = loadBackground();
+  await env.ledger.add("Twitter|image|1|1");
+  const item = photo(1, { key: "repair:job-1:pic1.jpg", filename: "pic1.jpg", overwrite: true, jobId: "job-1" });
+  await download(env, [item]);
+  assert.equal(env.started[0].conflictAction, "overwrite");
+  finish(env, 1, { filename: "Twitter/alice/pic1.jpg" });
+  await status(env);
+  const outputs = plain(
+    await env.send({ type: "GET_VERIFIED_OUTPUTS", platform: "Twitter", account: "alice", jobId: "job-1" })
+  );
+  assert.deepEqual(outputs, [
+    { filename: "pic1.jpg", size: 10, platform: "Twitter", account: "alice", jobId: "job-1" }
+  ]);
+});
+
 test("an interrupted download with no reason gets a plain one, and one with no item record is just forgotten", async () => {
   const env = loadBackground({
     storage: { pendingDownloads: { a: 1, b: 2 }, pendingItems: { a: photo(1, { key: "a" }) }, downloadAttempts: {} }
@@ -183,6 +269,25 @@ test("official video downloads are reconciled the same way", async () => {
   assert.deepEqual([result.pending, result.failed, result.unavailable], [1, 1, 1]);
   assert.equal(env.storage.nativeVideoFailures.v3.error, "The browser interrupted this official video download.");
   assert.equal(await env.ledger.has("v1"), true);
+});
+
+test("official video completions with an image type or unsupported extension stay retryable", async () => {
+  const env = loadBackground({
+    storage: { nativeVideoPending: { 11: { key: "v1", platform: "Twitter", account: "alice" } } }
+  });
+  finish(env, 11, { filename: "video.jpg", mime: "image/jpeg" });
+  const result = await status(env);
+  assert.equal(result.failed, 1);
+  assert.equal(result.retryable, 0, "native video retries are handled when the post is scanned again");
+  assert.equal(await env.ledger.has("v1"), false);
+});
+
+test("cached video downloads require video metadata and can pass the integrity check", async () => {
+  const env = loadBackground();
+  await download(env, [photo(1, { filename: "video.mp4", key: "Twitter|video|1|1" })]);
+  finish(env, 1, { filename: "video.mp4", mime: "video/mp4" });
+  assert.equal((await status(env)).failed, 0);
+  assert.equal(await env.ledger.has("Twitter|video|1|1"), true);
 });
 
 test("an armed official-video target counts as pending until it expires, then as a failure", async () => {
