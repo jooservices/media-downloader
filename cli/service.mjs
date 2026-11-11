@@ -16,11 +16,38 @@ function quoteWindows(value) {
 }
 
 function quoteSystemd(value) {
-  return `"${String(value).replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+  return `"${String(value).replaceAll("%", "%%").replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 
 function escapeXml(value) {
   return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function scriptDirectory(script) {
+  return path.win32.isAbsolute(script) ? path.win32.dirname(script) : path.dirname(script);
+}
+
+function serviceEnvironment(env) {
+  return Object.fromEntries(
+    ["PMS_DATA_DIR", "PMS_DOWNLOAD_DIR"].filter(name => env[name]).map(name => [name, env[name]])
+  );
+}
+
+function escapeVbs(value) {
+  return String(value).replaceAll('"', '""');
+}
+
+function formatVbsEnvironment([name, value]) {
+  return `env("${name}") = "${escapeVbs(value)}"`;
+}
+
+function formatSystemdEnvironment([name, value]) {
+  const assignment = `${name}=${value}`;
+  return `Environment=${quoteSystemd(assignment)}`;
+}
+
+function formatXmlEnvironment([name, value]) {
+  return `<key>${name}</key><string>${escapeXml(value)}</string>`;
 }
 
 export function serviceLaunch() {
@@ -33,28 +60,34 @@ export function windowsStartupFile(env = process.env) {
 }
 
 // A logon task via schtasks needs an administrator. The per-user Startup folder does not.
-export function windowsStartupScript(launch = serviceLaunch()) {
+export function windowsStartupScript(launch = serviceLaunch(), env = process.env) {
   const command = `${quoteWindows(launch.executable)} ${quoteWindows(launch.script)} serve`;
   const vbs = `"${command.replaceAll('"', '""')}"`;
-  return `CreateObject("Wscript.Shell").Run ${vbs}, 0, False\n`;
+  const lines = ['Set shell = CreateObject("Wscript.Shell")', 'Set env = shell.Environment("Process")'];
+  lines.push(...Object.entries(serviceEnvironment(env)).map(formatVbsEnvironment));
+  lines.push(`shell.Run ${vbs}, 0, False`);
+  return `${lines.join("\n")}\n`;
 }
 
-export function startQueue(launch) {
+export function startQueue(launch, env = process.env) {
   const child = spawn(launch.executable, [launch.script, "serve"], {
     detached: true,
     stdio: "ignore",
-    windowsHide: true
+    windowsHide: true,
+    env
   });
   child.unref();
 }
 
-export function systemdUnit(launch = serviceLaunch()) {
+export function systemdUnit(launch = serviceLaunch(), env = process.env) {
+  const environment = Object.entries(serviceEnvironment(env)).map(formatSystemdEnvironment).join("\n");
+  const environmentLines = environment ? `${environment}\n` : "";
   return `[Unit]
 Description=Page Media Saver
 
 [Service]
 ExecStart=${quoteSystemd(launch.executable)} ${quoteSystemd(launch.script)} serve
-Restart=on-failure
+${environmentLines}Restart=on-failure
 RestartSec=10
 
 [Install]
@@ -62,13 +95,19 @@ WantedBy=default.target
 `;
 }
 
-export function launchdPlist(launch = serviceLaunch()) {
+export function launchdPlist(launch = serviceLaunch(), env = process.env) {
+  const environment = Object.entries(serviceEnvironment(env));
+  const environmentValues = environment.map(formatXmlEnvironment).join("");
+  const environmentXml = environment.length
+    ? `  <key>EnvironmentVariables</key><dict>${environmentValues}</dict>\n`
+    : "";
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>${LAUNCHD_LABEL}</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+${environmentXml}  <key>WorkingDirectory</key><string>${escapeXml(scriptDirectory(launch.script))}</string>
   <key>ProgramArguments</key>
   <array>
     <string>${escapeXml(launch.executable)}</string>
@@ -114,15 +153,15 @@ export async function installService({
   if (platform === "win32") {
     const file = windowsStartupFile(env);
     await mkdir(path.dirname(file), { recursive: true });
-    await writeFile(file, windowsStartupScript(launch), "utf8");
-    start(launch);
+    await writeFile(file, windowsStartupScript(launch, env), "utf8");
+    start(launch, env);
     sayInstalled();
     return;
   }
   if (platform === "linux") {
     const unit = path.join(home, ".config", "systemd", "user", UNIT_NAME);
     await mkdir(path.dirname(unit), { recursive: true });
-    await writeFile(unit, systemdUnit(launch), "utf8");
+    await writeFile(unit, systemdUnit(launch, env), "utf8");
     await run("systemctl", ["--user", "daemon-reload"]);
     await run("systemctl", ["--user", "enable", "--now", UNIT_NAME]);
     sayInstalled();
@@ -131,7 +170,7 @@ export async function installService({
   if (platform === "darwin") {
     const plist = path.join(home, "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
     await mkdir(path.dirname(plist), { recursive: true });
-    await writeFile(plist, launchdPlist(launch), "utf8");
+    await writeFile(plist, launchdPlist(launch, env), "utf8");
     const domain = `gui/${process.getuid?.() ?? 0}`;
     await run("launchctl", ["bootout", domain, plist]).catch(() => {});
     await run("launchctl", ["bootstrap", domain, plist]);

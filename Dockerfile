@@ -12,7 +12,7 @@ ENV NODE_ENV=production \
     PMS_BROWSER=/usr/bin/chromium \
     PMS_BROWSER_ARGS="--no-sandbox --disable-gpu --disable-dev-shm-usage" \
     PMS_API_HOST=0.0.0.0 \
-    PMS_API_ALLOWED_HOSTS="localhost:38542,127.0.0.1:38542"
+    PMS_API_ALLOWED_HOSTS="localhost:38542,127.0.0.1:38542,media-downloader:38542"
 
 WORKDIR /app
 COPY --chown=node:node package.json manifest.json ./
