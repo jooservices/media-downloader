@@ -432,7 +432,7 @@ test("ACK reaper expires only after 90 seconds and safely retries an unanswered 
   env.advance(1);
   assert.equal((await env.tick()).expired, 1);
   assert.equal(env.job("1").status, "queued", "an unacknowledged job is retried");
-  assert.equal(env.job("1").noRetry, undefined);
+  assert.equal(env.job("1").noRetry, false);
 });
 
 test("ACK reaper preserves a job acknowledged between its sweep read and update", async () => {
@@ -478,7 +478,82 @@ test("stops retrying after maxAttempts", async () => {
   await env.tick();
   assert.equal(env.job("1").status, "error", "the second failure is final");
   assert.equal(env.job("1").attempts, 2);
+  assert.match(env.job("1").message, /2 attempt\(s\) made/);
   assert.equal(env.opened.length, 2);
+});
+
+test("a closed tab is retried, then reports the attempts used when the limit is reached", async () => {
+  const env = setup({ maxAttempts: 2 }, [
+    queued("1", "Twitter", "a", {
+      status: "error",
+      attempts: 1,
+      message: "The Edge profile tab was closed before the scan finished."
+    })
+  ]);
+  assert.equal((await env.tick()).requeued, 1);
+  assert.equal(env.job("1").status, "queued");
+  env.advance(60_001);
+  await env.tick();
+  Object.assign(env.job("1"), {
+    status: "error",
+    message: "The Edge profile tab was closed before the scan finished."
+  });
+  assert.equal((await env.tick()).requeued, 0);
+  assert.equal(env.job("1").status, "error");
+  assert.match(env.job("1").message, /2 attempt\(s\) made/);
+});
+
+test("a live page heartbeat prevents a throttled progress gap from expiring the job", async () => {
+  const env = setup({}, [
+    queued("1", "Twitter", "a", {
+      status: "running",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      lastHeartbeatAt: "2026-01-01T00:14:59.000Z"
+    })
+  ]);
+  env.advance(STALE_RUNNING_MS);
+  assert.equal((await env.tick()).expired, 0);
+  assert.equal(env.job("1").status, "running");
+});
+
+test("malformed liveness timestamps fail closed instead of leaving a job stuck forever", async () => {
+  const env = setup({}, [
+    queued("1", "Twitter", "a", {
+      status: "running",
+      updatedAt: "not-a-timestamp",
+      lastHeartbeatAt: "also-not-a-timestamp"
+    })
+  ]);
+  assert.equal((await env.tick()).expired, 1);
+  assert.equal(env.job("1").status, "incomplete");
+  assert.match(env.job("1").message, /silent for 15 minutes/);
+});
+
+test("an unknown empty scan gets one retry; a login wall remains visible without a retry", async () => {
+  const unknown = setup({}, [
+    queued("1", "Twitter", "unknown", {
+      status: "incomplete",
+      attempts: 1,
+      reason: "unknown",
+      message: "No photos or videos were found."
+    })
+  ]);
+  assert.equal((await unknown.tick()).requeued, 1);
+  assert.equal(unknown.job("1").unknownRetries, 1);
+  Object.assign(unknown.job("1"), { status: "incomplete", attempts: 2, reason: "unknown" });
+  assert.equal((await unknown.tick()).requeued, 0);
+
+  const login = setup({}, [
+    queued("2", "Twitter", "login", {
+      status: "incomplete",
+      attempts: 1,
+      reason: "login_required",
+      noRetry: true,
+      message: "Sign in to continue."
+    })
+  ]);
+  assert.equal((await login.tick()).requeued, 0);
+  assert.equal(login.job("2").status, "incomplete");
 });
 
 test("a running job that stops reporting is ended as incomplete", async () => {
@@ -487,6 +562,7 @@ test("a running job that stops reporting is ended as incomplete", async () => {
   env.advance(STALE_RUNNING_MS + 1000);
   assert.equal((await env.tick()).expired, 1);
   assert.equal(env.job("1").status, "incomplete");
+  assert.match(env.job("1").message, /silent for 15 minutes/);
 });
 
 test("stale-running reaper boundary: 15 minutes is allowed, one millisecond more is parked", async () => {
@@ -570,6 +646,9 @@ test("shouldRetry: errors yes, incomplete only if something was saved, complete 
   assert.equal(shouldRetry({ status: "incomplete", attempts: 1, started: 0, videoStarted: 0 }, 3), false);
   assert.equal(shouldRetry({ status: "complete", attempts: 1 }, 3), false);
   assert.equal(shouldRetry({ status: "paused", attempts: 1 }, 3), false);
+  assert.equal(shouldRetry({ status: "incomplete", reason: "login_required", attempts: 1 }, 3), false);
+  assert.equal(shouldRetry({ status: "incomplete", reason: "unknown", attempts: 1 }, 3), true);
+  assert.equal(shouldRetry({ status: "incomplete", reason: "unknown", unknownRetries: 1, attempts: 2 }, 3), false);
 });
 
 test("a job that could not be opened is failed with the reason", async () => {

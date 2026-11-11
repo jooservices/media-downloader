@@ -16,6 +16,7 @@ globalThis.PageMediaSaver ??= {};
   const LAZY_LOAD_POLL_MS = 500;
   const LAZY_LOAD_POLLS = 12;
   const STALL_CHECKS = 8;
+  const HEARTBEAT_MS = 30_000;
 
   let autoRunning = false;
   let autoStopRequested = false;
@@ -37,6 +38,13 @@ globalThis.PageMediaSaver ??= {};
     repairFound: [],
     repairFiles: []
   };
+
+  // This timer reports liveness independently of scrolling, downloads, or scan progress.
+  window.setInterval(() => {
+    if (autoState.running && autoState.jobId) {
+      chrome.runtime.sendMessage({ type: "AUTO_HEARTBEAT", jobId: autoState.jobId }).catch(() => {});
+    }
+  }, HEARTBEAT_MS);
 
   function pageHeight() {
     return Math.max(document.documentElement?.scrollHeight || 0, document.body?.scrollHeight || 0);
@@ -166,6 +174,31 @@ globalThis.PageMediaSaver ??= {};
     autoState.status = status;
     autoState.message = message;
     publishAutoState("AUTO_DONE");
+  }
+
+  function emptyPageReason() {
+    const url = String(location.href || "");
+    const pathname = (() => {
+      try {
+        return new URL(url).pathname;
+      } catch {
+        return "";
+      }
+    })();
+    const bodyText = String(document.body?.innerText || document.body?.textContent || "").toLowerCase();
+    const loginText = /\b(sign in|log in|login|enter your password)\b/.test(bodyText);
+    const loginUrl = /\/(?:login|log-in|signin|sign-in|checkpoint|challenge)(?:\/|$)/i.test(pathname);
+    if (
+      loginUrl ||
+      document.querySelector('input[type="password"]') ||
+      (loginText && /password|email|phone|username/.test(bodyText))
+    ) {
+      return "login_required";
+    }
+    if (!document.body || !url || !bodyText.trim()) {
+      return "unknown";
+    }
+    return "empty_or_private";
   }
 
   async function finishAtLimit() {
@@ -361,15 +394,24 @@ globalThis.PageMediaSaver ??= {};
     const nothingFound = !autoState.repairMode && seen === 0 && (hookStats()?.found ?? 0) === 0;
     let message;
     if (nothingFound) {
-      message = document.querySelector('input[type="password"]')
-        ? "The site is asking for a sign-in, so nothing could be read. Sign in to it in this browser; the queue goes on by itself."
-        : `No photos or videos were found on this page. Sign in to the site in this browser, or the site may have changed how it sends its data. ${hookDiagnostics()}`;
+      autoState.reason = emptyPageReason();
+      if (autoState.reason === "login_required") {
+        message =
+          "No photos or videos were found because the site is asking for a sign-in. Sign in to the site in this browser, then retry this job.";
+      } else if (autoState.reason === "empty_or_private") {
+        message = `No photos or videos were found on this page. It loaded without accessible media; it may be empty, private, or unavailable. ${hookDiagnostics()}`;
+      } else {
+        message = `No photos or videos were found, and the page state could not be classified. ${hookDiagnostics()}`;
+      }
     } else if (repairShort) {
       message = `Repair incomplete: matched ${repairFound.length} of ${repairExpectedCount || repairTargets.length} source images. Original files were left in Downloads.`;
     } else if (hasOutstanding()) {
       message = `Grid scan ended after four checks found no older rows. ${started} download request(s) started; ${pending} remain pending and ${failed} failed after retries.`;
     } else {
       message = `Download finished: ${started} photo request(s) and ${videoStarted} page-data file(s) completed with no pending or failed files; ${skippedCount()} saved or unavailable items skipped${unavailableNote()}. Four end checks found no older rows.`;
+    }
+    if (nothingFound && autoState.reason === "login_required") {
+      autoState.noRetry = true;
     }
     endScan(hasOutstanding() || repairShort || nothingFound ? "incomplete" : "complete", message);
   }
@@ -518,6 +560,8 @@ globalThis.PageMediaSaver ??= {};
       repairFound: [],
       repairSeenItems: [],
       repairFiles: [],
+      reason: null,
+      noRetry: false,
       rejectedFiles: [],
       outputFiles: []
     };

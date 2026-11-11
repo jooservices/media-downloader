@@ -42,15 +42,58 @@ async function start(page, job = {}, limit = null, turns = 2000) {
   return page.finish(turns);
 }
 
-test("an empty grid ends after four end checks, with nothing pending", async () => {
-  const page = scanPage();
+test("a loaded profile with no media is classified as empty or private", async () => {
+  const page = scanPage({
+    tweak: sandbox => {
+      Object.defineProperty(sandbox.document, "body", {
+        get: () => ({ scrollHeight: 800, innerText: "Profile posts" })
+      });
+    }
+  });
   const state = await start(page);
   assert.equal(state.running, false);
   assert.equal(state.status, "incomplete", "a page with nothing on it is not a success");
+  assert.equal(state.reason, "empty_or_private");
   assert.match(state.message, /No photos or videos were found on this page/);
   assert.ok(state.rounds >= 4);
   assert.equal(page.storage.autoDownloadStatus.status, "incomplete", "the final state is saved for the popup");
   assert.ok(page.sent.some(message => message.type === "AUTO_DONE"));
+});
+
+test("an empty scan detects a login wall from the page DOM and marks it non-retryable", async () => {
+  const page = scanPage({
+    url: "https://x.com/NASA/",
+    tweak: sandbox => {
+      sandbox.document.querySelector = selector => (selector === 'input[type="password"]' ? {} : null);
+    }
+  });
+  const state = await start(page);
+  assert.equal(state.reason, "login_required");
+  assert.equal(state.noRetry, true);
+  assert.match(state.message, /asking for a sign-in/);
+});
+
+test("a private or unavailable notice is classified from visible page text", async () => {
+  const page = scanPage({
+    tweak: sandbox => {
+      Object.defineProperty(sandbox.document, "body", {
+        get: () => ({ scrollHeight: 800, innerText: "This account is private" })
+      });
+    }
+  });
+  const state = await start(page);
+  assert.equal(state.reason, "empty_or_private");
+});
+
+test("an empty DOM without login or page evidence reports unknown", async () => {
+  const page = scanPage({
+    url: "https://x.com/NASA/",
+    tweak: sandbox => {
+      Object.defineProperty(sandbox.document, "body", { get: () => null });
+    }
+  });
+  const state = await start(page);
+  assert.equal(state.reason, "unknown");
 });
 
 test("photos are sized, sent to the background once each pass, and counted", async () => {
@@ -68,6 +111,17 @@ test("photos are sized, sent to the background once each pass, and counted", asy
   assert.equal(state.started, 2);
   assert.equal(state.status, "complete");
   assert.match(state.message, /2 photo request\(s\)/);
+});
+
+test("an active scan sends independent heartbeats while progress is unchanged", async () => {
+  const page = scanPage({ articles: photos(2) });
+  await page.request({ type: "AUTO_START_CLI", job: { ...JOB, jobId: "heartbeat-1" } });
+  const heartbeat = page.intervals.find(interval => interval.ms === 30_000);
+  assert.ok(heartbeat, "the scanner installs a liveness timer");
+  heartbeat.fn();
+  await Promise.resolve();
+  assert.ok(page.sent.some(message => message.type === "AUTO_HEARTBEAT" && message.jobId === "heartbeat-1"));
+  await page.finish();
 });
 
 test("the limit stops the scan as soon as it is reached and only asks for what fits", async () => {

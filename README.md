@@ -143,6 +143,8 @@ The `/v1/config` response redacts notification webhook URLs and returns only whe
 
 `GET /v1/status` includes `platforms`, keyed by `instagram`, `facebook`, `twitter`, and `tiktok`. Each entry reports configured and effective worker counts, the back-off end time, and the back-off level. A detected rate limit or challenge pauses new jobs for that platform for 15 minutes, doubling up to two hours on repeated signals. Other platforms continue normally. `GET /v1/metrics` exposes the same values as `pms_platform_configured_workers`, `pms_platform_effective_workers`, `pms_platform_backoff_until_timestamp_seconds`, and `pms_platform_backoff_level` gauges.
 
+`GET /v1/status` and `GET /v1/health` also report `failuresByReason` counts for `login_required`, `empty_or_private`, and `unknown`. `GET /v1/metrics` exposes those as `pms_job_failures{reason="…"}` gauges. A single-job response includes the same `reason` field when a no-media scan could be classified. Login walls are left visible without an automatic retry; an unclassified empty scan gets one retry.
+
 ```powershell
 $token = (Get-Content "$env:LOCALAPPDATAPageMediaSaverapi-token").Trim()
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:38542/v1/jobs -Headers @{ Authorization = "Bearer $token" } -ContentType application/json -Body '{"url":"https://www.instagram.com/name/"}'

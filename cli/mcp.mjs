@@ -37,7 +37,8 @@ export const TOOLS = [
   {
     name: "get_status",
     title: "Read queue status",
-    description: "Read current job counts, extension check-in details, process id, and queue uptime.",
+    description:
+      "Read job counts by state and failure reason, extension check-in details, process id, and queue uptime.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: false },
     request: () => ["GET", `${API_BASE}/status`]
@@ -53,7 +54,8 @@ export const TOOLS = [
   {
     name: "get_metrics",
     title: "Read queue metrics",
-    description: "Read Prometheus text metrics for job states, extension check-in time, and uptime.",
+    description:
+      "Read Prometheus text metrics for job states and failure reasons, extension check-in time, and uptime.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: false },
     request: () => ["GET", `${API_BASE}/metrics`]
@@ -209,7 +211,7 @@ export const TOOLS = [
   {
     name: "queue_health",
     title: "Check the queue",
-    description: "Say whether the download queue is running.",
+    description: "Say whether the queue is running and show job failure counts by reason.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: false },
     request: () => ["GET", `${API_BASE}/health`]

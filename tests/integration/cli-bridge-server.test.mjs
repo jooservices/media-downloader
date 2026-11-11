@@ -78,6 +78,21 @@ test("a page with no waiting job gets NO_JOB, and one with a running job reconne
   assert.equal((await read(1)).status, "running");
 });
 
+test("a heartbeat updates liveness without replacing the job's progress message", async () => {
+  await putJob(1, {
+    status: "running",
+    message: "Scanning the profile.",
+    started: 4,
+    updatedAt: "2026-01-01T00:00:00.000Z"
+  });
+  const result = await handleBridgeMessage({ type: "JOB_HEARTBEAT", jobId: id(1) }, new Set());
+  const job = await read(1);
+  assert.equal(result.type, "ACK");
+  assert.ok(Date.parse(job.lastHeartbeatAt) > Date.parse("2026-01-01T00:00:00.000Z"));
+  assert.equal(job.message, "Scanning the profile.");
+  assert.equal(job.started, 4);
+});
+
 test("the oldest waiting job for the page starts and is claimed so a second tab cannot take it", async () => {
   const claimed = new Set();
   await putJob(2); // newer

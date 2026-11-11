@@ -276,6 +276,16 @@ async function handleAutoProgress(message, sender) {
   return handleBridgeProgress(message, sender);
 }
 
+async function handleAutoHeartbeat(message) {
+  if (!message?.jobId) {
+    return null;
+  }
+  if (await queueEngine.heartbeat(message.jobId)) {
+    return { ok: true };
+  }
+  return postBridgeMessage({ type: "JOB_HEARTBEAT", jobId: message.jobId }).then(() => ({ ok: true }));
+}
+
 function handlePlatformRateLimit(message, sender) {
   const status = Number(message?.status);
   const tabId = sender?.tab?.id;

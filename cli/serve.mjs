@@ -416,6 +416,16 @@ export async function serve({
         status: () =>
           Promise.resolve({
             jobs: queueJobs().counts(),
+            failuresByReason: (() => {
+              const counts = { login_required: 0, empty_or_private: 0, unknown: 0 };
+              for (const job of queueJobs().list()) {
+                if (["error", "incomplete"].includes(job.status)) {
+                  const reason = Object.hasOwn(counts, job.reason) ? job.reason : "unknown";
+                  counts[reason]++;
+                }
+              }
+              return counts;
+            })(),
             extension: extensionSeen(),
             pid: process.pid,
             platforms: supervisor?.platformStatus() ?? {}
