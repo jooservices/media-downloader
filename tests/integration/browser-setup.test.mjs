@@ -68,7 +68,7 @@ test("setup copies the extension with a fixed key, records the profile and the b
   assert.equal(manifest.name, "Page Media Saver");
   assert.match(
     await readFile(path.join(dir, "extension", "src", "background", "bridge-client.js"), "utf8"),
-    new RegExp(`127\\.0\\.0\\.1:${process.env.PMS_BRIDGE_PORT || 38541}`)
+    new RegExp(`127\\.0\\.0\\.1:${store.BRIDGE_PORT}`)
   );
 
   assert.deepEqual(await store.readJson(store.BRIDGE_CONFIG_FILE), {
@@ -91,7 +91,7 @@ test("prepareManagedExtension points the bridge at another port and refuses a ch
   await browser.prepareManagedExtension({ target, bridgePort: 40123, keyDir: path.join(home, "managed-b") });
   const client = await readFile(path.join(target, "src", "background", "bridge-client.js"), "utf8");
   assert.match(client, /127\.0\.0\.1:40123/);
-  assert.doesNotMatch(client, /127\.0\.0\.1:38541/);
+  assert.doesNotMatch(client, new RegExp(`127\\.0\\.0\\.1:${store.BRIDGE_PORT}`));
 
   const fakeSource = path.join(home, "fake-source");
   await mkdir(path.join(fakeSource, "lib"), { recursive: true });

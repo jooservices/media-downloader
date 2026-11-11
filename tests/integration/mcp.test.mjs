@@ -131,6 +131,7 @@ test("tools/list describes every tool with a JSON schema and keeps internals out
     "get_job",
     "list_jobs",
     "list_watched",
+    "platform_health",
     "queue_health",
     "queue_status",
     "unwatch_account",
@@ -157,6 +158,7 @@ test("each tool turns its arguments into the right REST request", async () => {
   await call(server, "list_watched", {});
   await call(server, "unwatch_account", { platform: "twitter", account: "a b" });
   await call(server, "queue_health");
+  await call(server, "platform_health", {});
   await call(server, "queue_status");
   assert.deepEqual(queue.calls, [
     ["POST", "/v1/jobs", { url: "https://www.instagram.com/a/", again: false }],
@@ -169,6 +171,7 @@ test("each tool turns its arguments into the right REST request", async () => {
     ["GET", "/v1/watches", undefined],
     ["DELETE", "/v1/watches/twitter/a%20b", undefined],
     ["GET", "/v1/health", undefined],
+    ["GET", "/v1/health/platforms", undefined],
     ["GET", "/v1/status", undefined]
   ]);
 });
@@ -377,6 +380,7 @@ test("end to end through the real REST API: ask for a download, read it back, wa
     const absent = await call(mcp, "get_job", { id: "55555555-5555-4555-8555-555555555555" });
     assert.match(absent.result.content[0].text, /^404 Not Found/);
     assert.equal(text(await call(mcp, "queue_health")).status, "ok");
+    assert.equal(text(await call(mcp, "platform_health")).items.length, 4);
     assert.equal(text(await call(mcp, "queue_status")).platforms.instagram.configuredWorkers, 1);
 
     const wrong = createMcpServer({

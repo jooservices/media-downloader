@@ -134,6 +134,14 @@ export const TOOLS = [
     request: () => ["GET", `${API_BASE}/health`]
   },
   {
+    name: "platform_health",
+    title: "Check platform health",
+    description: "Show canary health from finished jobs for Instagram, Facebook, X and TikTok.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    request: () => ["GET", `${API_BASE}/health/platforms`]
+  },
+  {
     name: "queue_status",
     title: "Get queue status",
     description: "Show queue activity and configured/effective workers with any platform back-off state.",
