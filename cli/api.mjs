@@ -19,13 +19,20 @@ export const API_PORT = Number(process.env.PMS_API_PORT) || 38542;
 export const API_BASE = "/v1";
 const MAX_BODY_BYTES = 8192;
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
-const JSON_TYPE = /^application\/json\b/i;
 const JOB_STATUSES = new Set(["queued", "running", "complete", "incomplete", "paused", "error"]);
 const ALREADY_QUEUED = "already queued or done";
 const DEFAULT_PAGE = 50;
 const MAX_PAGE = 100;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 120;
+
+function isJsonContentType(value) {
+  const [mediaType, ...parameters] = value.split(";");
+  return (
+    mediaType.trim().toLowerCase() === "application/json" &&
+    parameters.every(parameter => /^\s*[\w-]+\s*=\s*(?:[\w.-]+|"[^"]*")\s*$/.test(parameter))
+  );
+}
 
 export function jobView(job) {
   return {
@@ -223,10 +230,11 @@ async function listJobsRoute({ response, url, deps }) {
     problem(response, 400, page.error);
     return;
   }
-  const selected = await deps.listJobs({ status: page.status, limit: page.limit, offset: page.offset });
-  const total = deps.countJobs
-    ? await deps.countJobs(page.status)
-    : (await deps.listJobs()).filter(job => !page.status || job.status === page.status).length;
+  const all = deps.countJobs ? null : (await deps.listJobs()).filter(job => !page.status || job.status === page.status);
+  const selected = deps.countJobs
+    ? await deps.listJobs({ status: page.status, limit: page.limit, offset: page.offset })
+    : all.slice(page.offset, page.offset + page.limit);
+  const total = deps.countJobs ? await deps.countJobs(page.status) : all.length;
   const items = selected.map(jobView);
   const next = page.offset + page.limit < total;
   const query = new URLSearchParams({ limit: String(page.limit), offset: String(page.offset + page.limit) });
@@ -491,14 +499,19 @@ function hasValidToken(request, token) {
 
 function createLimiter() {
   const windows = new Map();
-  return (request, now, limit, category) => {
+  return (request, now, limit, category, consume = true) => {
     const key = `${request.socket.remoteAddress || "unknown"}:${category}`;
     let entry = windows.get(key);
+    if (!consume && (!entry || now - entry.started >= RATE_WINDOW_MS)) {
+      return false;
+    }
     if (!entry || now - entry.started >= RATE_WINDOW_MS) {
       entry = { started: now, count: 0 };
       windows.set(key, entry);
     }
-    entry.count++;
+    if (consume) {
+      entry.count++;
+    }
     if (windows.size > 2048) {
       for (const [address, window] of windows) {
         if (now - window.started >= RATE_WINDOW_MS) {
@@ -518,36 +531,82 @@ function rateLimited(request, response, deps, category) {
   return true;
 }
 
-// Host, token and body type are checked before any route runs. Returns false after it has answered.
+function failedAuthLimited(request, response, deps) {
+  if (!deps.limiter(request, Date.now(), deps.rateLimit, "unauthenticated", false)) {
+    return false;
+  }
+  problem(response, 429, "Too many failed authentication attempts. Try again later.", { "Retry-After": "60" });
+  return true;
+}
+
+function rejectRequest({ request, response, deps, category, status, detail, headers = {} }) {
+  if (!rateLimited(request, response, deps, category)) {
+    problem(response, status, detail, headers);
+  }
+}
+
 function admit(request, response, open, deps) {
   const { allowedHosts, token } = deps;
   if (!allowedHosts().includes(request.headers.host)) {
-    problem(response, 403, "Only 127.0.0.1 is accepted.");
-  } else if (request.headers.origin) {
-    problem(response, 403, "Cross-origin requests are not allowed.");
-  } else if (token && !open && !hasValidToken(request, token)) {
-    problem(response, 401, "Send the API token as: Authorization: Bearer <token>.", {
-      "WWW-Authenticate": 'Bearer realm="media-downloader"'
+    rejectRequest({
+      request,
+      response,
+      deps,
+      category: "rejected",
+      status: 403,
+      detail: "The Host header is not allowed."
     });
-  } else if (request.method === "POST" && !JSON_TYPE.test(request.headers["content-type"] || "")) {
-    // JSON only: a web page cannot send this type to another origin without a CORS preflight, which is never answered.
-    problem(response, 415, "Content-Type must be application/json.");
-  } else {
-    return !rateLimited(request, response, deps, token && !open ? "authenticated" : "accepted");
+    return false;
   }
-  return false;
+  if (request.headers.origin) {
+    rejectRequest({
+      request,
+      response,
+      deps,
+      category: "rejected",
+      status: 403,
+      detail: "Cross-origin requests are not allowed."
+    });
+    return false;
+  }
+  if (token && !open) {
+    if (failedAuthLimited(request, response, deps)) {
+      return false;
+    }
+    if (!hasValidToken(request, token)) {
+      rejectRequest({
+        request,
+        response,
+        deps,
+        category: "unauthenticated",
+        status: 401,
+        detail: "Send the API token as: Authorization: Bearer <token>.",
+        headers: { "WWW-Authenticate": 'Bearer realm="media-downloader"' }
+      });
+      return false;
+    }
+  }
+  return !rateLimited(request, response, deps, token && !open ? "authenticated" : "accepted");
 }
 
-async function route(request, response, deps) {
-  const url = new URL(request.url || "/", "http://127.0.0.1");
-  const found = ROUTES.map(candidate => ({ candidate, match: candidate.pattern.exec(url.pathname) })).find(
-    item => item.match && (!item.candidate.needs || deps[item.candidate.needs])
-  );
-  if (!found) {
-    problem(response, 404, "There is no such resource.");
-    return;
+function validateQuery(request, response, url) {
+  const queryKeys = [...url.searchParams.keys()];
+  if (new Set(queryKeys).size !== queryKeys.length) {
+    problem(response, 400, "Each query parameter may be supplied only once.");
+    return false;
   }
-  const { candidate, match } = found;
+  const supportedQuery =
+    ["GET", "HEAD"].includes(request.method) && url.pathname === `${API_BASE}/jobs`
+      ? ["limit", "offset", "status"]
+      : [];
+  if ([...url.searchParams.keys()].some(key => !supportedQuery.includes(key))) {
+    problem(response, 400, "The request contains an unsupported query parameter.");
+    return false;
+  }
+  return true;
+}
+
+async function dispatchRoute(request, response, deps, url, candidate, match) {
   if (!admit(request, response, candidate.open, deps)) {
     return;
   }
@@ -562,7 +621,41 @@ async function route(request, response, deps) {
     problem(response, 405, `Use one of: ${allow}.`, { Allow: allow });
     return;
   }
+  if (!validateQuery(request, response, url)) {
+    return;
+  }
+  if (request.method === "POST" && !isJsonContentType(request.headers["content-type"] || "")) {
+    problem(response, 415, "Content-Type must be application/json.");
+    return;
+  }
+  const hasBody = Number(request.headers["content-length"]) > 0 || Boolean(request.headers["transfer-encoding"]);
+  if (hasBody && request.method !== "POST") {
+    request.resume();
+    problem(response, 400, "This method does not accept a request body.");
+    return;
+  }
   await handler({ request, response, url, params: match.slice(1), deps });
+}
+
+async function route(request, response, deps) {
+  let url;
+  try {
+    url = new URL(request.url || "/", "http://127.0.0.1");
+  } catch {
+    problem(response, 400, "The request target is invalid.");
+    return;
+  }
+  const found = ROUTES.map(candidate => ({ candidate, match: candidate.pattern.exec(url.pathname) })).find(
+    item => item.match && (!item.candidate.needs || deps[item.candidate.needs])
+  );
+  if (!found) {
+    if (!admit(request, response, false, deps)) {
+      return;
+    }
+    problem(response, 404, "There is no such resource.");
+    return;
+  }
+  await dispatchRoute(request, response, deps, url, found.candidate, found.match);
 }
 
 function createApiServer(deps) {
@@ -621,9 +714,9 @@ export function startApiServer({
     });
     server.listen(port, bind, () => {
       const address = server.address();
-      if (address && typeof address === "object") {
+      if (LOOPBACK.has(bind) && address && typeof address === "object") {
         const host = address.family === "IPv6" ? `[${address.address}]` : address.address;
-        loopbackHosts = [`127.0.0.1:${address.port}`, `${host}:${address.port}`];
+        loopbackHosts = [`${host}:${address.port}`];
         if (bind === "localhost") {
           loopbackHosts.push(`localhost:${address.port}`);
         }

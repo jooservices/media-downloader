@@ -575,6 +575,16 @@ test("every REST operation is reachable through an MCP tool", () => {
   }
 });
 
+function normalizeVolatileBody(name, body) {
+  if (name === "get_metrics") {
+    return body.replace(/pms_uptime_seconds \d+/, "pms_uptime_seconds <uptime>");
+  }
+  if (name === "get_status") {
+    return { ...body, uptimeSeconds: "<uptime>" };
+  }
+  return body;
+}
+
 test("the same REST and MCP scenarios produce equal data and mapped errors", () =>
   withAdapters(async ({ direct, tool, watched, webhookUrl }) => {
     const cases = [
@@ -635,12 +645,8 @@ test("the same REST and MCP scenarios produce equal data and mapped errors", () 
       if (rest.status === 204) {
         continue;
       }
-      const actualBody =
-        name === "get_metrics"
-          ? agent.body.replace(/pms_uptime_seconds \d+/, "pms_uptime_seconds <uptime>")
-          : agent.body;
-      const expectedBody =
-        name === "get_metrics" ? rest.body.replace(/pms_uptime_seconds \d+/, "pms_uptime_seconds <uptime>") : rest.body;
+      const actualBody = normalizeVolatileBody(name, agent.body);
+      const expectedBody = normalizeVolatileBody(name, rest.body);
       if (rest.status >= 400) {
         assert.deepEqual(
           { title: actualBody.title, detail: actualBody.detail },
