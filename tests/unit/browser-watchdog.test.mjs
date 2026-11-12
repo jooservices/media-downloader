@@ -38,6 +38,7 @@ test("does nothing when no job waits for the browser, however long it was quiet"
 
 test("closes the browser once it has been silent too long, then waits out the cool-down", async () => {
   const { state, watchdog, advance } = setup();
+  await watchdog.tick();
   advance(5 * 60_000);
   assert.equal(await watchdog.tick(), true);
   assert.equal(state.closed, 1);
@@ -47,6 +48,25 @@ test("closes the browser once it has been silent too long, then waits out the co
   advance(2 * 60_000);
   assert.equal(await watchdog.tick(), true);
   assert.equal(state.closed, 2);
+});
+
+test("time spent idle is not silence: the clock starts when work starts waiting", async () => {
+  const { state, watchdog, advance } = setup({ waiting: false });
+  advance(60 * 60_000);
+  assert.equal(await watchdog.tick(), false);
+  state.waiting = true;
+  assert.equal(await watchdog.tick(), false, "a job just handed to the browser is not late yet");
+  advance(4 * 60_000);
+  assert.equal(await watchdog.tick(), false);
+  advance(61_000);
+  assert.equal(await watchdog.tick(), true);
+});
+
+test("a Windows close request that is refused makes the command fail", async () => {
+  const calls = [];
+  await closeBrowserGracefully("edge", "win32", async (file, args) => calls.push(args.at(-1)));
+  assert.ok(calls[0].includes("if (-not $_.CloseMainWindow()) { $ok = $false }"));
+  assert.ok(calls[0].endsWith("if (-not $ok) { exit 1 }"));
 });
 
 test("counts silence from the last message, not from when serve started", async () => {
@@ -59,6 +79,7 @@ test("counts silence from the last message, not from when serve started", async 
 test("reports a browser that will not close and tries again after the cool-down", async () => {
   const { state, watchdog, advance } = setup();
   state.closeError = new Error("denied");
+  await watchdog.tick();
   advance(6 * 60_000);
   assert.equal(await watchdog.tick(), false);
   assert.match(state.logs.at(-1), /Could not close the browser: denied/);

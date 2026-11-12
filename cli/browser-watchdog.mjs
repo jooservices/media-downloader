@@ -12,7 +12,7 @@ export const RECOVERY_COOLDOWN_MS = 10 * 60_000;
 const PROCESS_NAME = { edge: "msedge", chrome: "chrome", firefox: "firefox" };
 const APP_NAME = { edge: "Microsoft Edge", chrome: "Google Chrome", firefox: "Firefox" };
 const WINDOWS_CLOSE = name =>
-  `Get-Process ${name} -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object { [void]$_.CloseMainWindow() }`;
+  `$ok = $true; Get-Process ${name} -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object { if (-not $_.CloseMainWindow()) { $ok = $false } }; if (-not $ok) { exit 1 }`;
 
 // Asks the browser to close its windows the way a user would. Returns the command that was used.
 export async function closeBrowserGracefully(browser = "edge", platform = process.platform, exec = run) {
@@ -46,13 +46,19 @@ export function createBrowserWatchdog({
 }) {
   const startedAt = now();
   let lastRecoveryAt = Number.NEGATIVE_INFINITY;
+  // When the browser last had work it was expected to answer; time before that is idle time, not silence.
+  let waitingSince = null;
   return {
     async tick() {
       if (!(await waitingForBrowser())) {
+        waitingSince = null;
         return false;
       }
+      waitingSince ??= now();
       const heard = Date.parse(lastSeenAt() || "");
-      const quietSince = Number.isFinite(heard) ? Math.max(heard, startedAt) : startedAt;
+      const quietSince = Number.isFinite(heard)
+        ? Math.max(heard, startedAt, waitingSince)
+        : Math.max(startedAt, waitingSince);
       const quietFor = now() - quietSince;
       if (quietFor < silentMs || now() - lastRecoveryAt < cooldownMs) {
         return false;
