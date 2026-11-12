@@ -26,7 +26,7 @@
   function bestAddress(candidates) {
     let best = null;
     for (const candidate of candidates) {
-      if (!isFileUrl(candidate.url)) {
+      if (!isFileUrl(candidate?.url)) {
         continue;
       }
       const score =
@@ -38,16 +38,30 @@
     return best;
   }
 
-  function bestVideo(video) {
-    const entries = [];
-    const info = video?.bitrateInfo || video?.bitRateInfo || [];
-    for (const entry of info) {
-      const width = entry.Width || entry.width || video.width;
-      const height = entry.Height || entry.height || video.height;
-      for (const url of urlList(entry.PlayAddr || entry.playAddr)) {
-        entries.push({ url, bitrate: entry.Bitrate || entry.bitrate, width, height });
+  function firstArray(...values) {
+    for (const value of values) {
+      if (Array.isArray(value)) {
+        return value;
       }
     }
+    return [];
+  }
+
+  function bitrateAddresses(video) {
+    const entries = [];
+    const info = firstArray(video?.bitrateInfo, video?.bitRateInfo);
+    for (const entry of info) {
+      const width = entry?.Width || entry?.width || video.width;
+      const height = entry?.Height || entry?.height || video.height;
+      for (const url of urlList(entry?.PlayAddr || entry?.playAddr)) {
+        entries.push({ url, bitrate: entry?.Bitrate || entry?.bitrate, width, height });
+      }
+    }
+    return entries;
+  }
+
+  function bestVideo(video) {
+    const entries = bitrateAddresses(video);
     for (const url of [video?.downloadAddr, video?.playAddr]) {
       entries.push({ url, bitrate: 0, width: video?.width, height: video?.height });
     }
@@ -71,15 +85,16 @@
 
   function asItem(node) {
     const id = String(node?.id ?? "");
-    if (!ITEM_ID.test(id) || !node.video) {
+    if (!ITEM_ID.test(id) || !node?.video || typeof node.video !== "object") {
       return null;
     }
     const owner = node.author?.uniqueId || node.author?.unique_id || "";
+    const images = node.imagePost?.images ?? node.image_post?.images;
     return {
       id,
       owner: String(owner).replace(/^@/, "") || null,
       video: node.video,
-      images: node.imagePost?.images || node.image_post?.images || []
+      images: Array.isArray(images) ? images : []
     };
   }
 

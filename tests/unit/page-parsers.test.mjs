@@ -73,6 +73,12 @@ test("X: a tweet with no usable video, a bad id, or no media yields nothing", ()
   assert.deepEqual(plain(extractMedia("text")), []);
 });
 
+test("X: an empty grid response and partial media entries yield no files", () => {
+  const { extractMedia } = parsers.Twitter;
+  assert.deepEqual(plain(extractMedia({ data: { user: { result: {} } } })), []);
+  assert.deepEqual(plain(extractMedia({ rest_id: "123", legacy: { extended_entities: { media: [null, {}] } } })), []);
+});
+
 test("X: an animated GIF is flagged, the owner may come from legacy, and a shared node is read once", () => {
   const tweet = xTweet("114", [xVideo(`${X_HOST}a.mp4`, 1)], { type: "animated_gif" });
   tweet.core = { user_results: { result: { legacy: { screen_name: "legacy_name" } } } };
@@ -184,6 +190,15 @@ test("Instagram: no usable rendition means no photo and no thumbnail fallback", 
     "a code that is not a shortcode is not a post"
   );
   assert.deepEqual(plain(extractMedia(null)), []);
+});
+
+test("Instagram: an empty grid response and partial carousel entries yield no files", () => {
+  const { extractMedia } = parsers.Instagram;
+  assert.deepEqual(plain(extractMedia({ items: [] })), []);
+  assert.deepEqual(
+    plain(extractMedia({ items: [{ code: "Dpartial001", carousel_media: [null, {}, { video_versions: "bad" }] }] })),
+    []
+  );
 });
 
 test("Instagram: a reel keeps its largest video and never its poster as a photo", () => {
@@ -368,6 +383,12 @@ test("Facebook: a photo with no usable image, or a bad id, is skipped", () => {
   );
 });
 
+test("Facebook: an empty grid response and partial edges yield no files", () => {
+  const { extractMedia } = parsers.Facebook;
+  assert.deepEqual(plain(extractMedia({ data: { nodes: [] } })), []);
+  assert.deepEqual(plain(extractMedia({ nodes: [null, {}, { __typename: "Photo", id: "1086989087485349" }] })), []);
+});
+
 test("Facebook: progressive HD beats SD, and DASH or foreign entries are ignored", () => {
   const { pickBestProgressive, isDirectVideoUrl } = parsers.Facebook;
   assert.equal(pickBestProgressive("nope"), null);
@@ -473,6 +494,28 @@ test("TikTok: a photo post keeps each slide's largest picture and skips previews
   assert.equal(found[1].height, 6);
   const snake = ttItem("7123456789012345681", {}, { image_post: { images: [{ imageUrl: `${TT}d.jpg` }] } });
   assert.equal(plain(extractMedia(snake))[0].width, 0);
+});
+
+test("TikTok: an empty grid response and partial items without rendition lists yield no files", () => {
+  const { extractMedia } = parsers.TikTok;
+  assert.deepEqual(plain(extractMedia({ itemList: [] })), []);
+  assert.deepEqual(
+    plain(
+      extractMedia({
+        itemList: [
+          null,
+          { id: "7100000000000000004" },
+          {
+            id: "7100000000000000005",
+            video: { bitrateInfo: [null] },
+            imagePost: { images: {} }
+          }
+        ]
+      })
+    ),
+    [],
+    "a partial grid item does not require bitrate or photo arrays"
+  );
 });
 
 test("TikTok: a duplicate item is saved once", () => {
