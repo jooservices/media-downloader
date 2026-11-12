@@ -43,6 +43,7 @@ import { addWatch, readWatchList, removeWatch, watchDue } from "./watchlist.mjs"
 import { createNotifier, createPlatformHealthNotifier } from "./notify.mjs";
 import { PRUNE_EVERY_MS, prune } from "./prune.mjs";
 import { createSupervisor, recoverInterrupted } from "./supervisor.mjs";
+import { closeBrowserGracefully, createBrowserWatchdog } from "./browser-watchdog.mjs";
 import { queueCanaryAccounts } from "./canary.mjs";
 import { createRequire } from "node:module";
 
@@ -322,6 +323,7 @@ async function runServePass({
   supervisor,
   notifier,
   healthNotifier,
+  browserWatchdog,
   isStopping
 }) {
   if (Date.now() - times.lastPrune >= PRUNE_EVERY_MS) {
@@ -348,6 +350,7 @@ async function runServePass({
   if (!isStopping()) {
     await notifier.tick();
     await healthNotifier.tick();
+    await browserWatchdog?.tick();
   }
 }
 
@@ -463,6 +466,20 @@ export async function serve({
       getHealth: async () => assessPlatforms(await listJobs())
     });
     const times = { lastCanaryRun: 0, lastPrune: 0 };
+    const browserWatchdog = createBrowserWatchdog({
+      log,
+      now,
+      lastSeenAt: () => extensionSeen()?.at,
+      waitingForBrowser: () =>
+        queueJobs().runningJobs(1).length > 0 ||
+        queueJobs()
+          .list({ status: "queued" })
+          .some(job => job.openedAt),
+      closeBrowser: async () => {
+        const saved = await readJson(EDGE_PROFILE_FILE);
+        await closeBrowserGracefully(saved?.browser);
+      }
+    });
 
     // One bad pass must not end an unattended run; repeated failures stop it with the last error.
     await runServeLoop({
@@ -482,6 +499,7 @@ export async function serve({
           supervisor,
           notifier,
           healthNotifier,
+          browserWatchdog,
           isStopping: () => stopping
         })
     });
