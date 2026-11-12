@@ -12,7 +12,7 @@ export const RECOVERY_COOLDOWN_MS = 10 * 60_000;
 const PROCESS_NAME = { edge: "msedge", chrome: "chrome", firefox: "firefox" };
 const APP_NAME = { edge: "Microsoft Edge", chrome: "Google Chrome", firefox: "Firefox" };
 const WINDOWS_CLOSE = name =>
-  `$ok = $true; Get-Process ${name} -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object { if (-not $_.CloseMainWindow()) { $ok = $false } }; if (-not $ok) { exit 1 }`;
+  `$ok = $true; Get-Process ${name} -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object { if (-not $_.CloseMainWindow()) { $ok = $false } }; if (-not $ok) { exit 1 }; exit 0`;
 
 // Asks the browser to close its windows the way a user would. Returns the command that was used.
 export async function closeBrowserGracefully(browser = "edge", platform = process.platform, exec = run) {
@@ -39,6 +39,7 @@ export function createBrowserWatchdog({
   waitingForBrowser,
   lastSeenAt,
   closeBrowser,
+  afterClose = async () => {},
   log,
   now = Date.now,
   silentMs = SILENT_MS,
@@ -69,6 +70,7 @@ export function createBrowserWatchdog({
       );
       try {
         await closeBrowser();
+        await afterClose();
       } catch (error) {
         log(`Could not close the browser: ${error?.message || error}`);
         return false;

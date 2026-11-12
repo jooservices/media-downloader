@@ -453,6 +453,10 @@ globalThis.PageMediaSaver ??= {};
   const openedHighlights = new Set();
   // The background can leave a request unanswered (its message channel closes); a tray must not wait for it forever.
   let trayReplyTimeoutMs = 20_000;
+  // Highlights are a bonus next to the posts: a tray gets this long, and all of them together get the budget.
+  // Edge slows a hidden tab's timers, so counting looks is not enough to bound the time spent.
+  let trayLimitMs = 30_000;
+  let storiesBudgetMs = 3 * 60_000;
 
   function cachedMediaReply(request) {
     let timer;
@@ -477,7 +481,8 @@ globalThis.PageMediaSaver ??= {};
     // The tray's own files arrive a moment after the page's earlier ones, so stop only after two looks in a row
     // find nothing new to save.
     let quiet = 0;
-    for (let attempt = 0; attempt < 6 && limitRemaining() > 0 && quiet < 2; attempt++) {
+    const deadline = Date.now() + trayLimitMs;
+    for (let attempt = 0; attempt < 6 && limitRemaining() > 0 && quiet < 2 && Date.now() < deadline; attempt++) {
       await pause(700);
       const remaining = limitRemaining();
       const response = await cachedMediaReply({
@@ -514,8 +519,9 @@ globalThis.PageMediaSaver ??= {};
     }
     let opened = 0;
     const highlights = highlightLinks();
+    const budgetEnd = Date.now() + storiesBudgetMs;
     for (const link of highlights) {
-      if (opened >= MAX_HIGHLIGHTS || limitRemaining() <= 0 || ns.scan.stopRequested) {
+      if (opened >= MAX_HIGHLIGHTS || limitRemaining() <= 0 || ns.scan.stopRequested || Date.now() >= budgetEnd) {
         break;
       }
       openedHighlights.add(link.href);
@@ -534,8 +540,10 @@ globalThis.PageMediaSaver ??= {};
     pageVideoIds,
     openGridPosts,
     saveAccountStories,
-    setTrayReplyTimeout: ms => {
-      trayReplyTimeoutMs = ms;
+    setStoryTimeouts: ({ reply = trayReplyTimeoutMs, tray = trayLimitMs, budget = storiesBudgetMs }) => {
+      trayReplyTimeoutMs = reply;
+      trayLimitMs = tray;
+      storiesBudgetMs = budget;
     }
   };
 })(globalThis.PageMediaSaver);

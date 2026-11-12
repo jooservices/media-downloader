@@ -478,6 +478,25 @@ export async function serve({
       closeBrowser: async () => {
         const saved = await readJson(EDGE_PROFILE_FILE);
         await closeBrowserGracefully(saved?.browser);
+      },
+      // The pages those jobs ran in are gone. Turn them into ordinary transient errors so the queue's retry
+      // reopens the browser now, instead of leaving their worker slots taken until they go stale.
+      afterClose: async () => {
+        const stranded = [
+          ...queueJobs().runningJobs(),
+          ...queueJobs()
+            .list({ status: "queued" })
+            .filter(job => job.openedAt)
+        ];
+        for (const job of stranded) {
+          await updateJob(job.jobId, current => {
+            current.status = "error";
+            current.message = "The browser was restarted because the extension stopped answering.";
+          });
+        }
+        if (stranded.length) {
+          log(`Handed ${stranded.length} job(s) back to the queue for a retry.`);
+        }
       }
     });
 
