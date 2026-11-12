@@ -837,6 +837,8 @@ function storyPage({ onSend } = {}) {
         }
       })
   });
+  // The test clock moves with every pause, so real-time limits would end these scans early.
+  page.ns.videoSources.setStoryTimeouts({ reply: 20_000, tray: Infinity, budget: Infinity });
   page.stories = [];
   page.highlights = [];
   page.document.querySelectorAll = selector => {
@@ -903,7 +905,7 @@ test("stories: leaving a tray goes back in history, and a tray with nothing new 
 
 test("stories: a tray whose cached-media request is never answered is given up on, and the scan goes on", async () => {
   const page = storyPage({ onSend: () => new Promise(() => {}) });
-  page.ns.videoSources.setTrayReplyTimeout(20);
+  page.ns.videoSources.setStoryTimeouts({ reply: 20 });
   page.stories = [storyLink("https://www.instagram.com/stories/disleft/")];
   page.highlights = [
     storyLink("https://www.instagram.com/stories/highlights/1/"),
@@ -911,6 +913,33 @@ test("stories: a tray whose cached-media request is never answered is given up o
   ];
   assert.equal(await page.ns.videoSources.saveAccountStories("disleft"), 0);
   assert.deepEqual(plain(page.highlights.map(link => link.clicked ?? 0)), [1, 1], "every highlight is still visited");
+});
+
+test("stories: highlights stop being opened once their time budget is spent", async () => {
+  const page = storyPage({ onSend: settled({ DOWNLOAD_CACHED_MEDIA: () => ({ ok: true, started: 1, cached: 1 }) }) });
+  page.ns.videoSources.setStoryTimeouts({ budget: 0 });
+  page.highlights = [
+    storyLink("https://www.instagram.com/stories/highlights/1/"),
+    storyLink("https://www.instagram.com/stories/highlights/2/")
+  ];
+  assert.equal(await page.ns.videoSources.saveAccountStories("disleft"), 0);
+  assert.deepEqual(plain(page.highlights.map(link => link.clicked ?? 0)), [0, 0]);
+});
+
+test("stories: a tray that keeps finding files is left once its own time is spent", async () => {
+  let asked = 0;
+  const page = storyPage({
+    onSend: settled({
+      DOWNLOAD_CACHED_MEDIA: () => {
+        asked++;
+        return { ok: true, started: 1, cached: 1 };
+      }
+    })
+  });
+  page.ns.videoSources.setStoryTimeouts({ tray: 0 });
+  page.stories = [storyLink("https://www.instagram.com/stories/disleft/")];
+  assert.equal(await page.ns.videoSources.saveAccountStories("disleft"), 0);
+  assert.equal(asked, 0);
 });
 
 test("stories: a spent limit, a stop request and a missing account open nothing", async () => {
