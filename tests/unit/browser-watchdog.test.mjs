@@ -4,8 +4,11 @@ import { closeBrowserGracefully, createBrowserWatchdog } from "../../cli/browser
 
 function setup({ waiting = true, lastSeen = null } = {}) {
   let clock = Date.parse("2026-01-01T00:00:00Z");
-  const state = { waiting, lastSeen, closed: 0, logs: [], closeError: null };
+  const state = { waiting, lastSeen, closed: 0, after: 0, logs: [], closeError: null };
   const watchdog = createBrowserWatchdog({
+    afterClose: async () => {
+      state.after++;
+    },
     waitingForBrowser: () => state.waiting,
     lastSeenAt: () => state.lastSeen,
     closeBrowser: async () => {
@@ -43,6 +46,7 @@ test("closes the browser once it has been silent too long, then waits out the co
   assert.equal(await watchdog.tick(), true);
   assert.equal(state.closed, 1);
   assert.match(state.logs[0], /silent for 5 minutes/);
+  assert.equal(state.after, 1, "stranded jobs are handed back once the browser has been closed");
   advance(9 * 60_000);
   assert.equal(await watchdog.tick(), false);
   advance(2 * 60_000);
@@ -66,7 +70,7 @@ test("a Windows close request that is refused makes the command fail", async () 
   const calls = [];
   await closeBrowserGracefully("edge", "win32", async (file, args) => calls.push(args.at(-1)));
   assert.ok(calls[0].includes("if (-not $_.CloseMainWindow()) { $ok = $false }"));
-  assert.ok(calls[0].endsWith("if (-not $ok) { exit 1 }"));
+  assert.ok(calls[0].endsWith("if (-not $ok) { exit 1 }; exit 0"));
 });
 
 test("counts silence from the last message, not from when serve started", async () => {
@@ -83,6 +87,7 @@ test("reports a browser that will not close and tries again after the cool-down"
   advance(6 * 60_000);
   assert.equal(await watchdog.tick(), false);
   assert.match(state.logs.at(-1), /Could not close the browser: denied/);
+  assert.equal(state.after, 0, "nothing is handed back when the browser did not close");
 });
 
 test("closes the right browser politely on each platform and never kills", async () => {
