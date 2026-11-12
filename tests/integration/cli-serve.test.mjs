@@ -750,7 +750,7 @@ test(
       inbox: INBOX,
       dueUrls: null,
       signal: controller.signal,
-      now: () => clock.value,
+      now: () => (clock.value += 11),
       healthDebounceMs: 10,
       tickMs: 20,
       openJob: async job => {
@@ -770,8 +770,6 @@ test(
         "broken",
         "the retained diagnostic makes the first health observation broken"
       );
-      await new Promise(resolve => setTimeout(resolve, 50));
-      clock.value += 11;
       assert.equal(
         await Promise.race([
           brokenNotification.then(() => true),
@@ -780,10 +778,6 @@ test(
         true,
         `serve did not send the broken transition: ${lines.join("")} ${JSON.stringify(events)}`
       );
-      await new Promise(resolve => setTimeout(resolve, 50));
-      clock.value += 11;
-      await new Promise(resolve => setTimeout(resolve, 50));
-      clock.value += 11;
       assert.equal(
         await Promise.race([
           recoveredNotification.then(() => true),

@@ -355,6 +355,8 @@ globalThis.PageMediaSaver ??= {};
     postOpened: result.postOpened || 0
   });
 
+  const itemsFromResult = result => (Array.isArray(result?.items) ? result.items : []);
+
   async function downloadVisibleBatch() {
     const result = await collect();
     if (!result?.ok) {
@@ -363,29 +365,30 @@ globalThis.PageMediaSaver ??= {};
     if (!supported().includes(result.platform)) {
       throw new Error("Automatic scrolling supports Instagram, Facebook, X, and TikTok profiles.");
     }
-    if (!result.items.length) {
+    const items = itemsFromResult(result);
+    if (!items.length) {
       return emptyBatch(result);
     }
     const clicked = result.videoDownloadsClicked || 0;
-    const allowed = result.items.slice(0, Math.max(0, limitRemaining() - clicked));
+    const allowed = items.slice(0, Math.max(0, limitRemaining() - clicked));
     if (!allowed.length) {
       return emptyBatch(result);
     }
     // Repair mode keeps the original file names so the old copies can be matched.
-    const items = await prepareDownloadItems(autoState.repairMode ? result.items : allowed);
-    if (!items.length) {
+    const preparedItems = await prepareDownloadItems(autoState.repairMode ? items : allowed);
+    if (!preparedItems.length) {
       return { started: 0, skipped: 0, failed: 0, pending: 0, errors: [] };
     }
-    for (const item of items) {
+    for (const item of preparedItems) {
       item.jobId = autoState.jobId;
     }
-    recordOutputFiles(items);
-    const response = await sendScanMessage({ type: "DOWNLOAD_ITEMS", items });
+    recordOutputFiles(preparedItems);
+    const response = await sendScanMessage({ type: "DOWNLOAD_ITEMS", items: preparedItems });
     if (!response?.ok) {
       throw new Error(response?.error || "The download request failed.");
     }
     if (autoState.repairMode) {
-      noteRepairMatches(items);
+      noteRepairMatches(preparedItems);
     }
     return {
       ...response,

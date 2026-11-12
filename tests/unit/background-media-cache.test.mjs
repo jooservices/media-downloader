@@ -225,6 +225,29 @@ test("Instagram and Facebook previews do not cover grid ids, but full-size parse
   assert.deepEqual(plain(facebook.coveredIds), ["fbfull001"]);
 });
 
+test("a TikTok grid entry without photo completeness fields is saved and covers its post", async () => {
+  const env = loadBackground();
+  await found(env, [
+    {
+      platform: "TikTok",
+      kind: "photo",
+      id: "7100000000000000003",
+      index: 1,
+      owner: "alice",
+      url: "https://p16-sign.tiktokcdn.com/slide.jpg"
+    }
+  ]);
+
+  const grid = await saveCached(env, {
+    platform: "TikTok",
+    account: "alice",
+    ids: ["7100000000000000003"]
+  });
+  assert.equal(grid.started, 1);
+  assert.deepEqual(plain(grid.coveredIds), ["7100000000000000003"]);
+  assert.equal(env.started[0].filename, "TikTok/alice/7100000000000000003_01.jpg");
+});
+
 test("a partially cached Instagram carousel saves eligible items but remains uncovered for post fallback", async () => {
   const env = loadBackground();
   await found(env, [
