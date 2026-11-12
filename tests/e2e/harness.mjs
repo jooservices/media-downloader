@@ -275,7 +275,23 @@ export function apiClient(apiPort, token) {
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
   return {
     health: () => fetch(`${base}/v1/health`).then(response => response.json()),
-    jobs: () => fetch(`${base}/v1/jobs`, { headers }).then(response => response.json()),
+    // The API allows 120 requests a minute; a 429 carries Retry-After, so wait it out instead of reading a problem document as a job list.
+    jobs: async () => {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const response = await fetch(`${base}/v1/jobs`, { headers });
+        if (response.status === 429) {
+          const seconds = Number(response.headers.get("retry-after"));
+          await sleep(Math.min(Number.isFinite(seconds) ? seconds : 1, 61) * 1000);
+          continue;
+        }
+        const body = await response.json();
+        if (!response.ok) {
+          throw new Error(`GET /v1/jobs answered ${response.status}: ${JSON.stringify(body)}`);
+        }
+        return body;
+      }
+      throw new Error("GET /v1/jobs stayed rate limited after 5 tries.");
+    },
     queue: async (url, again = false) => {
       const response = await fetch(`${base}/v1/jobs`, {
         method: "POST",
@@ -366,7 +382,7 @@ export async function startEnvironment(t, { routes, siteHosts, config } = {}) {
         const jobs = (await api.jobs()).items.filter(item => ids.includes(item.id));
         return jobs.length === ids.length && jobs.every(job => FINISHED_STATES.has(job.status)) ? jobs : null;
       },
-      { what: `${url} to finish`, timeoutMs, everyMs: 1000 }
+      { what: `${url} to finish`, timeoutMs, everyMs: 2000 }
     ).catch(error => {
       throw new Error([error.message, diagnostics()].join(String.fromCharCode(10)), { cause: error });
     });
