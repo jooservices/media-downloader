@@ -901,6 +901,18 @@ test("stories: leaving a tray goes back in history, and a tray with nothing new 
   assert.equal(page.sent.find(message => message.type === "DOWNLOAD_CACHED_MEDIA").limit, null);
 });
 
+test("stories: a tray whose cached-media request is never answered is given up on, and the scan goes on", async () => {
+  const page = storyPage({ onSend: () => new Promise(() => {}) });
+  page.ns.videoSources.setTrayReplyTimeout(20);
+  page.stories = [storyLink("https://www.instagram.com/stories/disleft/")];
+  page.highlights = [
+    storyLink("https://www.instagram.com/stories/highlights/1/"),
+    storyLink("https://www.instagram.com/stories/highlights/2/")
+  ];
+  assert.equal(await page.ns.videoSources.saveAccountStories("disleft"), 0);
+  assert.deepEqual(plain(page.highlights.map(link => link.clicked ?? 0)), [1, 1], "every highlight is still visited");
+});
+
 test("stories: a spent limit, a stop request and a missing account open nothing", async () => {
   const spent = storyPage();
   spent.ns.scan.state.limit = 1;
