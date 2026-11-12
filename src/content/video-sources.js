@@ -451,6 +451,17 @@ globalThis.PageMediaSaver ??= {};
   }
 
   const openedHighlights = new Set();
+  // The background can leave a request unanswered (its message channel closes); a tray must not wait for it forever.
+  let trayReplyTimeoutMs = 20_000;
+
+  function cachedMediaReply(request) {
+    let timer;
+    const timeout = new Promise(resolve => {
+      timer = setTimeout(() => resolve(null), trayReplyTimeoutMs);
+    });
+    const reply = chrome.runtime.sendMessage(request).catch(() => null);
+    return Promise.race([reply, timeout]).finally(() => clearTimeout(timer));
+  }
 
   function highlightLinks() {
     return [...document.querySelectorAll('a[href*="/stories/highlights/"]')].filter(
@@ -469,14 +480,12 @@ globalThis.PageMediaSaver ??= {};
     for (let attempt = 0; attempt < 6 && limitRemaining() > 0 && quiet < 2; attempt++) {
       await pause(700);
       const remaining = limitRemaining();
-      const response = await chrome.runtime
-        .sendMessage({
-          type: "DOWNLOAD_CACHED_MEDIA",
-          platform: pageSite()?.name,
-          account,
-          limit: Number.isFinite(remaining) ? remaining : null
-        })
-        .catch(() => null);
+      const response = await cachedMediaReply({
+        type: "DOWNLOAD_CACHED_MEDIA",
+        platform: pageSite()?.name,
+        account,
+        limit: Number.isFinite(remaining) ? remaining : null
+      });
       const accepted = (response?.started || 0) + (response?.queued || 0);
       started += accepted;
       quiet = accepted ? 0 : quiet + 1;
@@ -524,6 +533,9 @@ globalThis.PageMediaSaver ??= {};
     domVideoIds,
     pageVideoIds,
     openGridPosts,
-    saveAccountStories
+    saveAccountStories,
+    setTrayReplyTimeout: ms => {
+      trayReplyTimeoutMs = ms;
+    }
   };
 })(globalThis.PageMediaSaver);
