@@ -5,6 +5,7 @@ import {
   chromiumExtensionId,
   firefoxAddonPath,
   firefoxExtensionId,
+  CHROMIUM_FULL_SPEED_ARGS,
   launchArgs,
   resolvedProfile
 } from "../../cli/browsers.mjs";
@@ -35,9 +36,12 @@ test("Windows, macOS and Linux each get a real executable path for Edge, Chrome 
 
 test("Chrome and Edge open a named profile; Firefox opens a profile folder", () => {
   assert.deepEqual(launchArgs("chrome", { profileDirectory: "Default" }, "https://www.instagram.com/a/"), [
+    ...CHROMIUM_FULL_SPEED_ARGS,
     "--profile-directory=Default",
     "https://www.instagram.com/a/"
   ]);
+  assert.ok(CHROMIUM_FULL_SPEED_ARGS.includes("--disable-background-timer-throttling"));
+  assert.ok(!launchArgs("firefox", { profilePath: "/p" }, "https://x.com/").some(arg => arg.startsWith("--disable")));
   assert.deepEqual(launchArgs("firefox", { profilePath: "/home/me/.mozilla/firefox/abc" }, "https://x.com/a/"), [
     "-profile",
     "/home/me/.mozilla/firefox/abc",

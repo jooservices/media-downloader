@@ -81,11 +81,20 @@ export function browserLayout(platform, env = {}) {
   };
 }
 
+// A tab the queue opens is often hidden or covered, and Chromium then slows its timers to a crawl, which
+// stalls a scan for minutes. These switches keep the page running at full speed (they apply to a fresh launch).
+export const CHROMIUM_FULL_SPEED_ARGS = [
+  "--disable-background-timer-throttling",
+  "--disable-renderer-backgrounding",
+  "--disable-backgrounding-occluded-windows",
+  "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling"
+];
+
 export function launchArgs(browser, profile, pageUrl) {
   if (browser === "firefox") {
     return ["-profile", profile.profilePath, "-new-tab", pageUrl];
   }
-  return [`--profile-directory=${profile.profileDirectory}`, pageUrl];
+  return [...CHROMIUM_FULL_SPEED_ARGS, `--profile-directory=${profile.profileDirectory}`, pageUrl];
 }
 
 export function chromiumExtensionId(preferences, expectedPath, samePath) {
