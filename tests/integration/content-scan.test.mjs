@@ -400,6 +400,14 @@ test("a page that stops scrolling pauses the scan instead of looping forever", a
   assert.equal(state.rounds, 8);
 });
 
+test("a page that stops moving after it gave up its files has reached its end and finishes", async () => {
+  const page = scanPage({ articles: photos(2) });
+  page.dom.scrollHeight = 5000;
+  const state = await start(page);
+  assert.equal(state.status, "complete");
+  assert.match(state.message, /Download finished/);
+});
+
 test("scrolling down a long page reaches the bottom and then finishes", async () => {
   const page = scanPage();
   page.dom.scrollHeight = 3000;
