@@ -25,6 +25,7 @@ process.env.USERPROFILE = home; // the "Downloads" folder of repairs is inside t
 process.env.PMS_BRIDGE_PORT = String(PORT);
 const store = await import("../../cli/store.mjs");
 const jobs = await import("../../cli/jobs.mjs");
+const { CHROMIUM_FULL_SPEED_ARGS } = await import("../../cli/browsers.mjs");
 const { printJob, showStatus } = await import("../../cli/status.mjs");
 
 const ORIGIN = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
@@ -199,7 +200,11 @@ test("openJobInEdge starts the saved browser detached, on the job URL carrying t
   assert.equal(calls.length, 1);
   const [executable, args, options] = calls[0].args;
   assert.equal(executable, process.execPath);
-  assert.deepEqual(args, ["--profile-directory=Default", `${PAGE}${store.cliTabMarker(id(1))}`]);
+  assert.deepEqual(args, [
+    ...CHROMIUM_FULL_SPEED_ARGS,
+    "--profile-directory=Default",
+    `${PAGE}${store.cliTabMarker(id(1))}`
+  ]);
   assert.deepEqual(options, { detached: true, stdio: "ignore", windowsHide: true });
   assert.equal(calls[0].child.unrefCalled, true);
 });
@@ -266,7 +271,7 @@ test(
       const { calls, spawnProcess } = fakeSpawn();
       await jobs.openJobInEdge({ jobId: id(1), url: PAGE }, spawnProcess);
       assert.equal(path.normalize(calls[0].args[0]), path.normalize(exe));
-      assert.equal(calls[0].args[1][0], "--profile-directory=Profile 2");
+      assert.ok(calls[0].args[1].includes("--profile-directory=Profile 2"));
     } finally {
       process.env.ProgramFiles = keep.ProgramFiles;
       process.env["PROGRAMFILES(X86)"] = keep.x86;
