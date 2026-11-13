@@ -506,6 +506,12 @@ globalThis.PageMediaSaver ??= {};
     scroll.lastHeight = heightAfter;
     scroll.lastTop = topAfter;
     if (scroll.idle >= STALL_CHECKS) {
+      // A page that already gave up its files and now neither moves nor grows has reached its end (a reels or
+      // photos tab whose scroller is not the window looks exactly like this); only an empty one is a stuck page.
+      if (autoState.started + autoState.videoStarted + skippedCount() + autoState.unavailable > 0) {
+        await finishGrid();
+        return true;
+      }
       throw new Error(
         "The page stopped scrolling or loading photos. Automatic mode paused so it does not loop forever."
       );
