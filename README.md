@@ -101,7 +101,7 @@ Use `node cli/mediasaver.mjs verify <profile-url>` to compare an account's saved
 
 `serve` keeps going only while the computer is awake, the browser is available and you are still signed in to the sites.
 
-`service install` registers that queue to start when you sign in (the Windows Startup folder, a systemd user service, or a macOS launch agent) and starts it now. Run it from the project folder, or pass the full path to `mediasaver.mjs`. `service remove` unregisters it. It is not a Session 0 Windows service: the download has to open the signed-in browser on the desktop.
+`service install` registers that queue to start when you sign in (the Windows Startup folder, a systemd user service, or a macOS launch agent) and starts it now. Run it from the project folder, or pass the full path to `mediasaver.mjs`. `service remove` unregisters it. systemd and launchd restart the queue if it dies; on Windows the Startup entry runs `serve --keep-alive`, which starts `serve` again after a crash (5 s, doubling up to 5 minutes, back to 5 s after a run that stayed up for a minute) and ends when `serve` stops cleanly. It is not a Session 0 Windows service: the download has to open the signed-in browser on the desktop.
 
 ## Unattended runs: a browser owned by the queue
 
