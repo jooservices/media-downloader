@@ -197,6 +197,7 @@ test("a file already in the destination with the same size is a duplicate: the s
   const result = await moveFinishedFiles({ sourceRoot: source, destRoot: dest, now: NOW });
   assert.equal(result.duplicates, 1);
   assert.equal(result.moved, 0);
+  assert.equal(result.movedFiles[0].duplicate, true, "marked so it is not counted as a new file");
   assert.deepEqual(await names(path.join(dest, "Instagram", "alice")), ["a.jpg"]);
 });
 
@@ -263,6 +264,11 @@ test("files that reach an account folder are credited to its running job, else i
   const saved = Object.fromEntries(jobs.map(job => [job.jobId, job.savedFiles]));
   assert.deepEqual(saved, { old: undefined, live: 2, "b-old": undefined, "b-new": 5 });
   assert.deepEqual(updated.sort(), ["b-new", "live"], "an account without a job is left alone");
+  await countSavedFiles([{ source: path.join(source, "Instagram", "alice", "dup.jpg"), duplicate: true }], {
+    sourceRoot: source,
+    jobs,
+    updateJob: async () => assert.fail("a duplicate is not a newly saved file")
+  });
   await countSavedFiles(undefined, { sourceRoot: source, jobs, updateJob: async () => assert.fail("nothing moved") });
 });
 

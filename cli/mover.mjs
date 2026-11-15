@@ -164,7 +164,8 @@ async function moveOne(from, toDirectory, name, result, copyFileImpl, { overwrit
   if (existing?.size === size && (await sameContents(from, target))) {
     await unlink(from);
     result.duplicates++;
-    result.movedFiles.push({ source: from, target, size });
+    // Kept for reconcileMovedOutputs, but nothing new reached the account folder.
+    result.movedFiles.push({ source: from, target, size, duplicate: true });
     return;
   }
   const replace = existing && overwriteFiles.has(path.resolve(target).toLowerCase());
@@ -367,7 +368,7 @@ export async function countSavedFiles(movedFiles, { sourceRoot, jobs, updateJob 
   const saved = new Map();
   for (const moved of movedFiles || []) {
     const [platform, account] = path.relative(sourceRoot, moved.source).split(path.sep);
-    if (!platform || !account) {
+    if (moved.duplicate || !platform || !account) {
       continue;
     }
     const key = `${platform}/${account.toLowerCase()}`;
