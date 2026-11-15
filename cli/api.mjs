@@ -50,7 +50,8 @@ export function jobView(job) {
       pending: Number(job.pending || 0),
       failed: Number(job.failed || 0),
       skipped: Number(job.skipped || 0),
-      videoSkipped: Number(job.videoSkipped || 0)
+      videoSkipped: Number(job.videoSkipped || 0),
+      saved: Number(job.savedFiles || 0)
     },
     createdAt: job.createdAt || null,
     updatedAt: job.updatedAt || null,

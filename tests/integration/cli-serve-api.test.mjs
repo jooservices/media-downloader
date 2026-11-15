@@ -143,6 +143,7 @@ test("the running serve answers the REST API: create, read, watch and cancel", a
       current.videoSkipped = 7;
       current.pending = 1;
       current.failed = 4;
+      current.savedFiles = 6;
     });
     const listed = await (await call("GET", "/v1/jobs")).json();
     assert.deepEqual(listed.items.find(item => item.id === RUNNING).counts, {
@@ -151,7 +152,8 @@ test("the running serve answers the REST API: create, read, watch and cancel", a
       pending: 1,
       failed: 4,
       skipped: 5,
-      videoSkipped: 7
+      videoSkipped: 7,
+      saved: 6
     });
     const cancelled = await call("DELETE", `/v1/jobs/${RUNNING}`);
     assert.equal(cancelled.status, 204);

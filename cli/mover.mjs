@@ -359,3 +359,29 @@ export async function reconcileMovedOutputs(movedFiles, { sourceRoot, jobs, upda
     }
   }
 }
+
+// The page only counts the files it saw start, and a post saved from the page cache can start after it stopped
+// looking. The files that really reached the account folder are the dependable count: credit them to the account's
+// running job, or to its latest one when none runs.
+export async function countSavedFiles(movedFiles, { sourceRoot, jobs, updateJob }) {
+  const saved = new Map();
+  for (const moved of movedFiles || []) {
+    const [platform, account] = path.relative(sourceRoot, moved.source).split(path.sep);
+    if (!platform || !account) {
+      continue;
+    }
+    const key = `${platform}/${account.toLowerCase()}`;
+    saved.set(key, { platform, account: account.toLowerCase(), files: (saved.get(key)?.files || 0) + 1 });
+  }
+  for (const { platform, account, files } of saved.values()) {
+    const own = jobs.filter(job => job.platform === platform && job.account?.toLowerCase() === account);
+    const target =
+      own.find(job => job.status === "running") ??
+      own.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))[0];
+    if (target) {
+      await updateJob(target.jobId, current => {
+        current.savedFiles = Number(current.savedFiles || 0) + files;
+      });
+    }
+  }
+}

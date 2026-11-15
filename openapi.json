@@ -1192,7 +1192,7 @@
       },
       "Counts": {
         "type": "object",
-        "required": ["started", "videoStarted", "pending", "failed", "skipped", "videoSkipped"],
+        "required": ["started", "videoStarted", "pending", "failed", "skipped", "videoSkipped", "saved"],
         "properties": {
           "started": {
             "type": "integer"
@@ -1211,6 +1211,10 @@
           },
           "videoSkipped": {
             "type": "integer"
+          },
+          "saved": {
+            "type": "integer",
+            "description": "Files that reached the account folder while this job ran. Unlike the page counters it includes files saved from the page cache."
           }
         },
         "additionalProperties": false
