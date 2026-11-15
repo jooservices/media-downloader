@@ -118,7 +118,16 @@ test("health needs no token; everything else answers 401 with WWW-Authenticate",
     assert.equal(health.status, 200);
     assert.deepEqual(health.body, {
       status: "ok",
-      failuresByReason: { login_required: 0, empty_or_private: 0, unknown: 1 }
+      failuresByReason: {
+        login_required: 0,
+        empty_or_private: 0,
+        no_acknowledgement: 0,
+        page_silent: 0,
+        tab_closed: 0,
+        browser_restarted: 0,
+        page_stalled: 0,
+        unknown: 1
+      }
     });
     const denied = await call("GET", "/v1/jobs", { auth: false });
     assert.equal(denied.status, 401);

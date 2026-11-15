@@ -417,6 +417,7 @@ test("a page that never answers fails after 90 s, then the job is retried after 
   assert.equal(env.job("1").status, "queued");
   assert.equal(env.job("1").openedAt, null);
   assert.match(env.job("1").lastProblem, /did not acknowledge/);
+  assert.equal(env.job("1").reason, "no_acknowledgement");
   assert.equal((await env.tick()).opened, 0, "it waits out the retry delay");
 
   env.advance(60_000 + 1000);
@@ -559,6 +560,7 @@ test("malformed liveness timestamps fail closed instead of leaving a job stuck f
   ]);
   assert.equal((await env.tick()).expired, 1);
   assert.equal(env.job("1").status, "incomplete");
+  assert.equal(env.job("1").reason, "page_silent");
   assert.match(env.job("1").message, /silent for 15 minutes/);
 });
 

@@ -4,7 +4,14 @@ import test from "node:test";
 
 const require = createRequire(import.meta.url);
 const { isSignedIn, SIGN_IN_URL, SITE_LABEL, SESSION_COOKIES } = require("../../lib/login.js");
-const { applyProgress, applyError, isTerminal } = require("../../lib/job-progress.js");
+const {
+  applyProgress,
+  applyError,
+  isTerminal,
+  isFailureReason,
+  countFailures,
+  FAILURE_REASONS
+} = require("../../lib/job-progress.js");
 
 test("a site counts as signed in only when every session cookie it needs is present", () => {
   assert.equal(isSignedIn("Twitter", ["auth_token", "ct0"]), true);
@@ -96,4 +103,42 @@ test("terminal states are exactly the four final ones", () => {
   for (const status of ["queued", "running", undefined]) {
     assert.equal(isTerminal(status), false, String(status));
   }
+});
+
+test("a failure carries one of the known reasons, and an unknown word is ignored", () => {
+  assert.equal(applyError({}, "tab closed", "tab_closed").reason, "tab_closed");
+  assert.equal(applyError({}, "x", "made-up").reason, undefined);
+  assert.equal(applyError({}, "x").reason, undefined);
+  const paused = applyProgress({}, { type: "JOB_DONE", state: { status: "paused", reason: "page_stalled" } });
+  assert.equal(paused.reason, "page_stalled");
+  assert.equal(applyProgress({}, { type: "JOB_DONE", state: { reason: "nonsense" } }).reason, undefined);
+  for (const reason of FAILURE_REASONS) {
+    assert.equal(isFailureReason(reason), true, reason);
+  }
+  assert.equal(isFailureReason(null), false);
+});
+
+test("failures are counted by reason and anything unexplained counts as unknown", () => {
+  const counts = countFailures([
+    { status: "error", reason: "tab_closed" },
+    { status: "incomplete", reason: "page_silent" },
+    { status: "incomplete", reason: "page_silent" },
+    { status: "error" },
+    { status: "error", reason: "made-up" },
+    { status: "complete", reason: "tab_closed" },
+    { status: "paused", reason: "page_stalled" },
+    { status: "paused", reason: "tab_closed" },
+    { status: "paused" }
+  ]);
+  assert.deepEqual(counts, {
+    login_required: 0,
+    empty_or_private: 0,
+    no_acknowledgement: 0,
+    page_silent: 2,
+    tab_closed: 1,
+    browser_restarted: 0,
+    page_stalled: 1,
+    unknown: 2
+  });
+  assert.equal(Object.keys(countFailures(undefined)).length, FAILURE_REASONS.length);
 });

@@ -14,6 +14,7 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const { platformHealth: assessPlatforms } = require("../lib/platform-health.js");
+const { isFailureReason, countFailures } = require("../lib/job-progress.js");
 
 export const API_PORT = Number(process.env.PMS_API_PORT) || 38542;
 export const API_BASE = "/v1";
@@ -42,7 +43,7 @@ export function jobView(job) {
     account: job.account || "",
     url: job.url,
     message: job.message || "",
-    reason: ["login_required", "empty_or_private", "unknown"].includes(job.reason) ? job.reason : null,
+    reason: isFailureReason(job.reason) ? job.reason : null,
     counts: {
       started: Number(job.started || 0),
       videoStarted: Number(job.videoStarted || 0),
@@ -361,17 +362,7 @@ const ID = "([0-9a-f-]{36})";
 const SEGMENT = "([^/]+)";
 const startedAt = Date.now();
 
-function failuresByReason(jobs) {
-  const counts = { login_required: 0, empty_or_private: 0, unknown: 0 };
-  for (const job of jobs) {
-    if (!["error", "incomplete"].includes(job.status)) {
-      continue;
-    }
-    const reason = Object.hasOwn(counts, job.reason) ? job.reason : "unknown";
-    counts[reason]++;
-  }
-  return counts;
-}
+const failuresByReason = countFailures;
 
 async function statusRoute({ response, deps }) {
   const state = deps.status ? await deps.status() : {};

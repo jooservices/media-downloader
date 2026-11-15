@@ -512,8 +512,9 @@ globalThis.PageMediaSaver ??= {};
         await finishGrid();
         return true;
       }
-      throw new Error(
-        "The page stopped scrolling or loading photos. Automatic mode paused so it does not loop forever."
+      throw Object.assign(
+        new Error("The page stopped scrolling or loading photos. Automatic mode paused so it does not loop forever."),
+        { reason: "page_stalled" }
       );
     }
     return false;
@@ -561,6 +562,9 @@ globalThis.PageMediaSaver ??= {};
         endScan("paused", "Automatic download stopped at its safety limit of 10,000 scroll passes.");
       }
     } catch (error) {
+      if (typeof error?.reason === "string") {
+        autoState.reason = error.reason;
+      }
       endScan("paused", `Automatic download paused: ${error?.message || String(error)}`);
     } finally {
       autoRunning = false;

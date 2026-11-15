@@ -94,6 +94,7 @@ async function failUnacknowledgedJob(current) {
   const failedJob = {
     ...current,
     status: "error",
+    reason: "no_acknowledgement",
     message:
       "The browser did not acknowledge the job within 90 seconds. Reload Page Media Saver on its extensions page, then resume this job.",
     updatedAt: new Date().toISOString()

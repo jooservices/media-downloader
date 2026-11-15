@@ -1021,10 +1021,24 @@
       },
       "FailureCountsByReason": {
         "type": "object",
-        "required": ["login_required", "empty_or_private", "unknown"],
+        "required": [
+          "login_required",
+          "empty_or_private",
+          "no_acknowledgement",
+          "page_silent",
+          "tab_closed",
+          "browser_restarted",
+          "page_stalled",
+          "unknown"
+        ],
         "properties": {
           "login_required": { "type": "integer", "minimum": 0 },
           "empty_or_private": { "type": "integer", "minimum": 0 },
+          "no_acknowledgement": { "type": "integer", "minimum": 0 },
+          "page_silent": { "type": "integer", "minimum": 0 },
+          "tab_closed": { "type": "integer", "minimum": 0 },
+          "browser_restarted": { "type": "integer", "minimum": 0 },
+          "page_stalled": { "type": "integer", "minimum": 0 },
           "unknown": { "type": "integer", "minimum": 0 }
         },
         "additionalProperties": false
@@ -1240,7 +1254,17 @@
           },
           "reason": {
             "type": ["string", "null"],
-            "enum": ["login_required", "empty_or_private", "unknown", null]
+            "enum": [
+              "login_required",
+              "empty_or_private",
+              "no_acknowledgement",
+              "page_silent",
+              "tab_closed",
+              "browser_restarted",
+              "page_stalled",
+              "unknown",
+              null
+            ]
           },
           "counts": {
             "$ref": "#/components/schemas/Counts"

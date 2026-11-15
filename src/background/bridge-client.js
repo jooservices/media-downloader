@@ -364,7 +364,8 @@ chrome.tabs.onRemoved.addListener(async tabId => {
     postBridgeMessage({
       type: "JOB_ERROR",
       jobId,
-      error: "The Edge profile tab was closed before the scan finished. Use the CLI resume command to continue."
+      error: "The Edge profile tab was closed before the scan finished. Use the CLI resume command to continue.",
+      reason: "tab_closed"
     }).catch(() => {});
   } catch {
     /* a later CLI status check will expose any unfinished job */
