@@ -126,7 +126,9 @@ test("failures are counted by reason and anything unexplained counts as unknown"
     { status: "error" },
     { status: "error", reason: "made-up" },
     { status: "complete", reason: "tab_closed" },
-    { status: "paused", reason: "page_stalled" }
+    { status: "paused", reason: "page_stalled" },
+    { status: "paused", reason: "tab_closed" },
+    { status: "paused" }
   ]);
   assert.deepEqual(counts, {
     login_required: 0,
@@ -135,7 +137,7 @@ test("failures are counted by reason and anything unexplained counts as unknown"
     page_silent: 2,
     tab_closed: 1,
     browser_restarted: 0,
-    page_stalled: 0,
+    page_stalled: 1,
     unknown: 2
   });
   assert.equal(Object.keys(countFailures(undefined)).length, FAILURE_REASONS.length);
