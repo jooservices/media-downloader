@@ -397,6 +397,7 @@ test("a page that stops scrolling pauses the scan instead of looping forever", a
   const state = await start(page);
   assert.equal(state.status, "paused");
   assert.match(state.message, /stopped scrolling or loading photos/);
+  assert.equal(state.reason, "page_stalled");
   assert.equal(state.rounds, 8);
 });
 

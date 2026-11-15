@@ -302,7 +302,7 @@ async function handleJobUpdate(message) {
         current.lastHeartbeatAt = new Date().toISOString();
       }
     } else if (message.type === "JOB_ERROR") {
-      applyError(current, message.error);
+      applyError(current, message.error, message.reason);
     } else {
       applyProgress(current, message);
       if (message.type === "JOB_PROGRESS") {

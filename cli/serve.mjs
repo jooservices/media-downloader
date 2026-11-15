@@ -49,6 +49,7 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const { platformHealth: assessPlatforms } = require("../lib/platform-health.js");
+const { countFailures } = require("../lib/job-progress.js");
 
 const watchApi = { list: () => readWatchList(), add: url => addWatch([url]), remove: url => removeWatch(url) };
 
@@ -419,16 +420,7 @@ export async function serve({
         status: () =>
           Promise.resolve({
             jobs: queueJobs().counts(),
-            failuresByReason: (() => {
-              const counts = { login_required: 0, empty_or_private: 0, unknown: 0 };
-              for (const job of queueJobs().list()) {
-                if (["error", "incomplete"].includes(job.status)) {
-                  const reason = Object.hasOwn(counts, job.reason) ? job.reason : "unknown";
-                  counts[reason]++;
-                }
-              }
-              return counts;
-            })(),
+            failuresByReason: countFailures(queueJobs().list()),
             extension: extensionSeen(),
             pid: process.pid,
             platforms: supervisor?.platformStatus() ?? {}
@@ -491,6 +483,7 @@ export async function serve({
         for (const job of stranded) {
           await updateJob(job.jobId, current => {
             current.status = "error";
+            current.reason = "browser_restarted";
             current.message = "The browser was restarted because the extension stopped answering.";
           });
         }

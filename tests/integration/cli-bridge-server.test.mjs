@@ -196,7 +196,11 @@ test("a real tab-close error report is retried through the supervisor until maxA
     moveFiles: async () => ({ moved: 0, failed: 0 })
   });
   const closedTabError = "The Edge profile tab was closed before the scan finished.";
-  await handleBridgeMessage({ type: "JOB_ERROR", jobId: id(1), error: closedTabError }, new Set());
+  await handleBridgeMessage(
+    { type: "JOB_ERROR", jobId: id(1), error: closedTabError, reason: "tab_closed" },
+    new Set()
+  );
+  assert.equal((await read(1)).reason, "tab_closed");
   assert.equal((await supervisor.tick()).requeued, 1);
   assert.equal((await read(1)).attempts, 1);
   now += 60_001;
