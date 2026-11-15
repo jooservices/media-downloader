@@ -4,6 +4,7 @@ import { showStatus } from "./status.mjs";
 import { repairRootDownloads, finalizeRepairById } from "./repair.mjs";
 import { launchAndMonitor, startDownload, resumeJob } from "./jobs.mjs";
 import { addCommand, addUrls, moveCommand, runningServer, serve, DEFAULT_INBOX } from "./serve.mjs";
+import { keepAlive } from "./keep-alive.mjs";
 import { installService, removeService } from "./service.mjs";
 import { browserCommand } from "./browser.mjs";
 import { runMcp } from "./mcp.mjs";
@@ -58,7 +59,15 @@ function serviceCommand(args) {
   throw new Error("Use: service install    or    service remove");
 }
 
-function serveCommand(args) {
+async function serveCommand(args) {
+  if (args.includes("--keep-alive")) {
+    // Run serve as a child that is started again when it crashes.
+    process.exitCode = await keepAlive({
+      command: process.execPath,
+      args: [process.argv[1], "serve", ...args.filter(arg => arg !== "--keep-alive")]
+    });
+    return;
+  }
   const at = args.indexOf("--inbox");
   const inbox = at >= 0 ? args[at + 1] : DEFAULT_INBOX;
   if (at >= 0 && !inbox) {

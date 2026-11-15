@@ -69,11 +69,11 @@ test("the Windows startup file is a per-user Startup entry", () => {
 test("the Windows startup script runs the queue hidden, with paths quoted for VBScript", () => {
   assert.equal(
     service.windowsStartupScript(LAUNCH),
-    'Set shell = CreateObject("Wscript.Shell")\nSet env = shell.Environment("Process")\nshell.Run """C:\\Program Files\\nodejs\\node.exe"" ""C:\\tools\\mediasaver.mjs"" serve", 0, False\n'
+    'Set shell = CreateObject("Wscript.Shell")\nSet env = shell.Environment("Process")\nshell.Run """C:\\Program Files\\nodejs\\node.exe"" ""C:\\tools\\mediasaver.mjs"" serve --keep-alive", 0, False\n'
   );
   const quoted = service.windowsStartupScript({ executable: 'C:\\a"b\\node.exe', script: "s.mjs" });
   assert.doesNotMatch(quoted, /a"b/, "a quote in a path cannot break out of the command");
-  assert.match(service.windowsStartupScript(), /serve", 0, False\n$/, "defaults to the real launch");
+  assert.match(service.windowsStartupScript(), /serve --keep-alive", 0, False\n$/, "defaults to the real launch");
 });
 
 test("the systemd unit restarts the queue on failure and escapes its paths", () => {

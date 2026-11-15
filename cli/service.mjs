@@ -61,7 +61,7 @@ export function windowsStartupFile(env = process.env) {
 
 // A logon task via schtasks needs an administrator. The per-user Startup folder does not.
 export function windowsStartupScript(launch = serviceLaunch(), env = process.env) {
-  const command = `${quoteWindows(launch.executable)} ${quoteWindows(launch.script)} serve`;
+  const command = `${quoteWindows(launch.executable)} ${quoteWindows(launch.script)} serve --keep-alive`;
   const vbs = `"${command.replaceAll('"', '""')}"`;
   const lines = ['Set shell = CreateObject("Wscript.Shell")', 'Set env = shell.Environment("Process")'];
   lines.push(...Object.entries(serviceEnvironment(env)).map(formatVbsEnvironment));
