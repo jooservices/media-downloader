@@ -36,7 +36,8 @@ import {
   edgeDownloadsDir,
   firefoxDownloadDir,
   moveFinishedFiles,
-  reconcileMovedOutputs
+  reconcileMovedOutputs,
+  countSavedFiles
 } from "./mover.mjs";
 import { addWatch, readWatchList, removeWatch, watchDue } from "./watchlist.mjs";
 
@@ -292,6 +293,8 @@ async function buildDeps(log, isStopping = () => false, openJob = openJobInEdge)
       }
       const result = await moveFinishedFiles({ sourceRoot, destRoot, overwriteFiles, blockedFiles });
       await reconcileMovedOutputs(result.movedFiles, { sourceRoot, jobs, updateJob });
+      // The move took time, so choose the job from the current list, not the one read before it.
+      await countSavedFiles(result.movedFiles, { sourceRoot, jobs: await listJobs(), updateJob });
       return result;
     }
   };

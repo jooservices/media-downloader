@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { parseConfig } from "../../cli/config.mjs";
-import { cleanOrphanedPartials, moveFinishedFiles, reconcileMovedOutputs } from "../../cli/mover.mjs";
+import { cleanOrphanedPartials, countSavedFiles, moveFinishedFiles, reconcileMovedOutputs } from "../../cli/mover.mjs";
 import { createSupervisor } from "../../cli/supervisor.mjs";
 
 const NOW = Date.now();
@@ -197,6 +197,7 @@ test("a file already in the destination with the same size is a duplicate: the s
   const result = await moveFinishedFiles({ sourceRoot: source, destRoot: dest, now: NOW });
   assert.equal(result.duplicates, 1);
   assert.equal(result.moved, 0);
+  assert.equal(result.movedFiles[0].duplicate, true, "marked so it is not counted as a new file");
   assert.deepEqual(await names(path.join(dest, "Instagram", "alice")), ["a.jpg"]);
 });
 
@@ -236,6 +237,39 @@ test("collision-renamed outputs update the completed job identity", async () => 
   assert.deepEqual(updates, ["job-1"]);
   assert.deepEqual(job.outputFiles, [{ filename: "a (1).jpg" }]);
   assert.deepEqual(job.outputRenames, { "a.jpg": "a (1).jpg" });
+});
+
+test("files that reach an account folder are credited to its running job, else its latest one", async () => {
+  const { source, dest } = await area();
+  await put(path.join(source, "Instagram", "alice", "a.jpg"), "1");
+  await put(path.join(source, "Instagram", "Alice", "b.jpg"), "2");
+  await put(path.join(source, "Facebook", "bob", "c.jpg"), "3");
+  await put(path.join(source, "TikTok", "nobody", "d.jpg"), "4");
+  const jobs = [
+    { jobId: "old", platform: "Instagram", account: "alice", status: "complete", updatedAt: "2026-01-02" },
+    { jobId: "live", platform: "Instagram", account: "alice", status: "running", updatedAt: "2026-01-01" },
+    { jobId: "b-old", platform: "Facebook", account: "bob", status: "complete", updatedAt: "2026-01-01" },
+    { jobId: "b-new", platform: "Facebook", account: "BOB", status: "complete", updatedAt: "2026-01-03", savedFiles: 4 }
+  ];
+  const result = await moveFinishedFiles({ sourceRoot: source, destRoot: dest, now: NOW });
+  const updated = [];
+  await countSavedFiles([...result.movedFiles, { source: path.join(source, "stray.txt") }], {
+    sourceRoot: source,
+    jobs,
+    updateJob: async (id, mutate) => {
+      updated.push(id);
+      mutate(jobs.find(job => job.jobId === id));
+    }
+  });
+  const saved = Object.fromEntries(jobs.map(job => [job.jobId, job.savedFiles]));
+  assert.deepEqual(saved, { old: undefined, live: 2, "b-old": undefined, "b-new": 5 });
+  assert.deepEqual(updated.sort(), ["b-new", "live"], "an account without a job is left alone");
+  await countSavedFiles([{ source: path.join(source, "Instagram", "alice", "dup.jpg"), duplicate: true }], {
+    sourceRoot: source,
+    jobs,
+    updateJob: async () => assert.fail("a duplicate is not a newly saved file")
+  });
+  await countSavedFiles(undefined, { sourceRoot: source, jobs, updateJob: async () => assert.fail("nothing moved") });
 });
 
 test("a verified repair replaces its named corrupt destination and records the published identity", async () => {
