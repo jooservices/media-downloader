@@ -34,6 +34,7 @@
     "audit": "npm audit --audit-level=high",
     "ci": "npm run validate && npm run lint && npm run test:coverage",
     "prepare": "simple-git-hooks",
+    "soak": "node tools/soak.mjs",
     "test:e2e": "node --test --test-reporter=spec --test-timeout=2400000 \"tests/e2e/*.e2e.mjs\""
   },
   "simple-git-hooks": {

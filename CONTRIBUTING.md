@@ -24,7 +24,7 @@ Git hooks are installed by `simple-git-hooks` (`npm run prepare`): `commit-msg` 
 - `master` — production; receives only approved release and hotfix merges
 - `develop` — integration branch for normal work
 - create `feature/*`, `fix/*`, `chore/*` branches from the latest `develop`, then open the PR back into `develop`
-- releases: cut `release/<version>` from `develop`, stabilize, PR into `master`, tag `v<version>` from `master`, merge `master` back into `develop`
+- releases: cut `release/<version>` from `develop`, stabilize, PR into `master`, tag `v<version>` from `master`, merge `master` back into `develop` (the checklist is in [docs/release.md](docs/release.md))
 - hotfixes: `hotfix/*` from `master`, merged back into both `master` and `develop`
 - never commit directly to `develop` or `master`; every change arrives via PR with green checks
 
