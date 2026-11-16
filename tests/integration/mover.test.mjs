@@ -516,3 +516,57 @@ test("files the browser saves straight into a linked site folder are counted onc
     "real-folder": undefined
   });
 });
+
+test("a linked account folder that cannot be read is retried, and a later run keeps its own files", async () => {
+  const { source, dest } = await area();
+  const real = path.join(dest, "Instagram");
+  await mkdir(path.join(real, "alice"), { recursive: true });
+  await mkdir(source, { recursive: true });
+  await symlink(real, path.join(source, "Instagram"), "junction");
+  const at = ms => new Date(NOW - ms).toISOString();
+  const file = path.join(real, "alice", "mine.jpg");
+  await put(file, "1", new Date(NOW - 300_000));
+  const jobs = [
+    {
+      jobId: "a",
+      platform: "Instagram",
+      account: "alice",
+      status: "complete",
+      createdAt: at(600_000),
+      updatedAt: at(100_000)
+    },
+    {
+      jobId: "b",
+      platform: "Instagram",
+      account: "alice",
+      status: "complete",
+      createdAt: at(250_000),
+      updatedAt: at(100_000)
+    }
+  ];
+  const run = () =>
+    countLinkedFiles({
+      sourceRoot: source,
+      jobs,
+      now: NOW,
+      updateJob: async (id, mutate) => mutate(jobs.find(j => j.jobId === id))
+    });
+  await run();
+  assert.deepEqual(
+    jobs.map(j => j.savedFiles),
+    [1, 0],
+    "the file belongs to the run during which it appeared"
+  );
+  await rm(path.join(real, "alice"), { recursive: true });
+  await writeFile(path.join(real, "alice"), "not a folder"); // reading it as a folder now fails with ENOTDIR
+  jobs.forEach(j => {
+    delete j.savedFiles;
+    delete j.savedCounted;
+  });
+  await run();
+  assert.deepEqual(
+    jobs.map(j => j.savedCounted),
+    [undefined, undefined],
+    "a failed read is not recorded as zero"
+  );
+});

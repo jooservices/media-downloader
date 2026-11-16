@@ -392,19 +392,29 @@ export async function countSavedFiles(movedFiles, { sourceRoot, jobs, updateJob 
 // into the final place, so the mover never sees those files. When such a job ends, count the finished files in its
 // account folder that appeared while it ran, once.
 async function linkedFilesBetween(directory, from, until) {
-  const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
+  // A folder that cannot be read right now is retried later, not counted as empty.
+  const entries = await readdir(directory, { withFileTypes: true }).catch(error =>
+    error?.code === "ENOENT" ? [] : null
+  );
+  if (!entries) {
+    return null;
+  }
   let files = 0;
   for (const entry of entries) {
     if (!entry.isFile() || UNFINISHED.test(entry.name) || OWNED_PARTIAL.test(entry.name)) {
       continue;
     }
-    const { mtimeMs } = await stat(path.join(directory, entry.name)).catch(() => ({ mtimeMs: 0 }));
+    const info = await stat(path.join(directory, entry.name)).catch(() => null);
+    if (!info) {
+      return null;
+    }
+    const { mtimeMs } = info;
     files += mtimeMs >= from && mtimeMs <= until ? 1 : 0;
   }
   return files;
 }
 
-async function linkedJobWindow(job, sourceRoot, now, settleMs) {
+async function linkedJobWindow(job, jobs, sourceRoot, now, settleMs) {
   if (!TERMINAL_STATES.has(job.status) || job.savedFiles !== undefined || job.savedCounted) {
     return null;
   }
@@ -416,11 +426,17 @@ async function linkedJobWindow(job, sourceRoot, now, settleMs) {
   if (now - finishedAt < settleMs || now - finishedAt > LINKED_COUNT_WINDOW_MS) {
     return null; // its last files may still be arriving, or it is too old to look back at
   }
-  return {
-    directory: path.join(siteDir, job.account),
-    from: Date.parse(job.openedAt || job.createdAt || ""),
-    until: finishedAt + settleMs
-  };
+  const from = Date.parse(job.openedAt || job.createdAt || "");
+  // A later run of the same account owns the files that appeared after it started.
+  const laterStarts = jobs
+    .filter(
+      other =>
+        other !== job && other.platform === job.platform && other.account?.toLowerCase() === job.account.toLowerCase()
+    )
+    .map(other => Date.parse(other.openedAt || other.createdAt || ""))
+    .filter(start => start > from);
+  const until = Math.min(finishedAt + settleMs, ...laterStarts);
+  return { directory: path.join(siteDir, job.account), from, until };
 }
 
 export async function countLinkedFiles({
@@ -431,11 +447,14 @@ export async function countLinkedFiles({
   settleMs = DEFAULT_SETTLE_MS
 }) {
   for (const job of jobs) {
-    const window = await linkedJobWindow(job, sourceRoot, now, settleMs);
+    const window = await linkedJobWindow(job, jobs, sourceRoot, now, settleMs);
     if (!window) {
       continue;
     }
     const files = await linkedFilesBetween(window.directory, window.from, window.until);
+    if (files === null) {
+      continue;
+    }
     await updateJob(job.jobId, current => {
       current.savedFiles = Number(current.savedFiles || 0) + files;
       current.savedCounted = true;
