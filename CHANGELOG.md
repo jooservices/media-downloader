@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file. Format follows 
 
 ### Added
 
+- `serve --keep-alive` runs `serve` under a small supervisor that starts it again after a crash (5 s, doubling to 5 minutes; a clean exit or a stop signal ends it). The Windows startup script uses it
+- Jobs report why they ended (`reason`: `login_required`, `empty_or_private`, `no_acknowledgement`, `page_silent`, `tab_closed`, `browser_restarted`, `page_stalled`, `unknown`) and `failuresByReason` counts the newest job of each link; a job's `counts.saved` is the number of files that reached the account folder
+- `npm run soak` (`tools/soak.mjs`) runs the real queue against a fake site for hours with forced crashes and reports memory, stuck batches and recoveries
+- `docs/release.md`: the pre-flight checks, version steps and rollback for a release
 - End-to-end tests for every site through the real hook: Instagram (photos, a reel, a carousel, stories), Facebook (profile, Photos, Reels and Videos tabs), TikTok (videos and a photo post) and X (a video and a photo), each checked for the best quality, the saved bytes and a second run that saves nothing again
 - Watched accounts are rescanned with a small fixed spread of their own and less often while they keep ending in trouble (up to four times the interval), so a long list neither wakes together nor keeps knocking on a site that is turning it away
 - Notifications: set `notify.url` in `config.json` to be told (JSON or ntfy-style text) when a scan saves new files or runs into trouble such as an expired sign-in; each job is announced once and trouble on one site at most every 6 hours
@@ -37,6 +41,8 @@ All notable changes to this project are documented in this file. Format follows 
 
 ### Fixed
 
+- A profile page that stops loading after it gave up files ends as finished instead of failing with a stall
+- Chromium launched by the queue keeps timers and rendering at full speed when hidden or covered, which ended the long stalls and "tab closed" errors on Instagram
 - Photos and videos the page delivers in its own data (Instagram, Facebook, TikTok, X videos) never reached the downloader in a browser that ran the page bridge before the shared site list had loaded; the bridge no longer depends on load order
 - Instagram stories could be missed when the page's own posts arrived first: the story tray is now looked at until two looks in a row find nothing new
 - A rescan of an account with nothing new is no longer reported as "nothing found"; files already saved count as seen

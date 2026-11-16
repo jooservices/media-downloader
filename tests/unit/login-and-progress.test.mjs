@@ -142,3 +142,16 @@ test("failures are counted by reason and anything unexplained counts as unknown"
   });
   assert.equal(Object.keys(countFailures(undefined)).length, FAILURE_REASONS.length);
 });
+
+test("an attempt that a later run of the same link replaced is not counted as a failure", () => {
+  const counts = countFailures([
+    { url: "https://x.com/a/", status: "error", reason: "tab_closed", createdAt: "2026-11-01T00:00:00Z" },
+    { url: "https://x.com/a/", status: "complete", createdAt: "2026-11-02T00:00:00Z" },
+    { url: "https://x.com/b/", status: "incomplete", reason: "page_silent", createdAt: "2026-11-01T00:00:00Z" },
+    { url: "https://x.com/b/", status: "error", reason: "login_required", createdAt: "2026-11-03T00:00:00Z" },
+    { url: "https://x.com/b/", status: "complete", createdAt: "2026-11-02T00:00:00Z" }
+  ]);
+  assert.equal(counts.tab_closed, 0, "a/ finished later");
+  assert.equal(counts.page_silent, 0, "b/ was replaced");
+  assert.equal(counts.login_required, 1, "b/ newest attempt failed");
+});
