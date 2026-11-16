@@ -293,6 +293,24 @@ test("serve rotates an oversized daily log and keeps a bounded active log", asyn
   assert.match(await readFile(activeLog, "utf8"), /Serving\./);
 });
 
+test("serve keeps writing its log file when the console it was started from is gone", async () => {
+  await installBridge();
+  await noBrowser();
+  const today = new Date().toISOString().slice(0, 10);
+  const activeLog = path.join(store.LOGS_DIR, `serve-${today}.log`);
+  await rm(activeLog, { force: true });
+  const original = process.stdout.write;
+  process.stdout.write = () => {
+    throw new Error("EPIPE: broken pipe");
+  };
+  try {
+    await serve({ inbox: INBOX, once: true });
+  } finally {
+    process.stdout.write = original;
+  }
+  assert.match(await readFile(activeLog, "utf8"), /Serving\./);
+});
+
 test("serve queues the inbox URLs with the configured limit, and a job that cannot be opened ends as an error", async t => {
   await installBridge();
   await noBrowser();

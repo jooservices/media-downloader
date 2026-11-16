@@ -19,7 +19,7 @@ import { constants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { readJson } from "./store.mjs";
+import { TERMINAL_STATES, readJson } from "./store.mjs";
 
 const require = createRequire(import.meta.url);
 export const SITE_FOLDERS = require("../lib/sites.js").names();
@@ -27,6 +27,7 @@ const UNFINISHED = /\.(crdownload|tmp|part|download)$/i;
 const DEFAULT_SETTLE_MS = 15_000;
 const ORPHAN_AGE_MS = 60 * 60_000;
 const OWNED_PARTIAL = /^\.pms-mover-[0-9a-f-]{36}\.part$/i;
+const LINKED_COUNT_WINDOW_MS = 24 * 60 * 60_000;
 const COMPARE_CHUNK = 1024 * 1024;
 const OVERLAP_MESSAGE = "The download folder must not be the browser's Downloads folder or sit inside it.";
 const moveLocks = new Map();
@@ -384,5 +385,79 @@ export async function countSavedFiles(movedFiles, { sourceRoot, jobs, updateJob 
         current.savedFiles = Number(current.savedFiles || 0) + files;
       });
     }
+  }
+}
+
+// A site folder in Downloads that is a link (for example to a network share) is where the browser saves straight
+// into the final place, so the mover never sees those files. When such a job ends, count the finished files in its
+// account folder that appeared while it ran, once.
+async function linkedFilesBetween(directory, from, until) {
+  // A folder that cannot be read right now is retried later, not counted as empty.
+  const entries = await readdir(directory, { withFileTypes: true }).catch(error =>
+    error?.code === "ENOENT" ? [] : null
+  );
+  if (!entries) {
+    return null;
+  }
+  let files = 0;
+  for (const entry of entries) {
+    if (!entry.isFile() || UNFINISHED.test(entry.name) || OWNED_PARTIAL.test(entry.name)) {
+      continue;
+    }
+    const info = await stat(path.join(directory, entry.name)).catch(() => null);
+    if (!info) {
+      return null;
+    }
+    const { mtimeMs } = info;
+    files += mtimeMs >= from && mtimeMs <= until ? 1 : 0;
+  }
+  return files;
+}
+
+async function linkedJobWindow(job, jobs, sourceRoot, now, settleMs) {
+  if (!TERMINAL_STATES.has(job.status) || job.savedFiles !== undefined || job.savedCounted) {
+    return null;
+  }
+  const siteDir = path.join(sourceRoot, job.platform);
+  if (!SITE_FOLDERS.includes(job.platform) || !(await lstat(siteDir).catch(() => null))?.isSymbolicLink()) {
+    return null;
+  }
+  const finishedAt = Date.parse(job.updatedAt || "") || now;
+  if (now - finishedAt < settleMs || now - finishedAt > LINKED_COUNT_WINDOW_MS) {
+    return null; // its last files may still be arriving, or it is too old to look back at
+  }
+  const from = Date.parse(job.openedAt || job.createdAt || "");
+  // A later run of the same account owns the files that appeared after it started.
+  const laterStarts = jobs
+    .filter(
+      other =>
+        other !== job && other.platform === job.platform && other.account?.toLowerCase() === job.account.toLowerCase()
+    )
+    .map(other => Date.parse(other.openedAt || other.createdAt || ""))
+    .filter(start => start > from);
+  const until = Math.min(finishedAt + settleMs, ...laterStarts);
+  return { directory: path.join(siteDir, job.account), from, until };
+}
+
+export async function countLinkedFiles({
+  sourceRoot,
+  jobs,
+  updateJob,
+  now = Date.now(),
+  settleMs = DEFAULT_SETTLE_MS
+}) {
+  for (const job of jobs) {
+    const window = await linkedJobWindow(job, jobs, sourceRoot, now, settleMs);
+    if (!window) {
+      continue;
+    }
+    const files = await linkedFilesBetween(window.directory, window.from, window.until);
+    if (files === null) {
+      continue;
+    }
+    await updateJob(job.jobId, current => {
+      current.savedFiles = Number(current.savedFiles || 0) + files;
+      current.savedCounted = true;
+    });
   }
 }
