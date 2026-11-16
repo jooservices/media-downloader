@@ -164,6 +164,12 @@ try {
     ).catch(() => null);
 
     const s = await status().catch(() => ({}));
+    // A job that ends in error or incomplete is a problem, except when this cycle killed serve (the kill cuts jobs short).
+    for (const job of finished ?? []) {
+      if (!crashed && ["error", "incomplete"].includes(job.status)) {
+        problems.push(`${job.account} ended ${job.status}: ${job.message}`);
+      }
+    }
     const counts = {};
     for (const job of finished ?? []) {
       counts[job.status] = (counts[job.status] || 0) + 1;
@@ -215,12 +221,20 @@ try {
   record({ event: "fatal", message: error.message, serveOutput: output.slice(-30).join("") });
   exitCode = 2;
 } finally {
+  // Each step runs even when an earlier one throws (the serve process may already be gone).
+  const attempt = async step => {
+    try {
+      await step();
+    } catch {
+      // Already stopped.
+    }
+  };
   if (lastServePid) {
-    killHard(lastServePid);
+    await attempt(() => killHard(lastServePid));
   }
-  supervisor.kill();
+  await attempt(() => supervisor.kill());
   await sleep(1000);
-  await destroySandbox(sandbox, { child: supervisor });
-  await sites.close();
+  await attempt(() => destroySandbox(sandbox, { child: supervisor }));
+  await attempt(() => sites.close());
 }
 process.exitCode = exitCode;

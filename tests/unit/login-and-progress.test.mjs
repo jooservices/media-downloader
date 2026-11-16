@@ -155,3 +155,13 @@ test("an attempt that a later run of the same link replaced is not counted as a 
   assert.equal(counts.page_silent, 0, "b/ was replaced");
   assert.equal(counts.login_required, 1, "b/ newest attempt failed");
 });
+
+test("the same page written with another case counts as one link", async () => {
+  await import("../../lib/sites.js");
+  await import("../../lib/urls.js");
+  const counts = countFailures([
+    { url: "https://x.com/Example/", status: "error", reason: "tab_closed", createdAt: "2026-11-01T00:00:00Z" },
+    { url: "https://x.com/example/", status: "complete", createdAt: "2026-11-02T00:00:00Z" }
+  ]);
+  assert.equal(counts.tab_closed, 0);
+});

@@ -32,8 +32,8 @@ All of these must pass on the commit that will ship:
 ## 4. After the release
 
 - Update the machine that runs the queue as described in the [runbook](runbook.md): stop `serve`, install the release, run `browser setup`, start `serve`, and confirm a fresh extension report in `/v1/status`.
-- Watch `GET /v1/status` and `/v1/metrics` for a day: `failuresByReason` should stay at zero for links whose newest job finished.
+- Watch `GET /v1/status` and `GET /v1/metrics` for a day. `failuresByReason` is an aggregate over all links (the newest job of each), not a per-link measure, so a zero does not prove one link is fine: list the jobs (`GET /v1/jobs?status=error`, then `incomplete`) to see which links are affected, retry them, and compare the counts before and after.
 
 ## Roll back
 
-Releases are tags, so rolling back means shipping again: revert on `release/<version+1>` or `hotfix/<version+1>`, repeat sections 2 and 3, and install that release on the queue machine. Never move or delete a published tag.
+Releases are tags, so rolling back means shipping again: cut `hotfix/<version+1>` from `master` (not from `develop`, which may hold unreleased work), revert only the affected changes there, repeat sections 2 and 3, and install that release on the queue machine. Never move or delete a published tag.
