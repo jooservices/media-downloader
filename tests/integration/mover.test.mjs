@@ -4,7 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { parseConfig } from "../../cli/config.mjs";
-import { cleanOrphanedPartials, countSavedFiles, moveFinishedFiles, reconcileMovedOutputs } from "../../cli/mover.mjs";
+import {
+  cleanOrphanedPartials,
+  countLinkedFiles,
+  countSavedFiles,
+  moveFinishedFiles,
+  reconcileMovedOutputs
+} from "../../cli/mover.mjs";
 import { createSupervisor } from "../../cli/supervisor.mjs";
 
 const NOW = Date.now();
@@ -422,4 +428,91 @@ test("a site folder that is a link (already redirected elsewhere) is left alone"
   const result = await moveFinishedFiles({ sourceRoot: source, destRoot: dest, now: NOW });
   assert.equal(result.moved, 0);
   assert.equal((await stat(path.join(elsewhere, "alice", "a.jpg"))).size, 4);
+});
+
+test("files the browser saves straight into a linked site folder are counted once when the job ends", async () => {
+  const { source, dest } = await area();
+  const real = path.join(dest, "Instagram");
+  await mkdir(path.join(real, "alice"), { recursive: true });
+  await mkdir(source, { recursive: true });
+  await symlink(real, path.join(source, "Instagram"), "junction");
+  const during = new Date(NOW - 120_000);
+  const before = new Date(NOW - 3_600_000);
+  await put(path.join(real, "alice", "new1.jpg"), "1");
+  await put(path.join(real, "alice", "new2.mp4"), "2");
+  await put(path.join(real, "alice", "half.crdownload"), "3");
+  await put(path.join(real, "alice", "older.jpg"), "4");
+  await utimes(path.join(real, "alice", "new1.jpg"), during, during);
+  await utimes(path.join(real, "alice", "new2.mp4"), during, during);
+  await utimes(path.join(real, "alice", "older.jpg"), before, before);
+  const at = ms => new Date(NOW - ms).toISOString();
+  const jobs = [
+    {
+      jobId: "done",
+      platform: "Instagram",
+      account: "alice",
+      status: "complete",
+      createdAt: at(600_000),
+      updatedAt: at(100_000)
+    },
+    {
+      jobId: "fresh",
+      platform: "Instagram",
+      account: "alice",
+      status: "complete",
+      createdAt: at(600_000),
+      updatedAt: at(1_000)
+    },
+    {
+      jobId: "run",
+      platform: "Instagram",
+      account: "alice",
+      status: "running",
+      createdAt: at(600_000),
+      updatedAt: at(100_000)
+    },
+    {
+      jobId: "ancient",
+      platform: "Instagram",
+      account: "alice",
+      status: "complete",
+      createdAt: at(9e8),
+      updatedAt: at(8e8)
+    },
+    {
+      jobId: "counted",
+      platform: "Instagram",
+      account: "alice",
+      status: "complete",
+      createdAt: at(600_000),
+      updatedAt: at(100_000),
+      savedFiles: 9
+    },
+    {
+      jobId: "real-folder",
+      platform: "Facebook",
+      account: "alice",
+      status: "complete",
+      createdAt: at(600_000),
+      updatedAt: at(100_000)
+    }
+  ];
+  const run = () =>
+    countLinkedFiles({
+      sourceRoot: source,
+      jobs,
+      now: NOW,
+      updateJob: async (id, mutate) => mutate(jobs.find(job => job.jobId === id))
+    });
+  await run();
+  await run();
+  const saved = Object.fromEntries(jobs.map(job => [job.jobId, job.savedFiles]));
+  assert.deepEqual(saved, {
+    done: 2,
+    fresh: undefined,
+    run: undefined,
+    ancient: undefined,
+    counted: 9,
+    "real-folder": undefined
+  });
 });

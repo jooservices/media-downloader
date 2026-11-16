@@ -37,7 +37,8 @@ import {
   firefoxDownloadDir,
   moveFinishedFiles,
   reconcileMovedOutputs,
-  countSavedFiles
+  countSavedFiles,
+  countLinkedFiles
 } from "./mover.mjs";
 import { addWatch, readWatchList, removeWatch, watchDue } from "./watchlist.mjs";
 
@@ -182,12 +183,22 @@ export async function runningServer() {
 const MAX_LOG_BYTES = 2 * 1024 * 1024;
 const MAX_ROTATED_LOGS = 3;
 
+const ignoreStdoutError = () => {};
+
 async function createLogger() {
   await mkdir(LOGS_DIR, { recursive: true });
+  if (!process.stdout.listeners("error").includes(ignoreStdoutError)) {
+    process.stdout.on("error", ignoreStdoutError); // a closed pipe reports here; the file log carries on
+  }
   return message => {
     const stamp = new Date().toISOString();
     const line = `[${stamp}] ${String(message).slice(0, 2000)}`;
-    process.stdout.write(`${line}\n`);
+    // A closed console or pipe (a launcher that went away) must neither throw out of the caller nor stop the file log.
+    try {
+      process.stdout.write(`${line}\n`);
+    } catch {
+      // The file below is the record that matters.
+    }
     // One file per day with a size cap. Synchronous appends avoid accumulating pending writes.
     const file = path.join(LOGS_DIR, `serve-${stamp.slice(0, 10)}.log`);
     try {
@@ -294,7 +305,9 @@ async function buildDeps(log, isStopping = () => false, openJob = openJobInEdge)
       const result = await moveFinishedFiles({ sourceRoot, destRoot, overwriteFiles, blockedFiles });
       await reconcileMovedOutputs(result.movedFiles, { sourceRoot, jobs, updateJob });
       // The move took time, so choose the job from the current list, not the one read before it.
-      await countSavedFiles(result.movedFiles, { sourceRoot, jobs: await listJobs(), updateJob });
+      const current = await listJobs();
+      await countSavedFiles(result.movedFiles, { sourceRoot, jobs: current, updateJob });
+      await countLinkedFiles({ sourceRoot, jobs: current, updateJob });
       return result;
     }
   };
